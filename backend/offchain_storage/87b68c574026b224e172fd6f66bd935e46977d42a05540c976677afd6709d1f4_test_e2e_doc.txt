@@ -1,0 +1,3 @@
+LexCorp E2E Test Document
+Timestamp: 2026-09-06T20:05:25.149Z
+Purpose: Integration verification

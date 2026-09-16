@@ -1,0 +1,20 @@
+{
+  "server": {
+    "privateKey": "mNwTQgGaAi1+ibcV6ZKjSCba7/3UbZbKIz2bgB2/a1M=",
+    "publicKey": "05Prh+euVu7KtU3imt844ioBbEE8c+aAE7lnUbJyWmc=",
+    "address": "10.8.0.1"
+  },
+  "clients": {
+    "017e6d7c-4e0e-491e-ae82-520407b8c22a": {
+      "id": "017e6d7c-4e0e-491e-ae82-520407b8c22a",
+      "name": "nischay",
+      "address": "10.8.0.2",
+      "privateKey": "0J7nGyaymfauw6Mrko7tnQtd4fjq5+5DwVnaC1AJ1mM=",
+      "publicKey": "b/wkTUahG4c1uq3dnUadsY8dcLtTdMpfahhSfj89anA=",
+      "preSharedKey": "v5Lv3mQ0dgMSuwilkUm/Ru2I8OPawP9jAtF17HAGCz8=",
+      "createdAt": "2026-09-16T10:26:19.369Z",
+      "updatedAt": "2026-09-16T10:26:19.369Z",
+      "enabled": true
+    }
+  }
+}

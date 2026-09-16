@@ -1,0 +1,121 @@
+{
+    "features": {
+        "access_hour": {
+            "type": "integer",
+            "range": [
+                0,
+                23
+            ],
+            "description": "Hour of the day when the transaction was submitted (0-23)."
+        },
+        "is_weekend": {
+            "type": "integer",
+            "values": [
+                0,
+                1
+            ],
+            "description": "Binary flag indicating whether the event occurred on a weekend (1) or weekday (0)."
+        },
+        "time_elapsed_from_last_tx": {
+            "type": "float",
+            "unit": "seconds",
+            "description": "Time elapsed since actor's prior transaction. Strictly positive."
+        },
+        "role_escalation_index": {
+            "type": "float",
+            "range": [
+                0.0,
+                2.0
+            ],
+            "description": "Degree of divergence between requested action and actor's authorized role (0.0: normal, 0.5: unusual, 1.0: violation, 2.0: severe escalation)."
+        },
+        "rolling_event_frequency_1h": {
+            "type": "integer",
+            "description": "Number of operations initiated by this actor in the trailing 60 minutes."
+        },
+        "rolling_failure_rate_24h": {
+            "type": "float",
+            "range": [
+                0.0,
+                1.0
+            ],
+            "description": "Proportion of failed attempts over total attempts in the last 24h (failed_attempts / total_attempts)."
+        },
+        "asset_sensitivity_tier": {
+            "type": "integer",
+            "values": [
+                0,
+                1,
+                2
+            ],
+            "description": "Classification tier of the asset (0: PUBLIC, 1: PRIVATE, 2: CONFIDENTIAL)."
+        },
+        "is_write_operation": {
+            "type": "integer",
+            "values": [
+                0,
+                1
+            ],
+            "description": "Binary indicator for state-mutating operations (1) vs read-only operations (0)."
+        },
+        "actor_to_asset_relationship_depth": {
+            "type": "integer",
+            "values": [
+                0,
+                1,
+                2,
+                3
+            ],
+            "description": "Relationship depth between actor and target asset (0: direct owner, 1: manager/admin, 2: 3rd-party, 3: unauthorized/unrelated)."
+        },
+        "user_role": {
+            "type": "categorical",
+            "values": [
+                "USER",
+                "MANAGER",
+                "ADMIN",
+                "AUDITOR"
+            ],
+            "description": "Role assigned to the actor initiating the blockchain transaction."
+        },
+        "event_type": {
+            "type": "categorical",
+            "values": [
+                "AccessAttempted",
+                "AccessGranted",
+                "AccessDenied",
+                "AssetMinted",
+                "AssetTransferred",
+                "RoleAssigned",
+                "RoleRevoked",
+                "AssetUpdated"
+            ],
+            "description": "Smart contract audit event category."
+        }
+    },
+    "metadata_columns": {
+        "label": {
+            "type": "categorical",
+            "values": [
+                "NORMAL",
+                "ANOMALY"
+            ],
+            "description": "High-level binary label for ground-truth evaluation only."
+        },
+        "anomaly_scenario": {
+            "type": "categorical",
+            "values": [
+                "NORMAL",
+                "BRUTE_FORCE_ACCESS",
+                "PRIVILEGE_ESCALATION",
+                "UNAUTHORIZED_ASSET_ACCESS",
+                "ABNORMAL_HIGH_FREQUENCY",
+                "OFF_HOURS_SENSITIVE_ACCESS",
+                "REPEATED_ACCESS_FAILURE",
+                "SUSPICIOUS_THIRD_PARTY_WRITE",
+                "COMBINED_ATTACK"
+            ],
+            "description": "Specific attack or behavioral anomaly archetype."
+        }
+    }
+}

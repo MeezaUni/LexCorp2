@@ -1,0 +1,72 @@
+version: '3.8'
+
+x-besu-def: &besu-def
+  image: hyperledger/besu:latest
+  entrypoint:
+    - besu
+    - --data-path=/opt/besu/data
+    - --genesis-file=/opt/besu/networkFiles/genesis.json
+    - --rpc-http-enabled
+    - --rpc-http-api=ETH,NET,QBFT,WEB3,ADMIN,DEBUG,TXPOOL,PERM
+    - --rpc-http-host=0.0.0.0
+    - --rpc-http-cors-origins=*
+    - --rpc-ws-enabled
+    - --rpc-ws-api=ETH,NET,QBFT,WEB3
+    - --rpc-ws-host=0.0.0.0
+    - --host-allowlist=*
+    - --min-gas-price=0
+    - --sync-mode=FULL
+
+services:
+  node1:
+    <<: *besu-def
+    container_name: besu_node1
+    command: >
+      --node-private-key-file=/opt/besu/networkFiles/keys/node1/key
+      --p2p-port=30303
+      --rpc-http-port=8545
+      --rpc-ws-port=8546
+    volumes:
+      - ./networkFiles:/opt/besu/networkFiles
+      - ./data/node1:/opt/besu/data
+    ports:
+      - "8545:8545"
+      - "8546:8546"
+    networks:
+      besu-network:
+        ipv4_address: 172.18.0.10
+
+  node2:
+    <<: *besu-def
+    container_name: besu_node2
+    command: >
+      --node-private-key-file=/opt/besu/networkFiles/keys/node2/key
+      --p2p-port=30303
+      --bootnodes=enode://f779bb1c7d85c6e7b456cd04307dbcc8a5da638195e2adf2c5f137605b241ac31b881ddc4934b11d0af6202fe4be4cd26f9619982803f96e6ed415de1b451dbb@172.18.0.10:30303
+    volumes:
+      - ./networkFiles:/opt/besu/networkFiles
+      - ./data/node2:/opt/besu/data
+    networks:
+      besu-network:
+        ipv4_address: 172.18.0.11
+
+  node3:
+    <<: *besu-def
+    container_name: besu_node3
+    command: >
+      --node-private-key-file=/opt/besu/networkFiles/keys/node3/key
+      --p2p-port=30303
+      --bootnodes=enode://f779bb1c7d85c6e7b456cd04307dbcc8a5da638195e2adf2c5f137605b241ac31b881ddc4934b11d0af6202fe4be4cd26f9619982803f96e6ed415de1b451dbb@172.18.0.10:30303
+    volumes:
+      - ./networkFiles:/opt/besu/networkFiles
+      - ./data/node3:/opt/besu/data
+    networks:
+      besu-network:
+        ipv4_address: 172.18.0.12
+
+networks:
+  besu-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/24

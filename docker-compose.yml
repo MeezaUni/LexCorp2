@@ -1,0 +1,50 @@
+version: "3.9"
+
+# LexCorp SIH — local development stack
+# Postgres is the only service needed at Phase 0.
+# Additional services (backend, indexer, hardhat node, IPFS) are added in later phases.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lexcorp_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lexcorp_sih
+      POSTGRES_USER: lexcorp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lexcorp_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lexcorp -d lexcorp_sih"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ------------------------------------------------------------------
+  # Placeholder services — uncomment as each phase is completed
+  # ------------------------------------------------------------------
+
+  # backend:
+  #   build: ./backend
+  #   container_name: lexcorp_backend
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   env_file: .env
+  #   ports:
+  #     - "8000:8000"
+
+  # hardhat:
+  #   image: node:20-alpine
+  #   container_name: lexcorp_hardhat
+  #   working_dir: /app
+  #   command: sh -c "npm ci && npx hardhat node"
+  #   volumes:
+  #     - ./contracts:/app
+
+volumes:
+  postgres_data:
