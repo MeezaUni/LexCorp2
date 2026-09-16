@@ -220,3 +220,97 @@ class AIRiskEngine:
 
 # Singleton
 ai_engine = AIRiskEngine()
+
+
+async def check_actor_risk_level(actor_did: str, db) -> dict:
+    """
+    Check actor's recent risk history to determine if they should be blocked from sensitive operations.
+
+    Args:
+        actor_did: W3C DID of the actor (e.g., did:ethr:13371:0x...)
+        db: Async database session
+
+    Returns:
+        dict with keys:
+        - is_high_risk: bool (True if actor should be blocked)
+        - recent_high_count: int (number of HIGH risk events in last 24h)
+        - last_high_event: dict or None (most recent HIGH risk event details)
+        - reason: str (human-readable explanation)
+    """
+    from sqlalchemy import select, desc
+    from app.models.domain import AuditEvent
+    from datetime import datetime, timedelta
+
+    if not actor_did:
+        return {
+            "is_high_risk": False,
+            "recent_high_count": 0,
+            "last_high_event": None,
+            "reason": "No actor DID provided"
+        }
+
+    try:
+        # Query recent events for this actor (last 24 hours)
+        cutoff_time = datetime.utcnow() - timedelta(hours=24)
+
+        result = await db.execute(
+            select(AuditEvent)
+            .filter(AuditEvent.actor_did == actor_did)
+            .filter(AuditEvent.created_at >= cutoff_time)
+            .order_by(desc(AuditEvent.created_at))
+            .limit(20)
+        )
+        recent_events = result.scalars().all()
+
+        if not recent_events:
+            return {
+                "is_high_risk": False,
+                "recent_high_count": 0,
+                "last_high_event": None,
+                "reason": "No recent activity"
+            }
+
+        # Count HIGH and CRITICAL risk events
+        high_risk_events = [e for e in recent_events if e.risk_label in ("HIGH", "CRITICAL")]
+        high_count = len(high_risk_events)
+
+        # Determine if actor should be blocked
+        # Policy: Block if >= 2 HIGH/CRITICAL events in last 24h OR if last event was HIGH/CRITICAL
+        last_event = recent_events[0] if recent_events else None
+        is_high_risk = False
+        reason = "Normal activity pattern"
+
+        if high_count >= 2:
+            is_high_risk = True
+            reason = f"Multiple high-risk events detected ({high_count} in last 24h)"
+        elif last_event and last_event.risk_label in ("HIGH", "CRITICAL"):
+            is_high_risk = True
+            reason = f"Most recent activity flagged as {last_event.risk_label} risk"
+
+        last_high_event = None
+        if high_risk_events:
+            evt = high_risk_events[0]
+            last_high_event = {
+                "event_type": evt.event_type,
+                "risk_label": evt.risk_label,
+                "risk_score": evt.risk_score,
+                "timestamp": evt.created_at.isoformat() if evt.created_at else None,
+                "asset_serial": evt.asset_serial
+            }
+
+        return {
+            "is_high_risk": is_high_risk,
+            "recent_high_count": high_count,
+            "last_high_event": last_high_event,
+            "reason": reason
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking actor risk level: {e}")
+        # Fail open for now to avoid blocking legitimate operations due to errors
+        return {
+            "is_high_risk": False,
+            "recent_high_count": 0,
+            "last_high_event": None,
+            "reason": f"Error checking risk: {str(e)}"
+        }

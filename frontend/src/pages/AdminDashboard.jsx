@@ -8,7 +8,7 @@ import { getAssetsByOwner } from '../services/api';
 const API_BASE = '/api';
 
 export default function AdminDashboard() {
-  const { signer } = useAuth();
+  const { signer, user } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -29,6 +29,31 @@ export default function AdminDashboard() {
   const [isCheckingAssets, setIsCheckingAssets] = useState(false);
   const [revokingTokenId, setRevokingTokenId] = useState(null);
   const [modalError, setModalError] = useState('');
+
+  // Role hierarchy: determine which roles the current user can create
+  const getAvailableRoles = () => {
+    const currentRole = user?.role || 'USER';
+
+    // ADMIN can create MANAGER and USER (not ADMIN, not AUDITOR by default)
+    if (currentRole === 'ADMIN') {
+      return [
+        { value: 'USER', label: 'USER (Standard Personnel)' },
+        { value: 'MANAGER', label: 'MANAGER (Operations & Minting)' },
+      ];
+    }
+
+    // MANAGER can only create USER
+    if (currentRole === 'MANAGER') {
+      return [
+        { value: 'USER', label: 'USER (Standard Personnel)' },
+      ];
+    }
+
+    // USER and AUDITOR cannot create users (shouldn't reach this in normal flow)
+    return [];
+  };
+
+  const availableRoles = getAvailableRoles();
 
   const fetchUsers = async () => {
     try {
@@ -286,10 +311,15 @@ export default function AdminDashboard() {
                 onChange={e => setFormData({ ...formData, role: e.target.value })}
                 style={{ ...inputStyle, background: '#fff', color: '#0f172a' }}
               >
-                <option value="USER" style={{ color: '#0f172a' }}>USER (Standard Personnel)</option>
-                <option value="AUDITOR" style={{ color: '#0f172a' }}>AUDITOR (Compliance & Oversight)</option>
-                <option value="MANAGER" style={{ color: '#0f172a' }}>MANAGER (Operations & Minting)</option>
-                <option value="ADMIN" style={{ color: '#0f172a' }}>ADMIN (System Administrator)</option>
+                {availableRoles.length === 0 ? (
+                  <option value="" disabled>No roles available for your permission level</option>
+                ) : (
+                  availableRoles.map(role => (
+                    <option key={role.value} value={role.value} style={{ color: '#0f172a' }}>
+                      {role.label}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
           </div>
@@ -365,10 +395,11 @@ export default function AdminDashboard() {
                       onChange={(e) => updateRole(u.id, e.target.value)}
                       style={{ padding: '4px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid #cbd5e1', color: '#0f172a', background: '#fff' }}
                     >
-                      <option value="USER" style={{ color: '#0f172a' }}>USER</option>
-                      <option value="AUDITOR" style={{ color: '#0f172a' }}>AUDITOR</option>
-                      <option value="MANAGER" style={{ color: '#0f172a' }}>MANAGER</option>
-                      <option value="ADMIN" style={{ color: '#0f172a' }}>ADMIN</option>
+                      {availableRoles.map(role => (
+                        <option key={role.value} value={role.value} style={{ color: '#0f172a' }}>
+                          {role.value}
+                        </option>
+                      ))}
                     </select>
                   </td>
                   <td style={{ padding: '10px 12px' }}>
@@ -404,7 +435,7 @@ export default function AdminDashboard() {
                       }}
                       title="Permanently remove and block this user"
                     >
-                      Delete
+                      Revoke Identity
                     </button>
                   </td>
                 </tr>
@@ -441,7 +472,7 @@ export default function AdminDashboard() {
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
               <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#991b1b' }}>
-                Deactivate & Delete User
+                Revoke User Access & Identity
               </h3>
               <button
                 onClick={() => setDeleteModalUser(null)}
@@ -452,7 +483,7 @@ export default function AdminDashboard() {
             </div>
 
             <p style={{ fontSize: '13px', color: '#475569', marginTop: 0 }}>
-              You are about to delete user <strong>{deleteModalUser.name || 'Unnamed'}</strong> (<code>{deleteModalUser.wallet_address.slice(0, 10)}...</code>). Their wallet will be permanently blocked from re-authenticating.
+              You are about to deactivate user <strong>{deleteModalUser.name || 'Unnamed'}</strong> (<code>{deleteModalUser.wallet_address.slice(0, 10)}...</code>). Their identity will be soft-deleted, blocking authentication while preserving audit trail integrity.
             </p>
 
             {modalError && (

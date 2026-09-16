@@ -30,9 +30,42 @@ def get_totp_uri(username: str, secret: str) -> str:
     )
 
 def verify_totp(secret: str, provided_token: str) -> bool:
-    """Verify a 6-digit TOTP token."""
-    totp = pyotp.totp.TOTP(secret)
-    return totp.verify(provided_token, valid_window=1)
+    """Verify a 6-digit TOTP token with clock skew tolerance.
+
+    Args:
+        secret: Base32-encoded TOTP secret
+        provided_token: 6-digit code from authenticator app
+
+    Returns:
+        True if code is valid within ±60s window, False otherwise
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Validate input format
+    if not secret or not provided_token:
+        logger.warning("TOTP verification failed: empty secret or token")
+        return False
+
+    # Validate token is 6 digits
+    if not provided_token.isdigit() or len(provided_token) != 6:
+        logger.warning(f"TOTP verification failed: invalid token format (expected 6 digits, got {len(provided_token)} chars)")
+        return False
+
+    try:
+        totp = pyotp.totp.TOTP(secret)
+        # Increase valid_window from 1 to 2 for better clock tolerance (±60s total)
+        result = totp.verify(provided_token, valid_window=2)
+
+        if result:
+            logger.info("TOTP verification successful")
+        else:
+            logger.warning("TOTP verification failed: code invalid or expired")
+
+        return result
+    except Exception as e:
+        logger.error(f"TOTP verification error: {e}")
+        return False
 
 # --- WebAuthn (Passkeys / Biometrics) ---
 

@@ -97,6 +97,9 @@ async def list_users(
 
 
 # Role Hierarchy mapping
+# ADMIN can create MANAGER and USER (cannot create ADMIN)
+# MANAGER can create USER (cannot create MANAGER or ADMIN)
+# USER and AUDITOR cannot create any users
 ROLE_HIERARCHY = {
     "ADMIN": 3,
     "MANAGER": 2,
@@ -110,8 +113,22 @@ async def create_or_register_user(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """Create or pre-seed a user with a specific role, enforcing hierarchy."""
-    # Validate address format
+    """Create or pre-seed a user with a specific role, enforcing strict role hierarchy.
+
+    Hierarchy Rules:
+    - A role can only create roles STRICTLY BELOW itself
+    - ADMIN (3) can create: MANAGER (2), USER (0) — CANNOT create ADMIN (3)
+    - MANAGER (2) can create: USER (0) — CANNOT create MANAGER (2), ADMIN (3)
+    - USER (0) and AUDITOR (1) CANNOT create any users
+    """
+    # 1. Reject creation requests from USER and AUDITOR
+    if current_user.role in ("USER", "AUDITOR"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{current_user.role}' is not permitted to create users",
+        )
+
+    # 2. Validate address format
     try:
         checksummed = Web3.to_checksum_address(request.wallet_address)
     except Exception:
@@ -127,16 +144,16 @@ async def create_or_register_user(
             detail="Role must be one of ADMIN, MANAGER, AUDITOR, USER",
         )
 
-    # Hierarchy Enforcement
+    # 3. Hierarchy Enforcement: target must be STRICTLY BELOW acting role
     acting_role_level = ROLE_HIERARCHY.get(current_user.role, 0)
     target_role_level = ROLE_HIERARCHY.get(role_clean, 0)
 
-    # ADMIN (3) can create all. MANAGER (2) can only create AUDITOR (1) or USER (0).
-    # Cannot create equal or higher:
+    # Strict check: target must be lower than acting (target_role_level >= acting_role_level is DENIED)
+    # This ensures ADMIN cannot create ADMIN, and MANAGER cannot create MANAGER/ADMIN
     if target_role_level >= acting_role_level:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Cannot provision role '{role_clean}' with your current permissions",
+            detail=f"Cannot provision role '{role_clean}' with your current permissions (can only create roles below {current_user.role})",
         )
 
     # Check if user already exists
@@ -149,9 +166,6 @@ async def create_or_register_user(
         # Hierarchy Enforcement for update
         existing_role_level = ROLE_HIERARCHY.get(existing_user.role, 0)
         if existing_role_level >= acting_role_level:
-            # Cannot modify existing user if they are same/higher level than me,
-            # especially if I am not an admin and they are equal level.
-            # Allowing admin to downgrade others is acceptable, but not non-admins.
             if current_user.role != "ADMIN":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -211,7 +225,13 @@ async def update_user_role(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """Update role for an existing user."""
+    """Update role for an existing user enforcing strict hierarchy."""
+    if current_user.role in ("USER", "AUDITOR"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{current_user.role}' is not permitted to modify roles",
+        )
+
     role_clean = request.role.upper()
     if role_clean not in ["ADMIN", "MANAGER", "AUDITOR", "USER"]:
         raise HTTPException(
@@ -222,10 +242,11 @@ async def update_user_role(
     acting_role_level = ROLE_HIERARCHY.get(current_user.role, 0)
     target_role_level = ROLE_HIERARCHY.get(role_clean, 0)
 
+    # Cannot promote to equal or higher role
     if target_role_level >= acting_role_level:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Cannot provision role '{role_clean}' with your current permissions",
+            detail=f"Cannot provision role '{role_clean}' with your current permissions (can only assign roles below {current_user.role})",
         )
 
     try:
@@ -270,8 +291,10 @@ async def delete_user(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_manager_user),
 ):
-    """Deactivate a user and mark their wallet address as blocked.
-    Cleans up all associated Asset and VerifiableCredential records first.
+    """Revoke a user's identity by setting is_active=False (soft delete).
+
+    This preserves historical audit trails while preventing the user from accessing the system.
+    All blockchain events and audit logs remain intact for compliance purposes.
     """
     try:
         uid = uuid.UUID(user_id)
@@ -294,35 +317,14 @@ async def delete_user(
     if target_role_level >= acting_role_level and current_user.role != "ADMIN":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions to delete this user",
+            detail="Insufficient permissions to revoke this user",
         )
 
-    # Clean up associated WebAuthnCredential records (FK: user_id)
-    from app.models.domain import WebAuthnCredential
-    webauthn_creds_result = await db.execute(
-        select(WebAuthnCredential).where(WebAuthnCredential.user_id == uid)
-    )
-    webauthn_creds = webauthn_creds_result.scalars().all()
-    for wcred in webauthn_creds:
-        await db.delete(wcred)
-
-    # Clean up associated Asset records (FK: owner_id)
-    assets_result = await db.execute(select(Asset).where(Asset.owner_id == uid))
-    assets = assets_result.scalars().all()
-    for asset in assets:
-        await db.delete(asset)
-
-    # Clean up associated VerifiableCredential records (FK: user_id)
-    creds_result = await db.execute(
-        select(VerifiableCredential).where(VerifiableCredential.user_id == uid)
-    )
-    creds = creds_result.scalars().all()
-    for cred in creds:
-        await db.delete(cred)
-
-    # Perform hard delete as audit logs rely on DID strings rather than direct FK
-    await db.delete(user)
+    # Soft delete: deactivate the user instead of deleting
+    # This preserves audit trail and historical blockchain references
+    user.is_active = False
     await db.commit()
+
     return None
 
 @router.post("/{user_id}/fund")

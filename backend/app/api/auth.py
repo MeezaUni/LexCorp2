@@ -139,27 +139,38 @@ async def setup_totp(user: User = Depends(get_current_active_user), db: AsyncSes
 @router.post("/2fa/verify")
 async def verify_totp_setup(token: str = Body(..., embed=True), user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
     """Verify the TOTP code to finalize tracking."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     if not user.totp_secret:
         raise HTTPException(status_code=400, detail="TOTP setup not initiated.")
+
+    logger.info(f"TOTP verification attempt for user {user.wallet_address}")
 
     if security.verify_totp(user.totp_secret, token):
         user.is_totp_enabled = True
         await db.commit()
+        logger.info(f"TOTP successfully enabled for user {user.wallet_address}")
         return {"message": "TOTP successfully enabled."}
 
-    raise HTTPException(status_code=401, detail="Invalid TOTP code.")
+    raise HTTPException(status_code=401, detail="Invalid or expired TOTP code. Please ensure your device clock is synchronized and try with a fresh code.")
 
 
 @router.post("/2fa/validate")
 async def validate_totp(token: str = Body(..., embed=True), user: User = Depends(get_current_active_user)):
     """Validate a 2FA code during high-security actions without modifying state."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     if not user.is_totp_enabled or not user.totp_secret:
         raise HTTPException(status_code=400, detail="TOTP is not enabled for this user.")
+
+    logger.info(f"TOTP validation attempt for user {user.wallet_address}")
 
     if security.verify_totp(user.totp_secret, token):
         return {"valid": True}
 
-    raise HTTPException(status_code=401, detail="Invalid or expired TOTP code.")
+    raise HTTPException(status_code=401, detail="Invalid or expired TOTP code. Please ensure your device clock is synchronized and try with a fresh code.")
 
 
 # --- WebAuthn (Passkeys / Biometrics) ---
@@ -171,10 +182,17 @@ async def get_webauthn_registration_options(
     user: User = Depends(get_current_active_user)
 ):
     """Generate options to start WebAuthn registration."""
+    # Use localhost or request host as RP ID
     rp_id = req.url.hostname or "localhost"
-    options = security.generate_webauthn_registration_options(str(user.id), user.name or user.wallet_address, rp_id=rp_id)
+    if rp_id in ("127.0.0.1", "::1"):
+        rp_id = "localhost"
 
-    # Needs to store the generated challenge
+    options = security.generate_webauthn_registration_options(
+        str(user.id),
+        user.name or user.wallet_address,
+        rp_id=rp_id
+    )
+
     import webauthn
     options_json = json.loads(webauthn.options_to_json(options))
     auth.store_challenge(str(user.id), options_json["challenge"])
@@ -204,6 +222,8 @@ async def get_webauthn_login_options(
     # Parse hex credential IDs back to bytes
     cred_ids = [bytes.fromhex(c.credential_id) for c in creds]
     rp_id = req.url.hostname or "localhost"
+    if rp_id in ("127.0.0.1", "::1"):
+        rp_id = "localhost"
 
     options = security.generate_webauthn_login_options(cred_ids, rp_id=rp_id)
 
@@ -221,16 +241,24 @@ async def verify_webauthn_login(
     db: AsyncSession = Depends(get_db)
 ):
     """Verify WebAuthn authentication response."""
+    import logging
     import webauthn
     from webauthn.helpers import base64url_to_bytes
     from sqlalchemy import select
 
+    logger = logging.getLogger(__name__)
+
     challenge = auth.get_challenge(str(user.id))
     if not challenge:
-        raise HTTPException(status_code=400, detail="Challenge not found or expired")
+        logger.warning(f"WebAuthn challenge not found for user {user.id}")
+        raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry.")
 
     origin = req.headers.get("origin", "http://localhost:5173")
     rp_id = req.url.hostname or "localhost"
+    if rp_id in ("127.0.0.1", "::1"):
+        rp_id = "localhost"
+
+    logger.info(f"WebAuthn verify attempt: rp_id={rp_id}, origin={origin}")
 
     # Retrieve credential from DB
     res = await db.execute(select(WebAuthnCredential).filter(
@@ -240,6 +268,7 @@ async def verify_webauthn_login(
     db_cred = res.scalar_one_or_none()
 
     if not db_cred:
+        logger.warning(f"WebAuthn credential not found: {request.credential_id}")
         raise HTTPException(status_code=404, detail="Credential not found")
 
     try:
@@ -257,9 +286,11 @@ async def verify_webauthn_login(
         db_cred.sign_count = verification.new_sign_count
         await db.commit()
 
+        logger.info(f"WebAuthn verification successful for user {user.id}")
         return {"message": "WebAuthn authentication successful", "valid": True}
 
     except Exception as e:
+        logger.error(f"WebAuthn verification failed: {e}")
         raise HTTPException(status_code=400, detail=f"WebAuthn verification failed: {str(e)}")
 
 
@@ -271,15 +302,23 @@ async def verify_webauthn_registration(
     db: AsyncSession = Depends(get_db)
 ):
     """Verify WebAuthn registration response and save credential."""
+    import logging
     import webauthn
     from webauthn.helpers import base64url_to_bytes
 
+    logger = logging.getLogger(__name__)
+
     challenge = auth.get_challenge(str(user.id))
     if not challenge:
-        raise HTTPException(status_code=400, detail="Challenge not found or expired")
+        logger.warning(f"WebAuthn registration challenge not found for user {user.id}")
+        raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry registration.")
 
     origin = req.headers.get("origin", "http://localhost:5173")
     rp_id = req.url.hostname or "localhost"
+    if rp_id in ("127.0.0.1", "::1"):
+        rp_id = "localhost"
+
+    logger.info(f"WebAuthn registration verify: rp_id={rp_id}, origin={origin}")
 
     try:
         verification = webauthn.verify_registration_response(
@@ -301,7 +340,9 @@ async def verify_webauthn_registration(
         db.add(new_cred)
         await db.commit()
 
+        logger.info(f"WebAuthn credential registered successfully for user {user.id}")
         return {"message": "WebAuthn credential registered successfully"}
     except Exception as e:
+        logger.error(f"WebAuthn registration verification failed: {e}")
         raise HTTPException(status_code=400, detail=f"WebAuthn verification failed: {str(e)}")
 

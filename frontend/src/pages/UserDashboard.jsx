@@ -62,6 +62,12 @@ export default function UserDashboard() {
   // Revoke state
   const [revokingTokenId, setRevokingTokenId] = useState(null);
 
+  // Revoke Access Permission State
+  const [revokeAccessTokenId, setRevokeAccessTokenId] = useState('');
+  const [revokeTargetDID, setRevokeTargetDID] = useState('');
+  const [revokingAccess, setRevokingAccess] = useState(false);
+  const [revokeSuccessMsg, setRevokeSuccessMsg] = useState('');
+
   const walletAddress = wallet?.address || (typeof wallet === 'string' ? wallet : '');
   const userDID = `did:ethr:13371:${walletAddress.toLowerCase()}`;
 
@@ -200,6 +206,37 @@ export default function UserDashboard() {
       setError(err.message || 'Failed to grant access on blockchain');
     } finally {
       setSharing(false);
+    }
+  };
+
+  // Handle Revoking Access Permission
+  const handleRevokeAccessPermission = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setRevokingAccess(true);
+    setRevokeSuccessMsg('');
+
+    try {
+      let targetDID = revokeTargetDID.trim();
+      if (targetDID.startsWith('0x')) {
+        targetDID = `did:ethr:13371:${targetDID.toLowerCase()}`;
+      } else if (!targetDID.startsWith('did:ethr:')) {
+        throw new Error('Enter a valid Ethereum address (0x...) or W3C DID string');
+      }
+
+      const tId = parseInt(revokeAccessTokenId);
+      if (!tId) throw new Error('Please select a valid Token ID');
+
+      const tx = await revokeAssetAccess(signer, tId, targetDID);
+      setRevokeSuccessMsg(`Access permission revoked for ${targetDID.slice(0, 24)}... (Tx: ${tx.txHash.slice(0, 10)}...)`);
+      setRevokeAccessTokenId('');
+      setRevokeTargetDID('');
+      await fetchDashboardData();
+    } catch (err) {
+      console.error('Revoke access error:', err);
+      setError(err.message || 'Failed to revoke access on blockchain');
+    } finally {
+      setRevokingAccess(false);
     }
   };
 
@@ -397,7 +434,10 @@ export default function UserDashboard() {
             {walletAddress ? `${walletAddress.slice(0, 10)}...${walletAddress.slice(-6)}` : 'Connecting...'}
           </div>
           <div style={{ fontSize: '11px', color: '#64748b', marginTop: '6px', fontFamily: 'monospace' }}>
-            Role: <span style={{ fontWeight: 'bold', color: '#2563eb' }}>{user?.role || 'USER'}</span> · 2FA: {user?.is_totp_enabled ? '✓ Enabled' : '○ Disabled'}
+            Role: <span style={{ fontWeight: 'bold', color: '#2563eb' }}>{user?.role || 'USER'}</span>
+          </div>
+          <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '4px', fontFamily: 'monospace' }}>
+            DID: {userDID ? `${userDID.slice(0, 20)}...` : '—'}
           </div>
         </div>
       </div>
@@ -631,6 +671,76 @@ export default function UserDashboard() {
               {sharing ? 'Registering on Blockchain...' : 'Grant Access Permission on-Chain'}
             </button>
           </form>
+
+          {/* REVOKE ACCESS PERMISSION SECTION */}
+          <div style={{ marginTop: '3rem', paddingTop: '2rem', borderTop: '2px solid #e2e8f0' }}>
+            <h3 style={{ margin: '0 0 6px', fontSize: '18px', color: '#0f172a' }}>
+              Revoke Document Access Permission
+            </h3>
+            <p style={{ margin: '0 0 1.5rem', fontSize: '13px', color: '#64748b' }}>
+              Remove previously granted access permissions from specific users or departments for your digital documents.
+            </p>
+
+            {revokeSuccessMsg && (
+              <div style={{ background: '#fef3c7', border: '1px solid #f59e0b', color: '#92400e', padding: '10px 14px', borderRadius: '6px', marginBottom: '1.2rem', fontSize: '13px' }}>
+                ✓ {revokeSuccessMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleRevokeAccessPermission}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem', marginBottom: '1.2rem' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
+                    Select Owned Document *
+                  </label>
+                  <select
+                    value={revokeAccessTokenId}
+                    onChange={(e) => setRevokeAccessTokenId(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                  >
+                    <option value="">-- Choose an asset --</option>
+                    {assets.filter(a => a.is_digital).map(a => (
+                      <option key={a.token_id} value={a.token_id}>
+                        #{a.token_id} - {a.serial_number}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
+                    Target DID or Wallet Address *
+                  </label>
+                  <input
+                    type="text"
+                    value={revokeTargetDID}
+                    onChange={(e) => setRevokeTargetDID(e.target.value)}
+                    placeholder="0x... or did:ethr:13371:0x..."
+                    required
+                    style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={revokingAccess || !revokeAccessTokenId}
+                style={{
+                  padding: '10px 20px',
+                  background: revokingAccess ? '#94a3b8' : '#dc2626',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontWeight: '700',
+                  fontSize: '13px',
+                  cursor: revokingAccess ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {revokingAccess ? 'Revoking on Blockchain...' : 'Revoke Access Permission on-Chain'}
+              </button>
+            </form>
+          </div>
         </div>
       )}
 

@@ -74,13 +74,20 @@ class TransferRequest(BaseModel):
     new_owner_did: str
 
 @router.post("/transfer/prepare", response_model=MintCalldataResponse)
-async def prepare_transfer(request: TransferRequest, current_user: User = Depends(get_current_active_user)):
-    """Prepare unsigned transfer transaction calldata."""
+async def prepare_transfer(request: TransferRequest, current_user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Prepare unsigned transfer transaction calldata.
+
+    Authorization Rules:
+    - ADMIN: Can transfer both DIGITAL and PHYSICAL assets
+    - MANAGER: Can transfer PHYSICAL assets only (DIGITAL transfer denied)
+    - USER: Cannot transfer any assets
+    - AUDITOR: Cannot transfer any assets
+    """
     # Hierarchy/Permissions Check
     if current_user.role not in ["ADMIN", "MANAGER"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Users are not permitted to transfer assets."
+            detail=f"Role '{current_user.role}' is not permitted to transfer assets."
         )
 
     # Manager restrictions: Physical assets only
@@ -89,8 +96,26 @@ async def prepare_transfer(request: TransferRequest, current_user: User = Depend
         if asset_info and asset_info.get("is_digital"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Managers are not permitted to transfer DIGITAL assets."
+                detail="Managers are not permitted to transfer DIGITAL assets. Managers can only transfer PHYSICAL defense hardware. Contact an Administrator for digital asset transfers."
             )
+
+    # AI Risk Check: Block HIGH-risk actors from sensitive transfer operations
+    from app.services.ai import check_actor_risk_level
+    actor_did = f"did:ethr:13371:{current_user.wallet_address.lower()}"
+    risk_check = await check_actor_risk_level(actor_did, db)
+
+    if risk_check["is_high_risk"]:
+        # Log blocked attempt to audit
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"BLOCKED: Asset transfer attempt by {actor_did} due to high risk pattern. "
+            f"Reason: {risk_check['reason']}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Operation blocked due to anomalous behavior pattern detected by AI security system. {risk_check['reason']}. Contact your security administrator for review."
+        )
 
     calldata = contract_service.prepare_transfer_calldata(
         request.to_address,
@@ -103,10 +128,18 @@ async def prepare_transfer(request: TransferRequest, current_user: User = Depend
     )
 
 @router.post("/revoke/prepare", response_model=MintCalldataResponse)
-async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depends(get_current_active_user)):
-    """Prepare unsigned revoke transaction calldata."""
+async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Prepare unsigned revoke transaction calldata.
+
+    Authorization Rules:
+    - ADMIN: Can revoke both DIGITAL and PHYSICAL assets
+    - MANAGER: Can revoke PHYSICAL assets only (DIGITAL revoke denied)
+    - USER: Can revoke only their OWN DIGITAL assets (must be owner)
+    - AUDITOR: Cannot revoke any assets
+    """
     token_id = request.token_id
 
+    # Get asset information
     asset = contract_service.get_digital_asset(token_id)
     if not asset or not asset.get("is_digital"):
         asset = contract_service.get_asset(token_id)
@@ -117,18 +150,52 @@ async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depen
     is_digital = asset.get("is_digital", False)
     owner_address = asset.get("owner_address", "").lower()
 
+    # AUDITOR cannot revoke anything
+    if current_user.role == "AUDITOR":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Auditors have read-only access and cannot revoke assets."
+        )
+
+    # USER restrictions: can only revoke their OWN DIGITAL assets
     if current_user.role == "USER":
+        if not is_digital:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Users cannot revoke PHYSICAL assets. Contact a Manager or Administrator."
+            )
         if owner_address != current_user.wallet_address.lower():
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Users can only revoke their own assets."
+                detail="Users can only revoke their own digital assets."
             )
+
+    # MANAGER restrictions: can only revoke PHYSICAL assets
     elif current_user.role == "MANAGER":
         if is_digital:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Managers are not permitted to revoke DIGITAL assets."
+                detail="Managers are not permitted to revoke DIGITAL assets. Managers can only revoke PHYSICAL defense hardware. Digital assets can only be revoked by their owner or an Administrator."
             )
+
+    # ADMIN: no restrictions (can revoke both types)
+
+    # AI Risk Check: Block HIGH-risk actors from sensitive revoke operations
+    from app.services.ai import check_actor_risk_level
+    actor_did = f"did:ethr:13371:{current_user.wallet_address.lower()}"
+    risk_check = await check_actor_risk_level(actor_did, db)
+
+    if risk_check["is_high_risk"]:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"BLOCKED: Asset revoke attempt by {actor_did} on token {token_id} due to high risk pattern. "
+            f"Reason: {risk_check['reason']}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Operation blocked due to anomalous behavior pattern detected by AI security system. {risk_check['reason']}. Contact your security administrator for review."
+        )
 
     calldata = contract_service.prepare_revoke_calldata(token_id)
     return MintCalldataResponse(
@@ -138,11 +205,17 @@ async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depen
 
 @router.post("/mint/prepare", response_model=MintCalldataResponse)
 async def prepare_mint(request: MintRequest, current_user: User = Depends(get_current_active_user)):
-    """Prepare unsigned mint transaction calldata for physical asset."""
-    if current_user.role == "USER":
-         raise HTTPException(
+    """Prepare unsigned mint transaction calldata for physical asset.
+
+    Authorization Rules:
+    - ADMIN, MANAGER: Permitted to mint physical assets
+    - USER: Not permitted to mint physical assets (digital only)
+    - AUDITOR: Read-only, cannot mint
+    """
+    if current_user.role in ("USER", "AUDITOR"):
+        raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Users are not permitted to mint physical assets."
+            detail=f"Role '{current_user.role}' is not permitted to register physical defense hardware. Only Managers and Administrators can register physical assets."
         )
     calldata = contract_service.prepare_mint_calldata(
         request.to_address,
@@ -157,7 +230,18 @@ async def prepare_mint(request: MintRequest, current_user: User = Depends(get_cu
 
 @router.post("/mint-digital/prepare", response_model=MintCalldataResponse)
 async def prepare_mint_digital(request: DigitalMintRequest, current_user: User = Depends(get_current_active_user)):
-    """Prepare unsigned mint transaction calldata for digital asset with SHA-256 hash."""
+    """Prepare unsigned mint transaction calldata for digital asset with SHA-256 hash.
+
+    Authorization Rules:
+    - USER, MANAGER, ADMIN: Permitted to mint digital documents (self-sovereign document anchoring)
+    - AUDITOR: Read-only, cannot mint
+    """
+    if current_user.role == "AUDITOR":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Auditors have read-only access and cannot mint digital assets."
+        )
+
     calldata = contract_service.prepare_mint_digital_calldata(
         request.to_address,
         request.token_id,

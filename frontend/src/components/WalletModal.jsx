@@ -145,10 +145,10 @@ export default function WalletModal({ isOpen, onClose, onUnlocked }) {
         }}>
           <div>
             <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', letterSpacing: '0.025em' }}>
-              LexCorp Cryptographic Keyring
+              LexCorp Authentication
             </h3>
             <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#94a3b8' }}>
-              Self-Sovereign EVM Key Enclave (Consortium 13371)
+              Secure Identity Verification (Consortium 13371)
             </p>
           </div>
           <button
@@ -227,20 +227,13 @@ export default function WalletModal({ isOpen, onClose, onUnlocked }) {
                 {loading ? (statusMsg || 'Unlocking...') : 'Unlock & Authenticate'}
               </button>
 
-              <div style={{ marginTop: '1.25rem', display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-                <button
-                  type="button"
-                  onClick={() => setMode('import')}
-                  style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: 0 }}
-                >
-                  Import Another
-                </button>
+              <div style={{ marginTop: '1.25rem', textAlign: 'center', fontSize: '12px' }}>
                 <button
                   type="button"
                   onClick={handleReset}
-                  style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 0 }}
+                  style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: 0 }}
                 >
-                  Reset / Clear Key
+                  Reset Identity
                 </button>
               </div>
             </form>

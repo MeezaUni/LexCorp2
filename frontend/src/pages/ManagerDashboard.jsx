@@ -386,7 +386,7 @@ export default function ManagerDashboard() {
           { id: 'digital', label: 'Mint Digital Asset (PDF / Cert)' },
           { id: 'physical', label: 'Mint Physical Asset (QR / Serial)' },
           { id: 'access', label: 'Asset Access Permissions' },
-          { id: 'lifecycle', label: 'Asset Transfer & Revoke' },
+          { id: 'lifecycle', label: 'Physical Custody & Revocation' },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -548,39 +548,45 @@ export default function ManagerDashboard() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
           {/* Transfer */}
           <div style={panelStyle}>
-            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Transfer Asset</h3>
+            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Transfer Physical Asset Custody</h3>
+            <p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '1rem' }}>
+              Transfer custody of physical defense hardware. Digital document ownership transfer is restricted to Administrators.
+            </p>
             <form onSubmit={handleTransfer}>
               <label style={labelStyle}>Token ID</label>
               <input type="number" value={transferTokenId} onChange={(e) => setTransferTokenId(e.target.value)} required style={inputStyle} placeholder="e.g. 101" />
 
-              <label style={labelStyle}>New Owner Wallet Address</label>
+              <label style={labelStyle}>New Custodian Wallet Address</label>
               <input type="text" value={transferRecipient} onChange={(e) => setTransferRecipient(e.target.value)} required style={inputStyle} placeholder="0x..." />
 
               <button type="submit" disabled={transferring} style={{ width: '100%', padding: '10px', background: transferring ? '#9ca3af' : '#ea580c', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
-                {transferring ? 'Transferring...' : 'Transfer Asset'}
+                {transferring ? 'Transferring Custody...' : 'Transfer Physical Asset Custody'}
               </button>
             </form>
             {transferResult && (
               <div style={{ marginTop: '1rem', padding: '10px', background: '#fff7ed', borderRadius: '6px', fontSize: '12px', color: '#c2410c' }}>
-                Transferred #{transferResult.tokenId} to {transferResult.to}
+                Transferred custody of #{transferResult.tokenId} to {transferResult.to}
               </div>
             )}
           </div>
 
           {/* Revoke */}
           <div style={panelStyle}>
-            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Revoke (Burn) Asset</h3>
+            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Revoke Physical Asset Assignment</h3>
+            <p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '1rem' }}>
+              Permanently revoke physical asset assignment. Digital document revocation is restricted to document owners and Administrators.
+            </p>
             <form onSubmit={handleRevoke}>
               <label style={labelStyle}>Token ID to Revoke</label>
               <input type="number" value={revokeTokenId} onChange={(e) => setRevokeTokenId(e.target.value)} required style={inputStyle} placeholder="e.g. 101" />
 
-              <button type="submit" disabled={revoking} style={{ width: '100%', padding: '10px', background: revoking ? '#9ca3af' : '#dc2626', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', marginTop: '76px' }}>
-                {revoking ? 'Revoking...' : 'Revoke Asset'}
+              <button type="submit" disabled={revoking} style={{ width: '100%', padding: '10px', background: revoking ? '#9ca3af' : '#dc2626', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+                {revoking ? 'Revoking Assignment...' : 'Revoke Physical Asset'}
               </button>
             </form>
             {revokeResult && (
               <div style={{ marginTop: '1rem', padding: '10px', background: '#fef2f2', borderRadius: '6px', fontSize: '12px', color: '#991b1b' }}>
-                Burned Token #{revokeResult.tokenId} on-chain.
+                Revoked assignment of Token #{revokeResult.tokenId} on-chain.
               </div>
             )}
           </div>
