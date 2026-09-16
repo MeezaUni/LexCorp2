@@ -1,5 +1,6 @@
 """Authentication endpoints: nonce generation + SIWE verification + JWT session + 2FA WebAuthn/TOTP."""
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Body, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
