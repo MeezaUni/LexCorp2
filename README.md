@@ -1,4 +1,4 @@
-# 🛡️ LexCorp — Enterprise Blockchain Identity & Asset Management Platform
+#  LexCorp — Enterprise Blockchain Identity & Asset Management Platform
 
 > **Smart India Hackathon (SIH 2026)**  
 > **Problem Statement ID:** 26125  
@@ -7,13 +7,13 @@
 
 ---
 
-## 📌 Executive Summary
+##  Executive Summary
 
 LexCorp is an air-gapped, zero-trust enterprise security platform combining **W3C Decentralized Identifiers (DID)**, **W3C Verifiable Credentials (VC 2.0)**, **ERC-721 On-Chain Digital Asset Twins**, and **Embedded Local AI Anomaly Detection** to secure defense assets, supply chain provenance, and mission-critical access control.
 
 ---
 
-## 🏛️ Enterprise Architecture & Design Principles
+##  Enterprise Architecture & Design Principles
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -71,7 +71,7 @@ LexCorp is an air-gapped, zero-trust enterprise security platform combining **W3
 
 ---
 
-## 🚀 Quick Start (Local Setup)
+##  Quick Start (Local Setup)
 
 ### Prerequisites
 - Node.js v18+
@@ -110,7 +110,7 @@ npm run dev
 
 ---
 
-## 🧪 Verification & Feature Walkthrough
+##  Verification & Feature Walkthrough
 
 ### 1. Asset Minting & QR Generation (Manager View)
 1. Navigate to `http://localhost:5173` and connect wallet.
@@ -129,7 +129,7 @@ npm run dev
 
 ---
 
-## 🔒 Security Compliance Matrix
+##  Security Compliance Matrix
 
 | Requirement | LexCorp Implementation |
 |---|---|
