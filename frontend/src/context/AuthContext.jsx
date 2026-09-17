@@ -1,6 +1,7 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { getRpcProvider, checkManagerRole } from '../services/web3';
 import { getNonce, login } from '../services/api';
+import { hasEncryptedWallet } from '../services/walletCore';
 import WalletModal from '../components/WalletModal';
 
 const AuthContext = createContext(null);
@@ -12,6 +13,12 @@ export function AuthProvider({ children }) {
   const [isManager, setIsManager] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (wallet?.address && !signer && hasEncryptedWallet()) {
+      setIsModalOpen(true);
+    }
+  }, [wallet?.address, signer]);
 
   // Authenticate when a wallet is unlocked
   const authenticateWithWallet = useCallback(async (unlockedWallet) => {
@@ -47,6 +54,17 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
+  const authenticateWithSession = useCallback((result) => {
+    const walletData = { address: result.user.wallet_address };
+    localStorage.setItem('lexcorp_wallet', JSON.stringify(walletData));
+    localStorage.setItem('lexcorp_user', JSON.stringify(result.user));
+    localStorage.setItem('lexcorp_token', result.token);
+    setWallet(walletData);
+    setUser(result.user);
+    setSigner(null);
+    setIsManager(result.user.role === 'ADMIN' || result.user.role === 'MANAGER');
+  }, []);
+
   const connect = useCallback(() => {
     setIsModalOpen(true);
   }, []);
@@ -76,6 +94,7 @@ export function AuthProvider({ children }) {
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         onUnlocked={(w) => authenticateWithWallet(w)}
+        onAuthenticated={authenticateWithSession}
       />
     </AuthContext.Provider>
   );

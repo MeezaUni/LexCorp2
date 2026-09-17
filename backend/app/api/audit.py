@@ -4,7 +4,7 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -13,6 +13,22 @@ from app.schemas.domain import AuditEventRead
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/audit", tags=["audit"])
+
+
+@router.get("/stats")
+async def get_audit_stats(db: AsyncSession = Depends(get_db)):
+    """Return the compact risk summary consumed by the executive dashboard."""
+    total_result = await db.execute(select(func.count(AuditEvent.id)))
+    latest_result = await db.execute(
+        select(AuditEvent.risk_label)
+        .where(AuditEvent.risk_label.is_not(None))
+        .order_by(desc(AuditEvent.created_at))
+        .limit(1)
+    )
+    return {
+        "total_events": total_result.scalar_one() or 0,
+        "latest_risk": latest_result.scalar_one_or_none() or "LOW",
+    }
 
 
 @router.get("/events", response_model=List[AuditEventRead])

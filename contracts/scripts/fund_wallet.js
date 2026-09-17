@@ -3,8 +3,12 @@ const hre = require("hardhat");
 async function main() {
   const [deployer] = await hre.ethers.getSigners();
 
-  const recipient = process.env.FUND_RECIPIENT || "0x95ea9708BCf136d710A4b8e76FE20F895ecA003A";
-  const amount = process.env.FUND_AMOUNT || "1000"; // in ETH
+  const recipient = process.env.FUND_RECIPIENT;
+  const amount = process.env.FUND_AMOUNT || "10"; // in ETH
+
+  if (!recipient || !hre.ethers.isAddress(recipient)) {
+    throw new Error("Set FUND_RECIPIENT to a valid wallet address");
+  }
 
   console.log(`Funding ${recipient} with ${amount} ETH from ${deployer.address}...`);
 

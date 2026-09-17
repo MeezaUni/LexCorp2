@@ -164,7 +164,7 @@ contract AssetNFT is ERC721, AccessControl, ReentrancyGuard {
         string calldata ownerDID,
         string calldata fileHash,
         string calldata offchainURI
-    ) external onlyManager nonReentrant {
+    ) external nonReentrant {
         if (bytes(fileHash).length == 0) revert EmptyFileHash();
         _mintAsset(to, tokenId, serialNumber, ownerDID, fileHash, offchainURI, true);
         emit DigitalAssetMinted(tokenId, serialNumber, ownerDID, fileHash, offchainURI, to);

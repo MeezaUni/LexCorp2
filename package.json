@@ -1,0 +1,25 @@
+{
+  "name": "lexcorp-local",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LexCorp local development orchestration",
+  "scripts": {
+    "start": "npm run besu:up && npm run chain:wait && npm run contract:ensure && npm run app:stop && concurrently --names backend,frontend --prefix-colors blue,green \"python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --app-dir backend\" \"wait-on http-get://127.0.0.1:8000/health && npm --prefix frontend run dev\"",
+    "dev": "npm start",
+    "besu:up": "docker compose -f network/besu/docker-compose-active.yml up -d",
+    "besu:down": "docker compose -f network/besu/docker-compose-active.yml down",
+    "stop": "npm run besu:down",
+    "chain:wait": "wait-on tcp:127.0.0.1:8545",
+    "contract:ensure": "powershell -NoProfile -Command \"if ((Invoke-RestMethod -Uri http://127.0.0.1:8545 -Method Post -ContentType application/json -Body (@{jsonrpc='2.0';method='eth_getCode';params=@((Get-Content contracts/deployments/localhost.json | ConvertFrom-Json).address,'latest');id=1} | ConvertTo-Json -Compress)).result -eq '0x') { npm --prefix contracts run deploy:local } else { Write-Host 'Reusing existing AssetNFT deployment' }\"",
+    "app:stop": "npx kill-port 8000 5173",
+    "deploy": "npm --prefix contracts run deploy:local",
+    "fund": "cd contracts && npx hardhat run scripts/fund_user.js --network localhost",
+    "build": "npm --prefix frontend run build",
+    "test:contracts": "npm --prefix contracts test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "kill-port": "^2.0.1",
+    "wait-on": "^8.0.3"
+  }
+}

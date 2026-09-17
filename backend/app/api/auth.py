@@ -44,6 +44,34 @@ class LoginResponse(BaseModel):
     user: dict
 
 
+class TotpLoginRequest(BaseModel):
+    wallet_address: str
+    token: str
+
+
+class PasskeyLoginOptionsRequest(BaseModel):
+    wallet_address: str
+
+
+class PasskeyLoginVerifyRequest(BaseModel):
+    wallet_address: str
+    credential_id: str
+    response: dict
+
+
+def _login_response(user: User, token: str) -> LoginResponse:
+    return LoginResponse(
+        token=token,
+        user={
+            "wallet_address": user.wallet_address,
+            "did": user.did,
+            "role": user.role,
+            "is_active": user.is_active,
+            "is_totp_enabled": user.is_totp_enabled,
+        },
+    )
+
+
 @router.post("/nonce", response_model=NonceResponse)
 async def get_nonce(address: str):
     """Generate a fresh nonce for wallet authentication.
@@ -92,16 +120,99 @@ async def login(request: LoginRequest, response: Response, db: AsyncSession = De
         max_age=1800,  # 30 minutes
     )
 
-    return LoginResponse(
-        token=token,
-        user={
-            "wallet_address": user.wallet_address,
-            "did": user.did,
-            "role": user.role,
-            "is_active": user.is_active,
-            "is_totp_enabled": user.is_totp_enabled
-        },
+    return _login_response(user, token)
+
+
+@router.post("/login/totp", response_model=LoginResponse)
+async def login_with_totp(request: TotpLoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
+    """Authenticate with a registered mobile authenticator without wallet password."""
+    from sqlalchemy import func, select
+
+    result = await db.execute(select(User).where(func.lower(User.wallet_address) == request.wallet_address.lower()))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active or not user.is_totp_enabled or not user.totp_secret:
+        raise HTTPException(status_code=401, detail="Mobile authenticator is not enabled for this wallet.")
+    if not security.verify_totp(user.totp_secret, request.token):
+        raise HTTPException(status_code=401, detail="Invalid or expired mobile authenticator code.")
+
+    token = auth.create_jwt(user.wallet_address, user.did, user.role)
+    response.set_cookie(key="session", value=token, httponly=True, samesite="lax", max_age=1800)
+    return _login_response(user, token)
+
+
+@router.post("/login/passkey/options")
+async def get_passkey_login_options(request: PasskeyLoginOptionsRequest, req: Request, db: AsyncSession = Depends(get_db)):
+    """Create a WebAuthn challenge for passwordless passkey login."""
+    from sqlalchemy import func, select
+    import webauthn
+
+    result = await db.execute(select(User).where(func.lower(User.wallet_address) == request.wallet_address.lower()))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="Wallet identity not found.")
+
+    credentials = (await db.execute(select(WebAuthnCredential).where(
+        WebAuthnCredential.user_id == user.id,
+        WebAuthnCredential.is_active.is_(True),
+    ))).scalars().all()
+    if not credentials:
+        raise HTTPException(status_code=400, detail="No active passkey is registered for this wallet.")
+
+    rp_id = req.url.hostname or "localhost"
+    if rp_id in ("127.0.0.1", "::1"):
+        rp_id = "localhost"
+    options = security.generate_webauthn_login_options(
+        [bytes.fromhex(credential.credential_id) for credential in credentials],
+        rp_id=rp_id,
     )
+    options_json = json.loads(webauthn.options_to_json(options))
+    auth.store_challenge(str(user.id), options_json["challenge"])
+    return {"options": options_json}
+
+
+@router.post("/login/passkey/verify", response_model=LoginResponse)
+async def login_with_passkey(request: PasskeyLoginVerifyRequest, req: Request, response: Response, db: AsyncSession = Depends(get_db)):
+    """Verify a WebAuthn assertion and issue a passwordless session."""
+    from sqlalchemy import func, select
+    import webauthn
+    from webauthn.helpers import base64url_to_bytes
+
+    result = await db.execute(select(User).where(func.lower(User.wallet_address) == request.wallet_address.lower()))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="Wallet identity not found.")
+
+    credential = (await db.execute(select(WebAuthnCredential).where(
+        WebAuthnCredential.user_id == user.id,
+        WebAuthnCredential.credential_id == request.credential_id,
+        WebAuthnCredential.is_active.is_(True),
+    ))).scalar_one_or_none()
+    challenge = auth.get_challenge(str(user.id))
+    if not credential or not challenge:
+        raise HTTPException(status_code=401, detail="Passkey challenge or credential not found.")
+
+    origin = req.headers.get("origin", "http://localhost:5173")
+    rp_id = req.url.hostname or "localhost"
+    if rp_id in ("127.0.0.1", "::1"):
+        rp_id = "localhost"
+    try:
+        verification = webauthn.verify_authentication_response(
+            credential=request.response,
+            expected_challenge=base64url_to_bytes(challenge),
+            expected_origin=origin,
+            expected_rp_id=rp_id,
+            credential_public_key=bytes.fromhex(credential.public_key),
+            credential_current_sign_count=credential.sign_count,
+            require_user_verification=False,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=401, detail=f"Passkey verification failed: {error}")
+
+    credential.sign_count = verification.new_sign_count
+    await db.commit()
+    token = auth.create_jwt(user.wallet_address, user.did, user.role)
+    response.set_cookie(key="session", value=token, httponly=True, samesite="lax", max_age=1800)
+    return _login_response(user, token)
 
 
 @router.get("/me")
@@ -172,6 +283,24 @@ async def validate_totp(token: str = Body(..., embed=True), user: User = Depends
         return {"valid": True}
 
     raise HTTPException(status_code=401, detail="Invalid or expired TOTP code. Please ensure your device clock is synchronized and try with a fresh code.")
+
+
+@router.post("/2fa/disable")
+async def disable_totp(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Disable mobile authenticator authentication for the current user."""
+    user.is_totp_enabled = False
+    user.totp_secret = None
+    await db.commit()
+    return {"message": "Mobile authenticator disabled.", "is_totp_enabled": False}
+
+
+@router.post("/2fa/reset")
+async def reset_totp(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Clear the mobile authenticator so a new device can be enrolled."""
+    user.is_totp_enabled = False
+    user.totp_secret = None
+    await db.commit()
+    return {"message": "Mobile authenticator reset.", "is_totp_enabled": False}
 
 
 # --- WebAuthn (Passkeys / Biometrics) ---
@@ -346,4 +475,64 @@ async def verify_webauthn_registration(
     except Exception as e:
         logger.error(f"WebAuthn registration verification failed: {e}")
         raise HTTPException(status_code=400, detail=f"WebAuthn verification failed: {str(e)}")
+
+
+@router.get("/webauthn/credentials")
+async def list_webauthn_credentials(
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List active passkeys without exposing credential public keys."""
+    from sqlalchemy import select
+
+    result = await db.execute(
+        select(WebAuthnCredential).where(
+            WebAuthnCredential.user_id == user.id,
+            WebAuthnCredential.is_active.is_(True),
+        ).order_by(WebAuthnCredential.created_at.desc())
+    )
+    return [{
+        "credential_id": credential.credential_id,
+        "device_name": credential.device_name,
+        "created_at": credential.created_at.isoformat(),
+    } for credential in result.scalars().all()]
+
+
+@router.delete("/webauthn/credentials/{credential_id}")
+async def disable_webauthn_credential(
+    credential_id: str,
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disable one passkey for the current user."""
+    from sqlalchemy import select
+
+    result = await db.execute(select(WebAuthnCredential).where(
+        WebAuthnCredential.user_id == user.id,
+        WebAuthnCredential.credential_id == credential_id,
+        WebAuthnCredential.is_active.is_(True),
+    ))
+    credential = result.scalar_one_or_none()
+    if not credential:
+        raise HTTPException(status_code=404, detail="Passkey not found")
+    credential.is_active = False
+    await db.commit()
+    return {"message": "Passkey disabled.", "credential_id": credential_id}
+
+
+@router.post("/webauthn/reset")
+async def reset_webauthn_credentials(
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disable all passkeys so the user can enroll a new authenticator."""
+    from sqlalchemy import update
+
+    await db.execute(
+        update(WebAuthnCredential)
+        .where(WebAuthnCredential.user_id == user.id)
+        .values(is_active=False)
+    )
+    await db.commit()
+    return {"message": "All passkeys reset.", "credentials": []}
 

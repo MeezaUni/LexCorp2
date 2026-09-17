@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 import {
   createNewWallet,
   importWallet,
@@ -7,7 +8,7 @@ import {
   removeWallet
 } from '../services/walletCore';
 
-export default function WalletModal({ isOpen, onClose, onUnlocked }) {
+export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticated }) {
   const [mode, setMode] = useState('unlock'); // 'unlock', 'create', 'import', 'show_phrase'
   const [password, setPassword] = useState('');
   const [importKey, setImportKey] = useState('');
@@ -16,6 +17,9 @@ export default function WalletModal({ isOpen, onClose, onUnlocked }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
+  const [loginMethod, setLoginMethod] = useState('password');
+  const [loginAddress, setLoginAddress] = useState('');
+  const [otpCode, setOtpCode] = useState('');
 
   const walletExists = hasEncryptedWallet();
 
@@ -49,6 +53,63 @@ export default function WalletModal({ isOpen, onClose, onUnlocked }) {
     } finally {
       setLoading(false);
       setStatusMsg('');
+    }
+  };
+
+  const handleTotpLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const result = await axios.post('/api/auth/login/totp', { wallet_address: loginAddress, token: otpCode });
+      onAuthenticated(result.data);
+      onClose();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Mobile authenticator login failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const decodeBase64Url = (value) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), (char) => char.charCodeAt(0));
+  const encodeBase64Url = (value) => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const encodeHex = (value) => Array.from(new Uint8Array(value), (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+  const handlePasskeyLogin = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      const optionResponse = await axios.post('/api/auth/login/passkey/options', { wallet_address: loginAddress });
+      const options = optionResponse.data.options;
+      const credential = await navigator.credentials.get({
+        publicKey: {
+          ...options,
+          challenge: decodeBase64Url(options.challenge),
+          allowCredentials: (options.allowCredentials || []).map((item) => ({ ...item, id: decodeBase64Url(item.id) })),
+        },
+      });
+      if (!credential) throw new Error('Passkey prompt was cancelled.');
+      const result = await axios.post('/api/auth/login/passkey/verify', {
+        wallet_address: loginAddress,
+        credential_id: encodeHex(credential.rawId),
+        response: {
+          id: credential.id,
+          rawId: encodeBase64Url(credential.rawId),
+          type: credential.type,
+          response: {
+            authenticatorData: encodeBase64Url(credential.response.authenticatorData),
+            clientDataJSON: encodeBase64Url(credential.response.clientDataJSON),
+            signature: encodeBase64Url(credential.response.signature),
+            userHandle: credential.response.userHandle ? encodeBase64Url(credential.response.userHandle) : null,
+          },
+        },
+      });
+      onAuthenticated(result.data);
+      onClose();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Passkey login failed.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -167,6 +228,25 @@ export default function WalletModal({ isOpen, onClose, onUnlocked }) {
 
         {/* Content Body */}
         <div style={{ padding: '1.5rem' }}>
+          {mode === 'unlock' && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', marginBottom: '1rem' }}>
+              {[
+                ['password', 'Password'],
+                ['mobile', 'Mobile Auth'],
+                ['passkey', 'Passkey']
+              ].map(([method, label]) => (
+                <button
+                  key={method}
+                  type="button"
+                  onClick={() => setLoginMethod(method)}
+                  style={{ background: loginMethod === method ? '#dbeafe' : '#f8fafc', color: loginMethod === method ? '#1d4ed8' : '#475569', border: `1px solid ${loginMethod === method ? '#93c5fd' : '#cbd5e1'}`, padding: '8px 4px', borderRadius: '6px', fontSize: '11px', fontWeight: '600', cursor: 'pointer' }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {error && (
             <div style={{
               background: '#fef2f2',
@@ -182,7 +262,28 @@ export default function WalletModal({ isOpen, onClose, onUnlocked }) {
           )}
 
           {/* Mode: UNLOCK WALLET */}
-          {mode === 'unlock' && (
+          {mode === 'unlock' && loginMethod !== 'password' && (
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>Wallet Address</label>
+              <input type="text" value={loginAddress} onChange={(e) => setLoginAddress(e.target.value)} placeholder="0x..." required style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', boxSizing: 'border-box' }} />
+            </div>
+          )}
+
+          {mode === 'unlock' && loginMethod === 'mobile' && (
+            <form onSubmit={handleTotpLogin}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>6-Digit Authenticator Code</label>
+              <input type="text" inputMode="numeric" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))} required style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '18px', letterSpacing: '4px', boxSizing: 'border-box' }} />
+              <button type="submit" disabled={loading} style={{ width: '100%', marginTop: '12px', background: '#2563eb', color: '#fff', border: 'none', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600' }}>{loading ? 'Verifying...' : 'Login with Mobile Auth'}</button>
+            </form>
+          )}
+
+          {mode === 'unlock' && loginMethod === 'passkey' && (
+            <button type="button" onClick={handlePasskeyLogin} disabled={loading} style={{ width: '100%', background: '#2563eb', color: '#fff', border: 'none', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600' }}>
+              {loading ? 'Waiting for passkey...' : 'Login with Passkey'}
+            </button>
+          )}
+
+          {mode === 'unlock' && loginMethod === 'password' && (
             <form onSubmit={handleUnlock}>
               <p style={{ fontSize: '13px', color: '#475569', marginBottom: '1rem' }}>
                 Enter your local PIN/Password to decrypt your private key and access your identity.

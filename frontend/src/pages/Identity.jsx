@@ -25,6 +25,9 @@ export default function Identity() {
   useEffect(() => {
     if (user) {
       setIsTotpEnabled(!!user.is_totp_enabled);
+      axios.get(`${API_BASE}/auth/webauthn/credentials`)
+        .then((res) => setRegisteredPasskeys(res.data || []))
+        .catch(() => setRegisteredPasskeys([]));
     }
   }, [user]);
 
@@ -65,6 +68,35 @@ export default function Identity() {
       if (refreshUser) refreshUser();
     } catch (err) {
       setTotpError(err.response?.data?.detail || 'Invalid TOTP code. Check your authenticator app.');
+    } finally {
+      setTotpLoading(false);
+    }
+  };
+
+  const handleDisableTotp = async () => {
+    setTotpError('');
+    setTotpLoading(true);
+    try {
+      await axios.post(`${API_BASE}/auth/2fa/disable`);
+      setIsTotpEnabled(false);
+      setTotpSuccess('Mobile authenticator disabled.');
+    } catch (err) {
+      setTotpError(err.response?.data?.detail || 'Failed to disable mobile authenticator.');
+    } finally {
+      setTotpLoading(false);
+    }
+  };
+
+  const handleResetTotp = async () => {
+    setTotpError('');
+    setTotpLoading(true);
+    try {
+      await axios.post(`${API_BASE}/auth/2fa/reset`);
+      setIsTotpEnabled(false);
+      setTotpSetupData(null);
+      setTotpSuccess('Mobile authenticator reset. You can enroll a new device.');
+    } catch (err) {
+      setTotpError(err.response?.data?.detail || 'Failed to reset mobile authenticator.');
     } finally {
       setTotpLoading(false);
     }
@@ -134,7 +166,8 @@ export default function Identity() {
       });
 
       setPasskeySuccess('✓ Hardware Passkey / Biometric Authenticator bound successfully!');
-      setRegisteredPasskeys(prev => [...prev, { name: 'Hardware Biometric Authenticator (Active)', date: new Date().toLocaleDateString() }]);
+      const credentials = await axios.get(`${API_BASE}/auth/webauthn/credentials`);
+      setRegisteredPasskeys(credentials.data || []);
     } catch (err) {
       console.error('Passkey error:', err);
       // Helpful fallback simulation message if browser platform authenticator isn't configured in test VM
@@ -145,6 +178,27 @@ export default function Identity() {
       }
     } finally {
       setPasskeyLoading(false);
+    }
+  };
+
+  const handleDisablePasskey = async (credentialId) => {
+    try {
+      await axios.delete(`${API_BASE}/auth/webauthn/credentials/${credentialId}`);
+      setRegisteredPasskeys(prev => prev.filter((credential) => credential.credential_id !== credentialId));
+      setPasskeySuccess('Passkey disabled.');
+    } catch (err) {
+      setPasskeyError(err.response?.data?.detail || 'Failed to disable passkey.');
+    }
+  };
+
+  const handleResetPasskeys = async () => {
+    setPasskeyError('');
+    try {
+      await axios.post(`${API_BASE}/auth/webauthn/reset`);
+      setRegisteredPasskeys([]);
+      setPasskeySuccess('All passkeys reset. You can enroll a new passkey.');
+    } catch (err) {
+      setPasskeyError(err.response?.data?.detail || 'Failed to reset passkeys.');
     }
   };
 
@@ -351,7 +405,13 @@ export default function Identity() {
 
           {isTotpEnabled && (
             <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px', fontSize: '12px', color: '#166534' }}>
-              ✓ Two-factor authentication is active on this account. High-security actions require rotating 6-digit TOTP validation.
+              ✓ Mobile authenticator is enabled for this account.
+              <button onClick={handleDisableTotp} disabled={totpLoading} style={{ display: 'block', marginTop: '10px', background: '#fff', color: '#991b1b', border: '1px solid #fecaca', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer' }}>
+                Disable mobile authenticator
+              </button>
+              <button onClick={handleResetTotp} disabled={totpLoading} style={{ display: 'block', marginTop: '8px', background: '#fff', color: '#92400e', border: '1px solid #fed7aa', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer' }}>
+                Reset and re-enroll mobile authenticator
+              </button>
             </div>
           )}
         </div>
@@ -404,6 +464,9 @@ export default function Identity() {
           >
             {passkeyLoading ? 'Awaiting Biometric Prompt...' : '+ Register Biometric / Security Key'}
           </button>
+          <button onClick={handleResetPasskeys} disabled={passkeyLoading} style={{ width: '100%', marginTop: '8px', background: '#fff', color: '#92400e', border: '1px solid #fed7aa', padding: '8px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: '600', cursor: 'pointer' }}>
+            Reset all passkeys
+          </button>
 
           <div style={{ marginTop: '1rem' }}>
             <div style={{ fontSize: '11px', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', marginBottom: '6px' }}>
@@ -415,10 +478,10 @@ export default function Identity() {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {registeredPasskeys.map((pk, i) => (
-                  <div key={i} style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ fontWeight: '600', color: '#0f172a' }}>{pk.name}</span>
-                    <span style={{ color: '#64748b', fontSize: '11px' }}>{pk.date}</span>
+                {registeredPasskeys.map((pk) => (
+                  <div key={pk.credential_id} style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontWeight: '600', color: '#0f172a' }}>{pk.device_name || 'Passkey'}</span>
+                    <button onClick={() => handleDisablePasskey(pk.credential_id)} style={{ background: '#fff', color: '#991b1b', border: '1px solid #fecaca', padding: '4px 7px', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>Disable</button>
                   </div>
                 ))}
               </div>

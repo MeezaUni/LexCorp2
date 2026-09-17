@@ -41,6 +41,10 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE assets ADD COLUMN custodian_did VARCHAR",
                 "ALTER TABLE assets ADD COLUMN custodian_department VARCHAR",
                 "ALTER TABLE assets ADD COLUMN lifecycle_status VARCHAR(30) DEFAULT 'CREATED'",
+                "ALTER TABLE assets ADD COLUMN name VARCHAR(255)",
+                "ALTER TABLE assets ADD COLUMN asset_type VARCHAR(50) DEFAULT 'EQUIPMENT'",
+                "ALTER TABLE assets ADD COLUMN metadata_cid VARCHAR",
+                "ALTER TABLE assets ADD COLUMN file_hash VARCHAR(64)",
                 "ALTER TABLE audit_events ADD COLUMN risk_factors JSON",
             ]:
                 try:
@@ -106,7 +110,7 @@ app.include_router(users.router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 app.include_router(indexer_router, prefix="/api")
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check():
     """Health check endpoint."""
     from app.indexer.event_indexer import get_indexer

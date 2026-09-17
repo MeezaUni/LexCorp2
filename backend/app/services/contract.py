@@ -19,7 +19,7 @@ class ContractService:
 
     def __init__(self):
         self.w3 = Web3(Web3.HTTPProvider(settings.RPC_URL))
-        self.deployment_path = r"C:\Users\MAK\Desktop\LexCorp-SIH-V2\contracts\deployments\localhost.json"
+        self.deployment_path = settings.CONTRACT_DEPLOYMENT_PATH
         self._last_mtime = 0
         self._contract_address = ""
         self._contract = None

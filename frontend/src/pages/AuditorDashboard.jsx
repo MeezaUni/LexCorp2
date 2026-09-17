@@ -25,6 +25,8 @@ export default function AuditorDashboard() {
 
   useEffect(() => {
     fetchAuditData();
+    const refreshTimer = window.setInterval(fetchAuditData, 5000);
+    return () => window.clearInterval(refreshTimer);
   }, []);
 
   const getNormalizedScore = (rawScore) => {

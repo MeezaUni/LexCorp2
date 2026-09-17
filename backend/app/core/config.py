@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Blockchain
     RPC_URL: str = "http://127.0.0.1:8545"
     CHAIN_ID: int = 13371
+    CONTRACT_DEPLOYMENT_PATH: str = str(BASE_DIR.parent / "contracts" / "deployments" / "localhost.json")
 
     # IPFS
     IPFS_GATEWAY: str = "http://127.0.0.1:5001"

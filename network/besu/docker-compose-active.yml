@@ -1,5 +1,3 @@
-version: '3.8'
-
 x-besu-def: &besu-def
   image: hyperledger/besu:latest
   entrypoint:

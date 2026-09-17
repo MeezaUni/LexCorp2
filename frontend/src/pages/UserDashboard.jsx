@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { ethers } from 'ethers';
 import { useAuth } from '../context/AuthContext';
 import { getAssetsByOwner, getAssetCertificateUrl, uploadDocument } from '../services/api';
 import {
@@ -34,6 +35,7 @@ export default function UserDashboard() {
   // Digital Mint State
   const [digitalTokenId, setDigitalTokenId] = useState('');
   const [digitalSerial, setDigitalSerial] = useState('');
+  const [digitalRecipient, setDigitalRecipient] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileHash, setFileHash] = useState('');
   const [offchainURI, setOffchainURI] = useState('');
@@ -136,6 +138,9 @@ export default function UserDashboard() {
     setMintResult(null);
 
     try {
+      if (!signer) {
+        throw new Error('Unlock your wallet again before minting or changing assets.');
+      }
       if (!fileHash || !offchainURI) {
         throw new Error('Please select and upload a document first.');
       }
@@ -143,13 +148,16 @@ export default function UserDashboard() {
       if (!tId || tId <= 0) {
         throw new Error('Please enter a valid numeric Token ID (e.g., 301, 401, 701).');
       }
+      if (!ethers.isAddress(digitalRecipient)) {
+        throw new Error('Enter a valid recipient wallet address (0x...).');
+      }
 
       const tx = await mintDigitalAsset(
         signer,
-        walletAddress,
+        digitalRecipient,
         tId,
         digitalSerial,
-        userDID,
+        `did:ethr:13371:${digitalRecipient.toLowerCase()}`,
         fileHash,
         offchainURI
       );
@@ -164,6 +172,7 @@ export default function UserDashboard() {
       setActionSuccessMsg(`Digital Asset #${tId} successfully minted and anchored on Hyperledger Besu!`);
       setDigitalTokenId('');
       setDigitalSerial('');
+      setDigitalRecipient('');
       setSelectedFile(null);
       setFileHash('');
       setOffchainURI('');
@@ -547,6 +556,13 @@ export default function UserDashboard() {
                   required
                   style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
                 />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
+                  Recipient Wallet Address *
+                </label>
+                <input type="text" value={digitalRecipient} onChange={(e) => setDigitalRecipient(e.target.value)} placeholder="0x..." required style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }} />
               </div>
             </div>
 

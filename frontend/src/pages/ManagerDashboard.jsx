@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import axios from 'axios';
+import { ethers } from 'ethers';
 import { useAuth } from '../context/AuthContext';
 import { uploadDocument } from '../services/api';
 import {
@@ -90,27 +91,14 @@ export default function ManagerDashboard() {
     setDigitalMintResult(null);
 
     try {
+      if (!signer) {
+        throw new Error('Unlock your wallet again before minting assets.');
+      }
+      if (!ethers.isAddress(digitalRecipient)) {
+        throw new Error('Enter a valid recipient wallet address (0x...).');
+      }
       if (!fileHash || !offchainURI) {
         throw new Error('Please upload a document to generate its SHA-256 hash first.');
-      }
-
-      const callerAddress = await signer.getAddress();
-      const isMgr = await checkManagerRole(signer, callerAddress);
-      const userDID = `did:ethr:13371:${callerAddress.toLowerCase()}`;
-
-      if (!isMgr) {
-        try {
-          await recordAccessAttempt(
-            signer,
-            parseInt(digitalTokenId) || 0,
-            userDID,
-            false,
-            'Unauthorized Mint Attempt (Missing MANAGER_ROLE)'
-          );
-        } catch (logErr) {
-          console.warn('Failed to record on-chain access attempt:', logErr);
-        }
-        throw new Error('Access Denied: Your account does not possess the MANAGER_ROLE on the smart contract registry. An unauthorized attempt has been logged to the audit ledger.');
       }
 
       // Ensure token ID and serial are unique and don't conflict with existing on-chain tokens
@@ -174,6 +162,12 @@ export default function ManagerDashboard() {
     setMintedAsset(null);
 
     try {
+      if (!signer) {
+        throw new Error('Unlock your wallet again before minting assets.');
+      }
+      if (!ethers.isAddress(mintRecipient)) {
+        throw new Error('Enter a valid recipient wallet address (0x...).');
+      }
       const callerAddress = await signer.getAddress();
       const isMgr = await checkManagerRole(signer, callerAddress);
       const userDID = `did:ethr:13371:${callerAddress.toLowerCase()}`;
@@ -442,8 +436,8 @@ export default function ManagerDashboard() {
               </div>
             </div>
 
-            <label style={labelStyle}>Initial Owner Wallet Address</label>
-            <input type="text" value={digitalRecipient} onChange={(e) => setDigitalRecipient(e.target.value)} required style={inputStyle} placeholder="0x..." />
+            <label style={labelStyle}>Recipient Wallet Address</label>
+            <input type="text" value={digitalRecipient} onChange={(e) => setDigitalRecipient(e.target.value)} required style={inputStyle} placeholder="Enter any 0x... wallet address" />
 
             <button type="submit" disabled={digitalMinting || uploading || !fileHash} style={{ width: '100%', padding: '12px', background: digitalMinting ? '#9ca3af' : '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
               {digitalMinting ? 'Minting Digital NFT on Besu...' : 'Mint Digital Asset NFT'}
@@ -480,8 +474,8 @@ export default function ManagerDashboard() {
             <label style={labelStyle}>Physical Serial / Hardware Tag</label>
             <input type="text" value={mintSerial} onChange={(e) => setMintSerial(e.target.value)} required style={inputStyle} placeholder="e.g. LEX-SERVER-99" />
 
-            <label style={labelStyle}>Owner Wallet Address</label>
-            <input type="text" value={mintRecipient} onChange={(e) => setMintRecipient(e.target.value)} required style={inputStyle} placeholder="0x..." />
+            <label style={labelStyle}>Recipient Wallet Address</label>
+            <input type="text" value={mintRecipient} onChange={(e) => setMintRecipient(e.target.value)} required style={inputStyle} placeholder="Enter any 0x... wallet address" />
 
             <button type="submit" disabled={minting} style={{ width: '100%', padding: '12px', background: minting ? '#9ca3af' : '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
               {minting ? 'Minting Physical NFT...' : 'Mint Physical Asset'}

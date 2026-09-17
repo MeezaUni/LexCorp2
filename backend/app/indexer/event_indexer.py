@@ -13,7 +13,7 @@ import logging
 from typing import Optional
 from datetime import datetime
 
-from sqlalchemy import select, func
+from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from web3 import Web3
 
@@ -39,7 +39,7 @@ class EventIndexer:
         """Load contract ABI and instantiate Web3."""
         import json
 
-        deployment_path = r"C:\Users\MAK\Desktop\LexCorp-SIH-V2\contracts\deployments\localhost.json"
+        deployment_path = settings.CONTRACT_DEPLOYMENT_PATH
 
         with open(deployment_path, "r") as f:
             deployment = json.load(f)
@@ -64,6 +64,17 @@ class EventIndexer:
             )
             row = result.scalar_one_or_none()
             return row if row is not None else 0
+        finally:
+            await session.close()
+
+    async def _clear_stale_chain_data(self) -> None:
+        """Remove indexed rows from a replaced local chain before re-indexing."""
+        session = await self._get_session()
+        try:
+            await session.execute(delete(AuditEvent))
+            await session.execute(delete(Asset))
+            await session.commit()
+            logger.warning("Cleared audit and asset rows from the previous chain")
         finally:
             await session.close()
 
@@ -375,6 +386,7 @@ class EventIndexer:
                 f"Chain reset detected (last indexed block {self._last_indexed_block} > current head {current_head}). "
                 f"Resetting indexer to block 0."
             )
+            await self._clear_stale_chain_data()
             self._last_indexed_block = 0
 
         logger.info(
