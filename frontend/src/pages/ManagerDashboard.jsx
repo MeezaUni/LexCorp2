@@ -294,12 +294,6 @@ export default function ManagerDashboard() {
         throw new Error('Access Denied: Your account does not possess the MANAGER_ROLE on the smart contract registry. An unauthorized attempt has been logged to the audit ledger.');
       }
 
-      // Role check: Managers can only transfer PHYSICAL assets
-      const assetData = await getAsset(transferTokenId);
-      if (assetData?.isDigital && user?.role === 'MANAGER') {
-        throw new Error('Policy Violation: Managers are only permitted to transfer PHYSICAL defense hardware. Custody transfer of digital documents is restricted to Administrators.');
-      }
-
       const result = await transferAsset(
         signer,
         transferRecipient,

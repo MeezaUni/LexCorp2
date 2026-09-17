@@ -90,15 +90,6 @@ async def prepare_transfer(request: TransferRequest, current_user: User = Depend
             detail=f"Role '{current_user.role}' is not permitted to transfer assets."
         )
 
-    # Manager restrictions: Physical assets only
-    if current_user.role == "MANAGER":
-        asset_info = contract_service.get_digital_asset(request.token_id)
-        if asset_info and asset_info.get("is_digital"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Managers are not permitted to transfer DIGITAL assets. Managers can only transfer PHYSICAL defense hardware. Contact an Administrator for digital asset transfers."
-            )
-
     # AI Risk Check: Block HIGH-risk actors from sensitive transfer operations
     from app.services.ai import check_actor_risk_level
     actor_did = f"did:ethr:13371:{current_user.wallet_address.lower()}"

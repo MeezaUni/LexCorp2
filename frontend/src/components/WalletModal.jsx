@@ -8,7 +8,7 @@ import {
   removeWallet
 } from '../services/walletCore';
 
-export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticated }) {
+export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticated, forceLogin = false }) {
   const [mode, setMode] = useState('unlock'); // 'unlock', 'create', 'import', 'show_phrase'
   const [password, setPassword] = useState('');
   const [importKey, setImportKey] = useState('');
@@ -28,13 +28,13 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
       setError('');
       setPassword('');
       setImportKey('');
-      if (walletExists) {
+      if (walletExists || forceLogin) {
         setMode('unlock');
       } else {
         setMode('create');
       }
     }
-  }, [isOpen, walletExists]);
+  }, [isOpen, walletExists, forceLogin]);
 
   if (!isOpen) return null;
 

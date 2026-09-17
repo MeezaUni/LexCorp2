@@ -251,6 +251,7 @@ contract AssetNFT is ERC721, AccessControl, ReentrancyGuard {
         address currentOwner = ownerOf(tokenId);
         string memory oldDID = _assets[tokenId].ownerDID;
 
+        delete _assetPermissions[tokenId][oldDID];
         _assets[tokenId].ownerDID = newOwnerDID;
         _assetPermissions[tokenId][newOwnerDID] = PermissionLevel.READ_WRITE;
 

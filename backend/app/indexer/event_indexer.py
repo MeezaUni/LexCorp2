@@ -95,12 +95,27 @@ class EventIndexer:
         """Write one event as an AuditEvent row. Returns True if written, False if skipped."""
         tx_hash = log["transactionHash"].hex()
 
-        # Idempotency: skip already-indexed transactions
-        if await self._is_indexed(session, tx_hash):
-            logger.debug(f"Skipping already-indexed tx: {tx_hash}")
+        args = log.get("args", {})
+        already_indexed = await self._is_indexed(session, tx_hash)
+
+        # Audit rows are immutable, but asset projections may need rebuilding
+        # after a database reset or schema repair.
+        if already_indexed:
+            if event_name in ["AssetMinted", "DigitalAssetMinted"]:
+                token_id = args.get("tokenId")
+                asset_serial = args.get("serialNumber")
+                actor_address = args.get("owner")
+                if actor_address and token_id is not None:
+                    await self._create_asset_record(session, actor_address, asset_serial, token_id, args)
+            elif event_name == "AssetTransferred":
+                token_id = args.get("tokenId")
+                new_owner = args.get("newOwner")
+                if new_owner and token_id is not None:
+                    asset_info = self.contract.functions.getAsset(token_id).call()
+                    await self._create_asset_record(session, new_owner, asset_info[0], token_id, args)
+            logger.debug(f"Skipping already-indexed audit tx: {tx_hash}")
             return False
 
-        args = log.get("args", {})
         actor_did: Optional[str] = None
         target_did: Optional[str] = None
         asset_serial: Optional[str] = None

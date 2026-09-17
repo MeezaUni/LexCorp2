@@ -1,24 +1,64 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { getRpcProvider, checkManagerRole } from '../services/web3';
 import { getNonce, login } from '../services/api';
 import { hasEncryptedWallet } from '../services/walletCore';
 import WalletModal from '../components/WalletModal';
 
 const AuthContext = createContext(null);
+const SESSION_TTL_MS = 5 * 60 * 1000;
 
 export function AuthProvider({ children }) {
-  const [wallet, setWallet] = useState(() => JSON.parse(localStorage.getItem('lexcorp_wallet')));
+  const [reauthRequired, setReauthRequired] = useState(() => Boolean(localStorage.getItem('lexcorp_user') || localStorage.getItem('lexcorp_token')));
+  const [wallet, setWallet] = useState(null);
   const [signer, setSigner] = useState(null);
-  const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('lexcorp_user')));
+  const [user, setUser] = useState(null);
   const [isManager, setIsManager] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const inactivityTimerRef = useRef(null);
+  const lastActivityRef = useRef(0);
 
   useEffect(() => {
-    if (wallet?.address && !signer && hasEncryptedWallet()) {
+    const hasPreviousSession = localStorage.getItem('lexcorp_user') || localStorage.getItem('lexcorp_token');
+    if (hasEncryptedWallet() || hasPreviousSession) {
+      localStorage.removeItem('lexcorp_wallet');
+      localStorage.removeItem('lexcorp_user');
+      localStorage.removeItem('lexcorp_token');
       setIsModalOpen(true);
     }
-  }, [wallet?.address, signer]);
+  }, []);
+
+  const expireInactiveSession = useCallback(() => {
+      localStorage.removeItem('lexcorp_wallet');
+      localStorage.removeItem('lexcorp_user');
+      localStorage.removeItem('lexcorp_token');
+      setWallet(null);
+      setSigner(null);
+      setUser(null);
+      setIsManager(false);
+      setReauthRequired(true);
+      setIsModalOpen(true);
+  }, []);
+
+  const resetInactivityTimer = useCallback(() => {
+    if (!user && !signer) return;
+    const now = Date.now();
+    if (now - lastActivityRef.current < 1000) return;
+    lastActivityRef.current = now;
+    if (inactivityTimerRef.current) window.clearTimeout(inactivityTimerRef.current);
+    inactivityTimerRef.current = window.setTimeout(expireInactiveSession, SESSION_TTL_MS);
+  }, [expireInactiveSession, signer, user]);
+
+  useEffect(() => {
+    if (!user && !signer) return undefined;
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, resetInactivityTimer));
+    resetInactivityTimer();
+    return () => {
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetInactivityTimer));
+      if (inactivityTimerRef.current) window.clearTimeout(inactivityTimerRef.current);
+    };
+  }, [resetInactivityTimer, signer, user]);
 
   // Authenticate when a wallet is unlocked
   const authenticateWithWallet = useCallback(async (unlockedWallet) => {
@@ -43,6 +83,7 @@ export function AuthProvider({ children }) {
       setSigner(connectedSigner);
       setUser(result.user);
       setIsManager(manager);
+      setReauthRequired(false);
 
       return { address, isManager: manager, user: result.user };
     } catch (err) {
@@ -63,6 +104,7 @@ export function AuthProvider({ children }) {
     setUser(result.user);
     setSigner(null);
     setIsManager(result.user.role === 'ADMIN' || result.user.role === 'MANAGER');
+    setReauthRequired(false);
   }, []);
 
   const connect = useCallback(() => {
@@ -72,6 +114,7 @@ export function AuthProvider({ children }) {
   const disconnect = useCallback(() => {
     localStorage.removeItem('lexcorp_wallet');
     localStorage.removeItem('lexcorp_user');
+    localStorage.removeItem('lexcorp_token');
     setWallet(null);
     setSigner(null);
     setUser(null);
@@ -95,6 +138,7 @@ export function AuthProvider({ children }) {
         onClose={() => setIsModalOpen(false)}
         onUnlocked={(w) => authenticateWithWallet(w)}
         onAuthenticated={authenticateWithSession}
+        forceLogin={reauthRequired}
       />
     </AuthContext.Provider>
   );
