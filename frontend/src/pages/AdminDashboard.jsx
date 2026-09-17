@@ -34,10 +34,11 @@ export default function AdminDashboard() {
   const getAvailableRoles = () => {
     const currentRole = user?.role || 'USER';
 
-    // ADMIN can create MANAGER and USER (not ADMIN, not AUDITOR by default)
+    // ADMIN can create MANAGER, AUDITOR, and USER (not another ADMIN)
     if (currentRole === 'ADMIN') {
       return [
         { value: 'USER', label: 'USER (Standard Personnel)' },
+        { value: 'AUDITOR', label: 'AUDITOR (Read-only Compliance)' },
         { value: 'MANAGER', label: 'MANAGER (Operations & Minting)' },
       ];
     }
