@@ -21,6 +21,7 @@ class User(Base, TimestampMixin):
     did: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, nullable=True)
     role: Mapped[str] = mapped_column(String(20), default="USER")  # ADMIN, MANAGER, AUDITOR, USER
     is_active: Mapped[bool] = mapped_column(default=True)
+    session_version: Mapped[int] = mapped_column(Integer, default=0)
 
     # 2FA / TOTP support
     totp_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

@@ -19,7 +19,7 @@ import deployment from '../../../contracts/deployments/localhost.json';
 
 export default function ManagerDashboard() {
   const { signer, user } = useAuth();
-  const [activeTab, setActiveTab] = useState('digital'); // 'digital' | 'physical' | 'access' | 'lifecycle'
+  const [activeTab, setActiveTab] = useState('digital'); // 'digital' | 'physical' | 'access' | 'transfer'
 
   // Digital Mint State
   const [digitalTokenId, setDigitalTokenId] = useState('');
@@ -374,7 +374,7 @@ export default function ManagerDashboard() {
           { id: 'digital', label: 'Mint Digital Asset (PDF / Cert)' },
           { id: 'physical', label: 'Mint Physical Asset (QR / Serial)' },
           { id: 'access', label: 'Asset Access Permissions' },
-          { id: 'lifecycle', label: 'Physical Custody & Revocation' },
+          { id: 'transfer', label: 'Asset Transfer' },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -531,24 +531,24 @@ export default function ManagerDashboard() {
         </div>
       )}
 
-      {/* 4. LIFECYCLE (TRANSFER & REVOKE) */}
-      {activeTab === 'lifecycle' && (
+      {/* 4. ASSET TRANSFER & REVOKE */}
+      {activeTab === 'transfer' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
           {/* Transfer */}
           <div style={panelStyle}>
-            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Transfer Physical Asset Custody</h3>
+            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Transfer Asset</h3>
             <p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '1rem' }}>
-              Transfer custody of physical defense hardware. Digital document ownership transfer is restricted to Administrators.
+              Transfer ownership of any active physical or digital asset to another wallet.
             </p>
             <form onSubmit={handleTransfer}>
               <label style={labelStyle}>Token ID</label>
               <input type="number" value={transferTokenId} onChange={(e) => setTransferTokenId(e.target.value)} required style={inputStyle} placeholder="e.g. 101" />
 
-              <label style={labelStyle}>New Custodian Wallet Address</label>
+              <label style={labelStyle}>New Owner Wallet Address</label>
               <input type="text" value={transferRecipient} onChange={(e) => setTransferRecipient(e.target.value)} required style={inputStyle} placeholder="0x..." />
 
               <button type="submit" disabled={transferring} style={{ width: '100%', padding: '10px', background: transferring ? '#9ca3af' : '#ea580c', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
-                {transferring ? 'Transferring Custody...' : 'Transfer Physical Asset Custody'}
+                {transferring ? 'Transferring Asset...' : 'Transfer Asset'}
               </button>
             </form>
             {transferResult && (
@@ -560,9 +560,9 @@ export default function ManagerDashboard() {
 
           {/* Revoke */}
           <div style={panelStyle}>
-            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Revoke Physical Asset Assignment</h3>
+            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Revoke Asset</h3>
             <p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '1rem' }}>
-              Permanently revoke physical asset assignment. Digital document revocation is restricted to document owners and Administrators.
+              Permanently revoke an asset from the active registry. This action is irreversible.
             </p>
             <form onSubmit={handleRevoke}>
               <label style={labelStyle}>Token ID to Revoke</label>

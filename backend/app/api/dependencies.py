@@ -38,6 +38,9 @@ async def get_current_user(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    if payload.get("session_version", 0) != (user.session_version or 0):
+        raise HTTPException(status_code=401, detail="Session replaced by a newer login")
+
     return user
 
 async def get_current_active_user(user: User = Depends(get_current_user)) -> User:

@@ -86,6 +86,7 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
           ...options,
           challenge: decodeBase64Url(options.challenge),
           allowCredentials: (options.allowCredentials || []).map((item) => ({ ...item, id: decodeBase64Url(item.id) })),
+          userVerification: 'required',
         },
       });
       if (!credential) throw new Error('Passkey prompt was cancelled.');
@@ -278,9 +279,14 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
           )}
 
           {mode === 'unlock' && loginMethod === 'passkey' && (
-            <button type="button" onClick={handlePasskeyLogin} disabled={loading} style={{ width: '100%', background: '#2563eb', color: '#fff', border: 'none', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600' }}>
-              {loading ? 'Waiting for passkey...' : 'Login with Passkey'}
-            </button>
+            <div>
+              <p style={{ color: '#475569', fontSize: '12px', margin: '0 0 10px' }}>
+                Windows Hello on Windows laptops, Touch ID, or a security key can approve this passkey login.
+              </p>
+              <button type="button" onClick={handlePasskeyLogin} disabled={loading} style={{ width: '100%', background: '#2563eb', color: '#fff', border: 'none', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600' }}>
+                {loading ? 'Waiting for passkey...' : 'Login with Passkey'}
+              </button>
+            </div>
           )}
 
           {mode === 'unlock' && loginMethod === 'password' && (

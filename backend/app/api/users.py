@@ -163,31 +163,9 @@ async def create_or_register_user(
     existing_user = result.scalar_one_or_none()
 
     if existing_user:
-        # Hierarchy Enforcement for update
-        existing_role_level = ROLE_HIERARCHY.get(existing_user.role, 0)
-        if existing_role_level >= acting_role_level:
-            if current_user.role != "ADMIN":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Insufficient permissions to modify this user",
-                )
-
-        # Update existing user's details
-        existing_user.role = role_clean
-        if request.name:
-            existing_user.name = request.name
-        if request.contact_number:
-            existing_user.contact_number = request.contact_number
-        await db.commit()
-        await db.refresh(existing_user)
-        return UserResponse(
-            id=str(existing_user.id),
-            wallet_address=existing_user.wallet_address,
-            name=existing_user.name,
-            contact_number=existing_user.contact_number,
-            did=existing_user.did,
-            role=existing_user.role,
-            is_active=existing_user.is_active,
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User already exists for this wallet address. Use the role update action instead of registering it again.",
         )
 
     # Issue DID and create new record
@@ -318,6 +296,13 @@ async def delete_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions to revoke this user",
+        )
+
+    owned_assets = await db.execute(select(Asset).where(Asset.owner_id == user.id))
+    if owned_assets.scalars().first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User still owns assets. Revoke or transfer every asset before deactivating this user.",
         )
 
     # Soft delete: deactivate the user instead of deleting

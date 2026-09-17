@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE users ADD COLUMN department VARCHAR(255)",
                 "ALTER TABLE users ADD COLUMN totp_secret VARCHAR(64)",
                 "ALTER TABLE users ADD COLUMN is_totp_enabled BOOLEAN DEFAULT 0",
+                "ALTER TABLE users ADD COLUMN session_version INTEGER DEFAULT 0",
                 "ALTER TABLE assets ADD COLUMN custodian_id CHAR(32)",
                 "ALTER TABLE assets ADD COLUMN custodian_did VARCHAR",
                 "ALTER TABLE assets ADD COLUMN custodian_department VARCHAR",

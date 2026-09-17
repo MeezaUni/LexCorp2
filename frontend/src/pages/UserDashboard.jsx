@@ -381,8 +381,17 @@ export default function UserDashboard() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
         {/* Card 1: Assets in Custody / Owned */}
         <div style={panelStyle}>
-          <div style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
-            My Active Assets
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+            <div style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
+              My Active Assets
+            </div>
+            <button
+              onClick={fetchDashboardData}
+              disabled={loading}
+              style={{ padding: '6px 10px', background: '#0f172a', color: '#fff', border: 'none', borderRadius: '5px', fontSize: '11px', fontWeight: '700', cursor: loading ? 'wait' : 'pointer' }}
+            >
+              {loading ? 'Refreshing...' : 'Refresh'}
+            </button>
           </div>
           <div style={{ fontSize: '32px', fontWeight: '700', color: '#0f172a' }}>
             {loading ? '...' : assets.length}
@@ -836,9 +845,18 @@ export default function UserDashboard() {
             <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>
               My Assigned & Owned Assets
             </h3>
-            <span style={{ fontSize: '12px', color: '#64748b' }}>
-              Showing {assets.length} Item{assets.length !== 1 ? 's' : ''}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span style={{ fontSize: '12px', color: '#64748b' }}>
+                Showing {assets.length} Item{assets.length !== 1 ? 's' : ''}
+              </span>
+              <button
+                onClick={fetchDashboardData}
+                disabled={loading}
+                style={{ padding: '7px 11px', background: '#0f172a', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '11px', fontWeight: '700', cursor: loading ? 'wait' : 'pointer' }}
+              >
+                {loading ? 'Refreshing...' : 'Refresh Portfolio'}
+              </button>
+            </div>
           </div>
 
           {loading && <p style={{ color: '#64748b' }}>Querying on-chain asset registry...</p>}
@@ -877,7 +895,7 @@ export default function UserDashboard() {
 
                 <div style={{ display: 'flex', gap: '8px', marginTop: '1rem', flexWrap: 'wrap' }}>
                   <button
-                    onClick={() => window.open(`/verify/${asset.serial_number}`, '_blank')}
+                        onClick={() => window.open(`/verify/token/${asset.token_id}`, '_blank')}
                     style={{ flex: '1 1 120px', padding: '8px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
                   >
                     Verify on Chain

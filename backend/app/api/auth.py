@@ -7,10 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import base64
 import json
 import uuid
+import hashlib
+import time
 
 from app.api.dependencies import get_db, get_current_user, get_current_active_user
 from app.services import auth, vc, security
-from app.models.domain import User, WebAuthnCredential
+from app.models.domain import User, WebAuthnCredential, AuditEvent
 from app.core.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -72,6 +74,20 @@ def _login_response(user: User, token: str) -> LoginResponse:
     )
 
 
+async def _record_login_event(db: AsyncSession, user: User, method: str) -> None:
+    """Record successful authentication, including session replacement logins."""
+    tx_hash = "0x" + hashlib.sha256(f"auth:{user.wallet_address}:{method}:{time.time_ns()}".encode()).hexdigest()
+    db.add(AuditEvent(
+        event_type="AuthenticationSucceeded",
+        tx_hash=tx_hash,
+        block_number=0,
+        actor_did=user.did,
+        target_did=user.did,
+        asset_serial=method,
+    ))
+    await db.commit()
+
+
 @router.post("/nonce", response_model=NonceResponse)
 async def get_nonce(address: str):
     """Generate a fresh nonce for wallet authentication.
@@ -110,7 +126,10 @@ async def login(request: LoginRequest, response: Response, db: AsyncSession = De
     except auth.AuthError as e:
         raise HTTPException(status_code=401, detail=str(e))
 
-    token = auth.create_jwt(user.wallet_address, user.did, user.role)
+    user.session_version = (user.session_version or 0) + 1
+    await db.commit()
+    await _record_login_event(db, user, "PASSWORD")
+    token = auth.create_jwt(user.wallet_address, user.did, user.role, user.session_version)
 
     response.set_cookie(
         key="session",
@@ -135,7 +154,10 @@ async def login_with_totp(request: TotpLoginRequest, response: Response, db: Asy
     if not security.verify_totp(user.totp_secret, request.token):
         raise HTTPException(status_code=401, detail="Invalid or expired mobile authenticator code.")
 
-    token = auth.create_jwt(user.wallet_address, user.did, user.role)
+    user.session_version = (user.session_version or 0) + 1
+    await db.commit()
+    await _record_login_event(db, user, "MOBILE_AUTHENTICATOR")
+    token = auth.create_jwt(user.wallet_address, user.did, user.role, user.session_version)
     response.set_cookie(key="session", value=token, httponly=True, samesite="lax", max_age=1800)
     return _login_response(user, token)
 
@@ -210,7 +232,10 @@ async def login_with_passkey(request: PasskeyLoginVerifyRequest, req: Request, r
 
     credential.sign_count = verification.new_sign_count
     await db.commit()
-    token = auth.create_jwt(user.wallet_address, user.did, user.role)
+    user.session_version = (user.session_version or 0) + 1
+    await db.commit()
+    await _record_login_event(db, user, "PASSKEY")
+    token = auth.create_jwt(user.wallet_address, user.did, user.role, user.session_version)
     response.set_cookie(key="session", value=token, httponly=True, samesite="lax", max_age=1800)
     return _login_response(user, token)
 

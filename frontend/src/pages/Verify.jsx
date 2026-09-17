@@ -4,7 +4,8 @@ import { getAssetVerifyData, getAssetCertificateUrl, recordAssetMaintenance } fr
 import { useAuth } from '../context/AuthContext';
 
 export default function Verify() {
-  const { serial } = useParams();
+  const { serial, tokenId } = useParams();
+  const lookup = tokenId ? `token/${tokenId}` : serial;
   const { user } = useAuth();
   const [asset, setAsset] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -18,13 +19,13 @@ export default function Verify() {
 
   useEffect(() => {
     fetchVerificationData();
-  }, [serial]);
+  }, [lookup]);
 
   async function fetchVerificationData() {
     try {
       setLoading(true);
       setError(null);
-      const data = await getAssetVerifyData(serial);
+      const data = await getAssetVerifyData(lookup);
       setAsset(data);
     } catch (err) {
       setError(err.response?.data?.detail || 'Asset verification failed or serial does not exist on Hyperledger Besu consortium.');
@@ -40,7 +41,7 @@ export default function Verify() {
     try {
       setSubmittingMaint(true);
       const performerDid = user?.did || `did:ethr:13371:field-engineer-${Math.floor(Math.random()*1000)}`;
-      await recordAssetMaintenance(serial, {
+      await recordAssetMaintenance(asset?.serial_number || serial, {
         performed_by_did: performerDid,
         action_description: actionDesc,
         notes: notes

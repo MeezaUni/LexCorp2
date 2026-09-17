@@ -567,6 +567,19 @@ async def get_asset_qr(serial: str, host: Optional[str] = "localhost:5173"):
     return Response(content=png_bytes, media_type="image/png")
 
 
+@router.get("/token/{token_id}/qr")
+async def get_asset_qr_by_token(token_id: int, host: Optional[str] = "localhost:5173"):
+    """Generate a QR code for the stable token-ID verification URL."""
+    asset = contract_service.get_digital_asset(token_id) or contract_service.get_asset(token_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found on chain")
+    target_host = host or "localhost:5173"
+    lan_ip = get_lan_ip()
+    target_host = target_host.replace("localhost", lan_ip).replace("127.0.0.1", lan_ip)
+    png_bytes = generate_qr_for_url(f"http://{target_host}/verify/token/{token_id}")
+    return Response(content=png_bytes, media_type="image/png")
+
+
 @router.get("/{token_id}")
 async def get_asset(token_id: int):
     """Fetch on-chain asset metadata."""
@@ -819,6 +832,20 @@ async def get_asset_full_verification_data(
         "is_digital": on_chain.get("is_digital", False) if on_chain else False,
         "maintenance_history": maintenance_records
     }
+
+
+@router.get("/token/{token_id}/verify-data")
+async def get_asset_full_verification_data_by_token(
+    token_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve verification by stable token ID instead of a serial string."""
+    on_chain = contract_service.get_digital_asset(token_id)
+    if not on_chain or not on_chain.get("is_digital"):
+        on_chain = contract_service.get_asset(token_id)
+    if not on_chain:
+        raise HTTPException(status_code=404, detail="Asset not found on Hyperledger Besu blockchain")
+    return await get_asset_full_verification_data(on_chain["serial_number"], db)
 
 
 @router.delete("/{token_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -560,15 +560,16 @@ export default function AdminDashboard() {
               </button>
               <button
                 onClick={confirmDelete}
+                disabled={isCheckingAssets || userAssets.length > 0}
                 style={{
-                  background: '#dc2626',
+                  background: isCheckingAssets || userAssets.length > 0 ? '#cbd5e1' : '#dc2626',
                   color: '#fff',
                   border: 'none',
                   padding: '10px 16px',
                   borderRadius: '6px',
                   fontSize: '13px',
                   fontWeight: '600',
-                  cursor: 'pointer'
+                  cursor: isCheckingAssets || userAssets.length > 0 ? 'not-allowed' : 'pointer'
                 }}
               >
                 Confirm Delete & Block User

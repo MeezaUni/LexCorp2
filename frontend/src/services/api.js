@@ -60,7 +60,7 @@ export async function getAuditStats() {
 }
 
 export async function getAssetVerifyData(serial) {
-  const response = await axios.get(`${API_BASE}/assets/serial/${serial}/verify-data`);
+  const response = await axios.get(`${API_BASE}/assets/${serial.includes('/') ? serial : `serial/${serial}`}/verify-data`);
   return response.data;
 }
 

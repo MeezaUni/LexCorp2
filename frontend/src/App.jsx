@@ -14,6 +14,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/verify/:serial" element={<Verify />} />
+            <Route path="/verify/token/:tokenId" element={<Verify />} />
           </Routes>
         </BrowserRouter>
       </AuthProvider>

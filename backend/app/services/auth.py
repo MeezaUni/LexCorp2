@@ -73,13 +73,14 @@ def get_challenge(user_id: str) -> Optional[str]:
     """Get and clear stored WebAuthn challenge."""
     return _challenge_store.pop(user_id, None)
 
-def create_jwt(wallet_address: str, did: str, role: str) -> str:
+def create_jwt(wallet_address: str, did: str, role: str, session_version: int = 0) -> str:
     """Create a short-lived JWT session token."""
     now = datetime.now(UTC)
     payload = {
         "sub": wallet_address.lower(),
         "did": did,
         "role": role,
+        "session_version": session_version,
         "iat": now,
         "exp": now + timedelta(minutes=settings.JWT_EXPIRE_MINUTES),
     }

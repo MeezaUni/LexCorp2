@@ -63,6 +63,9 @@ export default function AssetRegistry() {
             To view an NFT in MetaMask (Localhost), switch to the NFTs tab, click "Import NFT", and use this address with the Token ID.
           </div>
         </div>
+        <button onClick={fetchAssets} disabled={loading} style={{ marginTop: '12px', display: 'block', background: '#0f172a', color: '#fff', border: 'none', padding: '8px 14px', borderRadius: '6px', cursor: loading ? 'wait' : 'pointer' }}>
+          {loading ? 'Refreshing...' : 'Refresh Assets'}
+        </button>
       </div>
 
       {/* DID VERIFICATION MODAL */}
@@ -206,7 +209,7 @@ export default function AssetRegistry() {
                   </td>
                   <td style={{ padding: '10px 12px', display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <button
-                      onClick={() => window.open(`/verify/${asset.serial_number}`, '_blank')}
+                      onClick={() => window.open(`/verify/token/${asset.token_id}`, '_blank')}
                       style={{
                         background: '#0f172a',
                         color: '#fff',
@@ -220,6 +223,7 @@ export default function AssetRegistry() {
                     >
                       Verify
                     </button>
+                    <img src={`/api/assets/token/${asset.token_id}/qr?host=${window.location.host}`} alt={`QR for token ${asset.token_id}`} style={{ width: '42px', height: '42px', borderRadius: '4px' }} />
                     <a
                       href={getAssetCertificateUrl(asset.serial_number)}
                       target="_blank"

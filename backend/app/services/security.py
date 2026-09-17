@@ -12,7 +12,7 @@ import os
 from typing import Optional, Tuple
 from webauthn import generate_registration_options, verify_registration_response
 from webauthn.helpers import generate_challenge
-from webauthn.helpers.structs import PublicKeyCredentialCreationOptions, AuthenticatorSelectionCriteria, UserVerificationRequirement
+from webauthn.helpers.structs import PublicKeyCredentialCreationOptions, AuthenticatorSelectionCriteria, AuthenticatorAttachment, ResidentKeyRequirement, UserVerificationRequirement
 
 from app.core.config import settings
 
@@ -83,18 +83,20 @@ def generate_webauthn_registration_options(user_id: str, username: str, rp_id: s
         user_id=user_id.encode(),
         user_name=username,
         challenge=challenge,
-        # Require user presence (biometrics/tap)
+        # Prefer the laptop's built-in platform authenticator, such as Windows Hello.
         authenticator_selection=AuthenticatorSelectionCriteria(
-            user_verification=UserVerificationRequirement.PREFERRED
+            authenticator_attachment=AuthenticatorAttachment.PLATFORM,
+            user_verification=UserVerificationRequirement.REQUIRED,
+            resident_key=ResidentKeyRequirement.REQUIRED,
         )
     )
 
 def generate_webauthn_login_options(credential_ids: list[bytes], rp_id: str = "localhost") -> PublicKeyCredentialRequestOptions:
     """Generate options to start WebAuthn authentication."""
     challenge = generate_challenge()
-    allow_credentials = [
-        PublicKeyCredentialDescriptor(id=cid) for cid in credential_ids
-    ] if credential_ids else None
+    # Omit allowCredentials so the browser can use a discoverable platform
+    # credential such as the Windows Hello PIN on this laptop.
+    allow_credentials = None
 
     return generate_authentication_options(
         rp_id=rp_id,
