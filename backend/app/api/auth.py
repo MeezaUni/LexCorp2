@@ -111,6 +111,24 @@ async def get_nonce(address: str):
     return NonceResponse(nonce=nonce, message=message)
 
 
+@router.post("/vc/issue")
+async def issue_kyc_vc(subject_did: str, db: AsyncSession = Depends(get_db)):
+    """Issue a W3C-compliant Verifiable Credential for KYC verification."""
+    issuer_did = f"did:ethr:{settings.CHAIN_ID}:0x0000000000000000000000000000000000000000"
+    vc_jwt, vc_model = vc.create_kyc_vc(issuer_did, subject_did)
+    try:
+        from sqlalchemy import select
+        res = await db.execute(select(User).filter(User.did == subject_did))
+        user = res.scalar_one_or_none()
+        if user:
+            vc_model.user_id = user.id
+            db.add(vc_model)
+            await db.commit()
+    except Exception:
+        pass
+    return {"vc_jwt": vc_jwt, "subject_did": subject_did, "type": "KYCCredential"}
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
     """Verify SIWE signature and return JWT session token.

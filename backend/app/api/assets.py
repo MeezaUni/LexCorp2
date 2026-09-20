@@ -255,8 +255,17 @@ class UpdateDigitalAssetRequest(BaseModel):
 
 
 @router.post("/update-digital/prepare", response_model=MintCalldataResponse)
-async def prepare_update_digital(request: UpdateDigitalAssetRequest):
+async def prepare_update_digital(
+    request: UpdateDigitalAssetRequest,
+    current_user: User = Depends(get_current_active_user)
+):
     """Prepare unsigned updateDigitalAsset transaction calldata."""
+    if current_user.role == "AUDITOR":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Auditors have read-only access and cannot update digital assets."
+        )
+
     calldata = contract_service.prepare_update_digital_asset_calldata(
         request.token_id,
         request.requester_did,
@@ -271,20 +280,36 @@ async def prepare_update_digital(request: UpdateDigitalAssetRequest):
 
 @router.post("/upload-document")
 async def upload_document(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Secure Off-chain File Storage & Cryptographic Hashing.
     The file is stored securely off-chain.
     Its SHA-256 cryptographic hash is calculated and returned to be anchored in the NFT smart contract.
+    Enforces active user authentication and payload size limits.
     """
+    if current_user.role == "AUDITOR":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Auditors have read-only access and cannot upload documents."
+        )
+
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
     try:
         content = await file.read()
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File size exceeds maximum permitted limit (50MB)."
+            )
+
         # Compute SHA-256 hash
         sha256_hash = hashlib.sha256(content).hexdigest()
 
-        # Secure local off-chain storage pointer
-        filename = f"{sha256_hash}_{file.filename}"
+        # Sanitize original filename to prevent path traversal issues
+        safe_original_name = os.path.basename(file.filename or "unnamed_document")
+        filename = f"{sha256_hash}_{safe_original_name}"
         filepath = os.path.join(OFFCHAIN_STORAGE_DIR, filename)
 
         with open(filepath, "wb") as f:
@@ -294,13 +319,15 @@ async def upload_document(
         offchain_uri = f"secure-vault://documents/{filename}"
 
         return {
-            "filename": file.filename,
+            "filename": safe_original_name,
             "file_hash": sha256_hash,
             "offchain_uri": offchain_uri,
             "download_url": f"/api/assets/document/download/{filename}",
             "file_size": len(content),
             "status": "SECURELY_STORED_OFFCHAIN"
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
 
@@ -309,18 +336,24 @@ async def upload_document(
 async def download_document(
     filename: str,
     token_id: int,
-    wallet_address: str,
-    did: str
+    wallet_address: Optional[str] = None,
+    did: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Download a secured document from the off-chain vault.
-    Requires on-chain authorization matching the token_id and requester DID.
+    Enforces server-side identity derivation from validated JWT session.
+    Verifies on-chain authorization matching the token_id and verified user identity.
     """
-    # 1. Enforce On-Chain Access Control
+    # 1. Derive trusted identity strictly from authenticated session
+    caller_address = current_user.wallet_address
+    requester_did = current_user.did or f"did:ethr:13371:{current_user.wallet_address.lower()}"
+
+    # 2. Enforce On-Chain Access Control
     access_result = contract_service.check_asset_access(
         token_id=token_id,
-        requester_did=did,
-        caller_address=wallet_address
+        requester_did=requester_did,
+        caller_address=caller_address
     )
 
     if not access_result.get("authorized"):
@@ -329,9 +362,14 @@ async def download_document(
             detail="Access Denied by Smart Contract"
         )
 
-    # 2. Sanitize filename to prevent directory traversal
+    # 3. Sanitize filename to prevent directory traversal
     clean_filename = os.path.basename(filename)
-    filepath = os.path.join(OFFCHAIN_STORAGE_DIR, clean_filename)
+    filepath = os.path.abspath(os.path.join(OFFCHAIN_STORAGE_DIR, clean_filename))
+
+    # Ensure filepath stays strictly within OFFCHAIN_STORAGE_DIR
+    if not filepath.startswith(os.path.abspath(OFFCHAIN_STORAGE_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename path")
+
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Document not found in off-chain vault")
 
@@ -664,9 +702,16 @@ async def get_asset_certificate_card(
 async def assign_asset_custodian(
     serial: str,
     req: AssignCustodianRequest,
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Assign an asset to a custodian division/engineer."""
+    """Assign an asset to a custodian division/engineer (ADMIN and MANAGER only)."""
+    if current_user.role not in ("ADMIN", "MANAGER"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{current_user.role}' is not authorized to reassign asset custody. Manager or Admin privileges required."
+        )
+
     token_id = contract_service.get_token_by_serial(serial)
     if token_id is None:
         raise HTTPException(status_code=404, detail="Asset not found on chain")
@@ -708,22 +753,45 @@ async def assign_asset_custodian(
 async def record_asset_maintenance(
     serial: str,
     req: MaintenanceRecordRequest,
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Record a field maintenance / calibration / inspection log for an asset."""
+    if current_user.role == "AUDITOR":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Auditors have read-only access and cannot submit maintenance records."
+        )
+
     token_id = contract_service.get_token_by_serial(serial)
     if token_id is None:
         raise HTTPException(status_code=404, detail="Asset not found on chain")
 
+    # Derive performer DID strictly from the authenticated session
+    performed_by_did = current_user.did or f"did:ethr:13371:{current_user.wallet_address.lower()}"
+
+    # Verify authorization: ADMIN/MANAGER can maintain any asset, USER must be owner or granted access
+    if current_user.role not in ("ADMIN", "MANAGER"):
+        access = contract_service.check_asset_access(
+            token_id=token_id,
+            requester_did=performed_by_did,
+            caller_address=current_user.wallet_address
+        )
+        if not access.get("authorized"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have authorization to record maintenance on this asset."
+            )
+
     # Compute hash of maintenance notes if not provided
     log_hash = req.log_hash
     if not log_hash:
-        raw = f"{serial}:{req.performed_by_did}:{req.action_description}:{time.time()}"
+        raw = f"{serial}:{performed_by_did}:{req.action_description}:{time.time()}"
         log_hash = hashlib.sha256(raw.encode()).hexdigest()
 
     record = MaintenanceRecord(
         asset_serial=serial,
-        performed_by_did=req.performed_by_did,
+        performed_by_did=performed_by_did,
         action_description=req.action_description,
         notes=req.notes,
         log_hash=log_hash,
@@ -851,9 +919,12 @@ async def get_asset_full_verification_data_by_token(
 @router.delete("/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_asset(
     token_id: int,
+    current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke (burn) an asset NFT on-chain."""
+    if current_user.role == "AUDITOR":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Auditors cannot revoke assets.")
     try:
         asset = contract_service.get_asset(token_id)
         if not asset:
