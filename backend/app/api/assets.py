@@ -3,13 +3,14 @@
 import hashlib
 import os
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, Form, status
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, Form, status, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import time
 
+from app.core.limiter import limiter
 from app.api.dependencies import get_db, get_current_user, get_current_active_user
 from app.services.contract import contract_service
 from app.services.qr import generate_qr_for_url
@@ -279,7 +280,9 @@ async def prepare_update_digital(
 
 
 @router.post("/upload-document")
+@limiter.limit("20/minute")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_active_user),
 ):

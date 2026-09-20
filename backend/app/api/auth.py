@@ -14,6 +14,7 @@ from app.api.dependencies import get_db, get_current_user, get_current_active_us
 from app.services import auth, vc, security
 from app.models.domain import User, WebAuthnCredential, AuditEvent
 from app.core.config import settings
+from app.core.limiter import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -89,7 +90,8 @@ async def _record_login_event(db: AsyncSession, user: User, method: str) -> None
 
 
 @router.post("/nonce", response_model=NonceResponse)
-async def get_nonce(address: str):
+@limiter.limit("5/minute")
+async def get_nonce(address: str, request: Request):
     """Generate a fresh nonce for wallet authentication.
     Returns a pre-built SIWE message that the frontend signs.
     """
@@ -130,15 +132,16 @@ async def issue_kyc_vc(subject_did: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(request: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login(login_req: LoginRequest, response: Response, request: Request, db: AsyncSession = Depends(get_db)):
     """Verify SIWE signature and return JWT session token.
     On first login, automatically issues a DID to the user.
     """
     try:
         user = await auth.verify_siwe_message(
-            request.message,
-            request.signature,
-            request.nonce,
+            login_req.message,
+            login_req.signature,
+            login_req.nonce,
             db,
         )
     except auth.AuthError as e:
@@ -161,15 +164,16 @@ async def login(request: LoginRequest, response: Response, db: AsyncSession = De
 
 
 @router.post("/login/totp", response_model=LoginResponse)
-async def login_with_totp(request: TotpLoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login_with_totp(totp_req: TotpLoginRequest, response: Response, request: Request, db: AsyncSession = Depends(get_db)):
     """Authenticate with a registered mobile authenticator without wallet password."""
     from sqlalchemy import func, select
 
-    result = await db.execute(select(User).where(func.lower(User.wallet_address) == request.wallet_address.lower()))
+    result = await db.execute(select(User).where(func.lower(User.wallet_address) == totp_req.wallet_address.lower()))
     user = result.scalar_one_or_none()
     if not user or not user.is_active or not user.is_totp_enabled or not user.totp_secret:
         raise HTTPException(status_code=401, detail="Mobile authenticator is not enabled for this wallet.")
-    if not security.verify_totp(user.totp_secret, request.token):
+    if not security.verify_totp(user.totp_secret, totp_req.token):
         raise HTTPException(status_code=401, detail="Invalid or expired mobile authenticator code.")
 
     user.session_version = (user.session_version or 0) + 1
@@ -181,12 +185,13 @@ async def login_with_totp(request: TotpLoginRequest, response: Response, db: Asy
 
 
 @router.post("/login/passkey/options")
-async def get_passkey_login_options(request: PasskeyLoginOptionsRequest, req: Request, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def get_passkey_login_options(options_req: PasskeyLoginOptionsRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Create a WebAuthn challenge for passwordless passkey login."""
     from sqlalchemy import func, select
     import webauthn
 
-    result = await db.execute(select(User).where(func.lower(User.wallet_address) == request.wallet_address.lower()))
+    result = await db.execute(select(User).where(func.lower(User.wallet_address) == options_req.wallet_address.lower()))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Wallet identity not found.")
@@ -198,9 +203,12 @@ async def get_passkey_login_options(request: PasskeyLoginOptionsRequest, req: Re
     if not credentials:
         raise HTTPException(status_code=400, detail="No active passkey is registered for this wallet.")
 
-    rp_id = req.url.hostname or "localhost"
-    if rp_id in ("127.0.0.1", "::1"):
-        rp_id = "localhost"
+    # Validate origin and use static RP_ID
+    origin = request.headers.get("origin")
+    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
+        raise HTTPException(status_code=400, detail="Invalid origin")
+
+    rp_id = settings.RP_ID
     options = security.generate_webauthn_login_options(
         [bytes.fromhex(credential.credential_id) for credential in credentials],
         rp_id=rp_id,
@@ -211,33 +219,36 @@ async def get_passkey_login_options(request: PasskeyLoginOptionsRequest, req: Re
 
 
 @router.post("/login/passkey/verify", response_model=LoginResponse)
-async def login_with_passkey(request: PasskeyLoginVerifyRequest, req: Request, response: Response, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login_with_passkey(passkey_req: PasskeyLoginVerifyRequest, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     """Verify a WebAuthn assertion and issue a passwordless session."""
     from sqlalchemy import func, select
     import webauthn
     from webauthn.helpers import base64url_to_bytes
 
-    result = await db.execute(select(User).where(func.lower(User.wallet_address) == request.wallet_address.lower()))
+    result = await db.execute(select(User).where(func.lower(User.wallet_address) == passkey_req.wallet_address.lower()))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Wallet identity not found.")
 
     credential = (await db.execute(select(WebAuthnCredential).where(
         WebAuthnCredential.user_id == user.id,
-        WebAuthnCredential.credential_id == request.credential_id,
+        WebAuthnCredential.credential_id == passkey_req.credential_id,
         WebAuthnCredential.is_active.is_(True),
     ))).scalar_one_or_none()
     challenge = auth.get_challenge(str(user.id))
     if not credential or not challenge:
         raise HTTPException(status_code=401, detail="Passkey challenge or credential not found.")
 
-    origin = req.headers.get("origin", "http://localhost:5173")
-    rp_id = req.url.hostname or "localhost"
-    if rp_id in ("127.0.0.1", "::1"):
-        rp_id = "localhost"
+    origin = request.headers.get("origin")
+    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
+        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
+
+    rp_id = settings.RP_ID
+
     try:
         verification = webauthn.verify_authentication_response(
-            credential=request.response,
+            credential=passkey_req.response,
             expected_challenge=base64url_to_bytes(challenge),
             expected_origin=origin,
             expected_rp_id=rp_id,
@@ -277,7 +288,8 @@ async def get_current_user_profile(user: User = Depends(get_current_active_user)
 # --- TOTP (RFC 6238) Setup & Verification ---
 
 @router.post("/2fa/setup")
-async def setup_totp(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def setup_totp(request: Request, user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
     """Generate a new TOTP secret for the user to scan via Google Authenticator."""
     if user.is_totp_enabled:
         raise HTTPException(status_code=400, detail="TOTP 2FA is already enabled.")
@@ -292,7 +304,8 @@ async def setup_totp(user: User = Depends(get_current_active_user), db: AsyncSes
 
 
 @router.post("/2fa/verify")
-async def verify_totp_setup(token: str = Body(..., embed=True), user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def verify_totp_setup(request: Request, token: str = Body(..., embed=True), user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
     """Verify the TOTP code to finalize tracking."""
     import logging
     logger = logging.getLogger(__name__)
@@ -312,7 +325,8 @@ async def verify_totp_setup(token: str = Body(..., embed=True), user: User = Dep
 
 
 @router.post("/2fa/validate")
-async def validate_totp(token: str = Body(..., embed=True), user: User = Depends(get_current_active_user)):
+@limiter.limit("5/minute")
+async def validate_totp(request: Request, token: str = Body(..., embed=True), user: User = Depends(get_current_active_user)):
     """Validate a 2FA code during high-security actions without modifying state."""
     import logging
     logger = logging.getLogger(__name__)
@@ -349,16 +363,15 @@ async def reset_totp(user: User = Depends(get_current_active_user), db: AsyncSes
 # --- WebAuthn (Passkeys / Biometrics) ---
 
 @router.post("/webauthn/register/options", response_model=WebAuthnRegistrationResponse)
+@limiter.limit("5/minute")
 async def get_webauthn_registration_options(
-    request: WebAuthnRegistrationRequest,
-    req: Request,
+    reg_req: WebAuthnRegistrationRequest,
+    request: Request,
     user: User = Depends(get_current_active_user)
 ):
     """Generate options to start WebAuthn registration."""
-    # Use localhost or request host as RP ID
-    rp_id = req.url.hostname or "localhost"
-    if rp_id in ("127.0.0.1", "::1"):
-        rp_id = "localhost"
+    # Explicit RP ID from config
+    rp_id = settings.RP_ID
 
     options = security.generate_webauthn_registration_options(
         str(user.id),
@@ -394,9 +407,7 @@ async def get_webauthn_login_options(
 
     # Parse hex credential IDs back to bytes
     cred_ids = [bytes.fromhex(c.credential_id) for c in creds]
-    rp_id = req.url.hostname or "localhost"
-    if rp_id in ("127.0.0.1", "::1"):
-        rp_id = "localhost"
+    rp_id = settings.RP_ID
 
     options = security.generate_webauthn_login_options(cred_ids, rp_id=rp_id)
 
@@ -426,10 +437,11 @@ async def verify_webauthn_login(
         logger.warning(f"WebAuthn challenge not found for user {user.id}")
         raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry.")
 
-    origin = req.headers.get("origin", "http://localhost:5173")
-    rp_id = req.url.hostname or "localhost"
-    if rp_id in ("127.0.0.1", "::1"):
-        rp_id = "localhost"
+    origin = req.headers.get("origin")
+    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
+        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
+
+    rp_id = settings.RP_ID
 
     logger.info(f"WebAuthn verify attempt: rp_id={rp_id}, origin={origin}")
 
@@ -468,6 +480,7 @@ async def verify_webauthn_login(
 
 
 @router.post("/webauthn/register/verify")
+@limiter.limit("5/minute")
 async def verify_webauthn_registration(
     request: WebAuthnVerifyRequest,
     req: Request,
@@ -486,10 +499,11 @@ async def verify_webauthn_registration(
         logger.warning(f"WebAuthn registration challenge not found for user {user.id}")
         raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry registration.")
 
-    origin = req.headers.get("origin", "http://localhost:5173")
-    rp_id = req.url.hostname or "localhost"
-    if rp_id in ("127.0.0.1", "::1"):
-        rp_id = "localhost"
+    origin = req.headers.get("origin")
+    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
+        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
+
+    rp_id = settings.RP_ID
 
     logger.info(f"WebAuthn registration verify: rp_id={rp_id}, origin={origin}")
 
