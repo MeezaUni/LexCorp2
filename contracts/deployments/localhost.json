@@ -1,0 +1,1102 @@
+{
+  "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "abi": [
+    {
+      "type": "constructor",
+      "stateMutability": "undefined",
+      "payable": false,
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "EmptyFileHash",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "EmptyOwnerDID",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "EmptySerialNumber",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "InvalidPermission",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "NotAuthorized",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "NotManager",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "TokenAlreadyExists",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "ZeroAddress",
+      "inputs": []
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "AccessAttempted",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        },
+        {
+          "type": "string",
+          "name": "actorDID",
+          "indexed": false
+        },
+        {
+          "type": "bool",
+          "name": "granted",
+          "indexed": false
+        },
+        {
+          "type": "string",
+          "name": "reason",
+          "indexed": false
+        },
+        {
+          "type": "uint256",
+          "name": "timestamp",
+          "indexed": false
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "AccessPermissionGranted",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        },
+        {
+          "type": "string",
+          "name": "targetDID",
+          "indexed": false
+        },
+        {
+          "type": "uint8",
+          "name": "level",
+          "indexed": false
+        },
+        {
+          "type": "address",
+          "name": "grantedBy",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "AccessPermissionRevoked",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        },
+        {
+          "type": "string",
+          "name": "targetDID",
+          "indexed": false
+        },
+        {
+          "type": "address",
+          "name": "revokedBy",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "Approval",
+      "inputs": [
+        {
+          "type": "address",
+          "name": "owner",
+          "indexed": true
+        },
+        {
+          "type": "address",
+          "name": "approved",
+          "indexed": true
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "ApprovalForAll",
+      "inputs": [
+        {
+          "type": "address",
+          "name": "owner",
+          "indexed": true
+        },
+        {
+          "type": "address",
+          "name": "operator",
+          "indexed": true
+        },
+        {
+          "type": "bool",
+          "name": "approved",
+          "indexed": false
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "AssetMinted",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        },
+        {
+          "type": "string",
+          "name": "serialNumber",
+          "indexed": false
+        },
+        {
+          "type": "string",
+          "name": "ownerDID",
+          "indexed": false
+        },
+        {
+          "type": "address",
+          "name": "owner",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "AssetRevoked",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        },
+        {
+          "type": "string",
+          "name": "serialNumber",
+          "indexed": false
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "AssetTransferred",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        },
+        {
+          "type": "string",
+          "name": "fromDID",
+          "indexed": false
+        },
+        {
+          "type": "string",
+          "name": "toDID",
+          "indexed": false
+        },
+        {
+          "type": "address",
+          "name": "newOwner",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "DigitalAssetMinted",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        },
+        {
+          "type": "string",
+          "name": "serialNumber",
+          "indexed": false
+        },
+        {
+          "type": "string",
+          "name": "ownerDID",
+          "indexed": false
+        },
+        {
+          "type": "string",
+          "name": "fileHash",
+          "indexed": false
+        },
+        {
+          "type": "string",
+          "name": "offchainURI",
+          "indexed": false
+        },
+        {
+          "type": "address",
+          "name": "owner",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "DigitalAssetUpdated",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        },
+        {
+          "type": "string",
+          "name": "oldFileHash",
+          "indexed": false
+        },
+        {
+          "type": "string",
+          "name": "newFileHash",
+          "indexed": false
+        },
+        {
+          "type": "string",
+          "name": "newOffchainURI",
+          "indexed": false
+        },
+        {
+          "type": "address",
+          "name": "updater",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "RoleAdminChanged",
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role",
+          "indexed": true
+        },
+        {
+          "type": "bytes32",
+          "name": "previousAdminRole",
+          "indexed": true
+        },
+        {
+          "type": "bytes32",
+          "name": "newAdminRole",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "RoleGranted",
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role",
+          "indexed": true
+        },
+        {
+          "type": "address",
+          "name": "account",
+          "indexed": true
+        },
+        {
+          "type": "address",
+          "name": "sender",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "RoleRevoked",
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role",
+          "indexed": true
+        },
+        {
+          "type": "address",
+          "name": "account",
+          "indexed": true
+        },
+        {
+          "type": "address",
+          "name": "sender",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
+      "name": "Transfer",
+      "inputs": [
+        {
+          "type": "address",
+          "name": "from",
+          "indexed": true
+        },
+        {
+          "type": "address",
+          "name": "to",
+          "indexed": true
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId",
+          "indexed": true
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "AUDITOR_ROLE",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "DEFAULT_ADMIN_ROLE",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "MANAGER_ROLE",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "approve",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "to"
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "balanceOf",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "owner"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "uint256",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "checkAssetAccess",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "requesterDID"
+        },
+        {
+          "type": "address",
+          "name": "callerAddress"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool",
+          "name": "authorized"
+        },
+        {
+          "type": "uint8",
+          "name": "level"
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "getApproved",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "address",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "getAsset",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "string",
+          "name": "serialNumber"
+        },
+        {
+          "type": "string",
+          "name": "ownerDID"
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "getAssetPermission",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "did"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "uint8",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "getDigitalAsset",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "string",
+          "name": "serialNumber"
+        },
+        {
+          "type": "string",
+          "name": "ownerDID"
+        },
+        {
+          "type": "string",
+          "name": "fileHash"
+        },
+        {
+          "type": "string",
+          "name": "offchainURI"
+        },
+        {
+          "type": "bool",
+          "name": "isDigital"
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "getRoleAdmin",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "getTokenBySerial",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "string",
+          "name": "serialNumber"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "grantAssetAccess",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "targetDID"
+        },
+        {
+          "type": "uint8",
+          "name": "level"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "grantRole",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role"
+        },
+        {
+          "type": "address",
+          "name": "account"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "hasRole",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role"
+        },
+        {
+          "type": "address",
+          "name": "account"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "isApprovedForAll",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "owner"
+        },
+        {
+          "type": "address",
+          "name": "operator"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "mint",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "to"
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "serialNumber"
+        },
+        {
+          "type": "string",
+          "name": "ownerDID"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "mintDigitalAsset",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "to"
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "serialNumber"
+        },
+        {
+          "type": "string",
+          "name": "ownerDID"
+        },
+        {
+          "type": "string",
+          "name": "fileHash"
+        },
+        {
+          "type": "string",
+          "name": "offchainURI"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "name",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "string",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "ownerOf",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "address",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "recordAccessAttempt",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "actorDID"
+        },
+        {
+          "type": "bool",
+          "name": "granted"
+        },
+        {
+          "type": "string",
+          "name": "reason"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "renounceRole",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role"
+        },
+        {
+          "type": "address",
+          "name": "account"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "revoke",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "revokeAssetAccess",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "targetDID"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "revokeRole",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role"
+        },
+        {
+          "type": "address",
+          "name": "account"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "safeTransferFrom",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "from"
+        },
+        {
+          "type": "address",
+          "name": "to"
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "safeTransferFrom",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "from"
+        },
+        {
+          "type": "address",
+          "name": "to"
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "bytes",
+          "name": "data"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "setApprovalForAll",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "operator"
+        },
+        {
+          "type": "bool",
+          "name": "approved"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "supportsInterface",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "bytes4",
+          "name": "interfaceId"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "symbol",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "string",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "tokenURI",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "string",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "transferAsset",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "to"
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "newOwnerDID"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "transferFrom",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "address",
+          "name": "from"
+        },
+        {
+          "type": "address",
+          "name": "to"
+        },
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "updateDigitalAsset",
+      "constant": false,
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "string",
+          "name": "requesterDID"
+        },
+        {
+          "type": "string",
+          "name": "newFileHash"
+        },
+        {
+          "type": "string",
+          "name": "newOffchainURI"
+        }
+      ],
+      "outputs": []
+    }
+  ]
+}
