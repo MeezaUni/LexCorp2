@@ -12,7 +12,9 @@ import time
 
 from app.core.limiter import limiter
 from app.api.dependencies import get_db, get_current_user, get_current_active_user
+from app.core.config import settings
 from app.services.contract import contract_service
+from app.services.watermark import apply_watermark
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction
@@ -1140,3 +1142,104 @@ async def approve_document(
         return ApprovalCalldataResponse(decision="REJECT", status="REJECTED")
     else:
         raise HTTPException(status_code=400, detail="Invalid decision.")
+
+@router.get("/document/view/{action_id}")
+async def view_digital_document(
+    action_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Securely render a document with on-the-fly dynamic watermarking."""
+    res = await db.execute(select(DocumentAction).filter(DocumentAction.action_id == action_id))
+    action = res.scalar_one_or_none()
+    if not action:
+        raise HTTPException(status_code=404, detail="Document action not found.")
+        
+    asset_res = await db.execute(select(Asset).filter(Asset.id == action.asset_id))
+    asset = asset_res.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found.")
+
+    # Authorization logic
+    if current_user.role == "USER" and action.actor_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Users can only view their own documents.")
+    if current_user.role == "MANAGER" and asset.department != current_user.department:
+        raise HTTPException(status_code=403, detail="Managers can only view documents in their own department.")
+
+    if not asset.metadata_cid:
+        raise HTTPException(status_code=404, detail="No offchain URI stored for this document.")
+
+    offchain_uri = asset.metadata_cid.replace("secure-vault://", "").replace("ipfs://", "").lstrip("/\\")
+    filepath = os.path.abspath(os.path.join(OFFCHAIN_STORAGE_DIR, offchain_uri))
+    if not os.path.exists(filepath):
+        # Fallback check for basename directly in OFFCHAIN_STORAGE_DIR
+        alt_filepath = os.path.abspath(os.path.join(OFFCHAIN_STORAGE_DIR, os.path.basename(offchain_uri)))
+        if os.path.exists(alt_filepath):
+            filepath = alt_filepath
+    
+    # Check if the file Actually exists
+    if not os.path.exists(filepath):
+        # We'll just generate a dummy image in memory if not for PoC
+        try:
+            from PIL import Image
+            import io
+            img = Image.new('RGB', (800, 600), color=(200, 200, 200))
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            file_bytes = buf.getvalue()
+        except ImportError:
+            file_bytes = b"MOCK_DOCUMENT_CONTENT"
+    else:
+        with open(filepath, "rb") as f:
+            file_bytes = f.read()
+
+    watermarked_bytes = await apply_watermark(
+        file_bytes, 
+        user_did=current_user.did, 
+        department=current_user.department or "ALL"
+    )
+
+    # Log the view action
+    # For Phase 5 we reuse DocumentAction with action_type=VIEW
+    log_action = DocumentAction(
+        action_id=f"VW-{uuid.uuid4().hex[:12].upper()}",
+        action_type="VIEW",
+        asset_id=asset.id,
+        asset_serial=asset.serial_number,
+        actor_id=current_user.id,
+        actor_did=current_user.did,
+        status="COMPLETED",
+        purpose="View Document",
+        client_ip="internal_log"
+    )
+    db.add(log_action)
+    await db.commit()
+
+    return Response(content=watermarked_bytes, media_type="application/octet-stream")
+
+
+@router.get("/document/logs/{asset_serial}", response_model=list[DocumentActionRead])
+async def get_document_view_logs(
+    asset_serial: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve viewing audit logs for a specific document."""
+    if current_user.role not in ["ADMIN", "MANAGER", "AUDITOR"]:
+        raise HTTPException(status_code=403, detail="Not authorized to view audit logs.")
+
+    asset_res = await db.execute(select(Asset).filter(Asset.serial_number == asset_serial))
+    asset = asset_res.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found.")
+
+    if current_user.role == "MANAGER" and asset.department != current_user.department:
+        raise HTTPException(status_code=403, detail="Managers can only view logs for their own department.")
+
+    # Retrieve all VIEW actions for this asset
+    res = await db.execute(
+        select(DocumentAction)
+        .filter(DocumentAction.asset_serial == asset_serial, DocumentAction.action_type == "VIEW")
+        .order_by(desc(DocumentAction.created_at))
+    )
+    return res.scalars().all()

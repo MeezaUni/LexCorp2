@@ -136,7 +136,7 @@ async def test_rbac_custody_assignment_restrictions(async_client: AsyncClient, a
     assert res.status_code == 403
 
     # 3. MANAGER permitted (200 or 404 depending on chain mock)
-    mock_manager = User(wallet_address="0x70997970c51812dc3a010c7d01b50e0d17dc79c8", role="MANAGER", is_active=True, session_version=0)
+    mock_manager = User(wallet_address="0x70997970c51812dc3a010c7d01b50e0d17dc79c8", role="MANAGER", is_active=True, session_version=0, department="Radar Dept")
     app.dependency_overrides[get_current_user] = lambda: mock_manager
 
     with patch("app.services.contract.contract_service.get_token_by_serial", return_value=1):
