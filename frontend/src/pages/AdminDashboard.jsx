@@ -18,6 +18,7 @@ export default function AdminDashboard() {
     wallet_address: '',
     name: '',
     contact_number: '',
+    department: '',
     role: 'USER',
   });
 
@@ -99,7 +100,7 @@ export default function AdminDashboard() {
       setSuccess('');
       await axios.post(`${API_BASE}/users`, formData);
       setSuccess(`User successfully registered / updated as ${formData.role}.`);
-      setFormData({ wallet_address: '', name: '', contact_number: '', role: 'USER' });
+      setFormData({ wallet_address: '', name: '', contact_number: '', department: '', role: 'USER' });
       fetchUsers();
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to register/update user.');
@@ -293,7 +294,7 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '1rem' }}>
             <div>
               <label style={labelStyle}>Ethereum Wallet Address</label>
               <input
@@ -303,6 +304,21 @@ export default function AdminDashboard() {
                 onChange={e => setFormData({ ...formData, wallet_address: e.target.value })}
                 style={{ ...inputStyle, fontFamily: 'monospace' }}
                 required
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Department</label>
+              <input
+                type="text"
+                placeholder={user?.role === 'MANAGER' ? (user.department || 'Your Department') : 'e.g. Avionics, Cyber, R&D'}
+                value={user?.role === 'MANAGER' ? (user.department || '') : formData.department}
+                onChange={e => setFormData({ ...formData, department: e.target.value })}
+                disabled={user?.role === 'MANAGER'}
+                style={{
+                  ...inputStyle,
+                  background: user?.role === 'MANAGER' ? '#f1f5f9' : '#fff',
+                  cursor: user?.role === 'MANAGER' ? 'not-allowed' : 'text'
+                }}
               />
             </div>
             <div>
@@ -357,6 +373,7 @@ export default function AdminDashboard() {
             <thead style={{ background: '#f8fafc', borderBottom: '2px solid #e2e8f0', textAlign: 'left' }}>
               <tr>
                 <th style={{ padding: '10px 12px', fontWeight: '600', color: '#475569' }}>Name & Contact</th>
+                <th style={{ padding: '10px 12px', fontWeight: '600', color: '#475569' }}>Dept</th>
                 <th style={{ padding: '10px 12px', fontWeight: '600', color: '#475569' }}>Wallet Address</th>
                 <th style={{ padding: '10px 12px', fontWeight: '600', color: '#475569' }}>W3C DID</th>
                 <th style={{ padding: '10px 12px', fontWeight: '600', color: '#475569' }}>Role</th>
@@ -371,6 +388,9 @@ export default function AdminDashboard() {
                   <td style={{ padding: '10px 12px' }}>
                     <div style={{ fontWeight: '600', color: '#0f172a' }}>{u.name || 'Unnamed'}</div>
                     <div style={{ fontSize: '11px', color: '#64748b' }}>{u.contact_number || 'No contact'}</div>
+                  </td>
+                  <td style={{ padding: '10px 12px', fontSize: '12px', color: '#475569' }}>
+                    {u.department || 'N/A'}
                   </td>
                   <td style={{ padding: '10px 12px', fontFamily: 'monospace', color: '#334155' }}>
                     {u.wallet_address}

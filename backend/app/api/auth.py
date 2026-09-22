@@ -10,7 +10,7 @@ import uuid
 import hashlib
 import time
 
-from app.api.dependencies import get_db, get_current_user, get_current_active_user
+from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_request_client_ip
 from app.services import auth, vc, security
 from app.models.domain import User, WebAuthnCredential, AuditEvent
 from app.core.config import settings
@@ -71,6 +71,8 @@ def _login_response(user: User, token: str) -> LoginResponse:
             "role": user.role,
             "is_active": user.is_active,
             "is_totp_enabled": user.is_totp_enabled,
+            "is_totp_factor2_enabled": user.is_totp_factor2_enabled,
+            "is_totp_factor3_enabled": user.is_totp_factor3_enabled,
         },
     )
 
@@ -150,7 +152,13 @@ async def login(login_req: LoginRequest, response: Response, request: Request, d
     user.session_version = (user.session_version or 0) + 1
     await db.commit()
     await _record_login_event(db, user, "PASSWORD")
-    token = auth.create_jwt(user.wallet_address, user.did, user.role, user.session_version)
+    token = auth.create_jwt(
+        user.wallet_address,
+        user.did,
+        user.role,
+        user.session_version,
+        client_ip=get_request_client_ip(request)
+    )
 
     response.set_cookie(
         key="session",
@@ -179,7 +187,13 @@ async def login_with_totp(totp_req: TotpLoginRequest, response: Response, reques
     user.session_version = (user.session_version or 0) + 1
     await db.commit()
     await _record_login_event(db, user, "MOBILE_AUTHENTICATOR")
-    token = auth.create_jwt(user.wallet_address, user.did, user.role, user.session_version)
+    token = auth.create_jwt(
+        user.wallet_address,
+        user.did,
+        user.role,
+        user.session_version,
+        client_ip=get_request_client_ip(request)
+    )
     response.set_cookie(key="session", value=token, httponly=True, samesite="lax", max_age=1800)
     return _login_response(user, token)
 
@@ -264,7 +278,13 @@ async def login_with_passkey(passkey_req: PasskeyLoginVerifyRequest, request: Re
     user.session_version = (user.session_version or 0) + 1
     await db.commit()
     await _record_login_event(db, user, "PASSKEY")
-    token = auth.create_jwt(user.wallet_address, user.did, user.role, user.session_version)
+    token = auth.create_jwt(
+        user.wallet_address,
+        user.did,
+        user.role,
+        user.session_version,
+        client_ip=get_request_client_ip(request)
+    )
     response.set_cookie(key="session", value=token, httponly=True, samesite="lax", max_age=1800)
     return _login_response(user, token)
 
@@ -281,7 +301,9 @@ async def get_current_user_profile(user: User = Depends(get_current_active_user)
         "organization": user.organization,
         "role": user.role,
         "is_active": user.is_active,
-        "is_totp_enabled": user.is_totp_enabled
+        "is_totp_enabled": user.is_totp_enabled,
+        "is_totp_factor2_enabled": user.is_totp_factor2_enabled,
+        "is_totp_factor3_enabled": user.is_totp_factor3_enabled
     }
 
 
@@ -358,6 +380,160 @@ async def reset_totp(user: User = Depends(get_current_active_user), db: AsyncSes
     user.totp_secret = None
     await db.commit()
     return {"message": "Mobile authenticator reset.", "is_totp_enabled": False}
+
+
+# --- Factor 2 TOTP (View / Submission Factor) ---
+
+@router.post("/2fa/factor2/setup")
+@limiter.limit("5/minute")
+async def setup_totp_factor2(request: Request, user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Generate a new Factor 2 TOTP secret for document view & submission authorizations."""
+    if user.is_totp_factor2_enabled:
+        raise HTTPException(status_code=400, detail="Factor 2 (View/Submission) TOTP is already enabled.")
+
+    secret = security.generate_totp_secret()
+    uri = security.get_totp_uri(
+        user.name or user.wallet_address,
+        secret,
+        issuer_name="LexCorp - Factor 2 (View/Submission)"
+    )
+
+    user.totp_factor2_secret = secret
+    await db.commit()
+
+    return {"secret": secret, "uri": uri}
+
+
+@router.post("/2fa/factor2/verify")
+@limiter.limit("5/minute")
+async def verify_totp_factor2_setup(
+    request: Request,
+    token: str = Body(..., embed=True),
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify Factor 2 TOTP code to finalize enrollment."""
+    if not user.totp_factor2_secret:
+        raise HTTPException(status_code=400, detail="Factor 2 TOTP setup not initiated.")
+
+    if security.verify_totp(user.totp_factor2_secret, token):
+        user.is_totp_factor2_enabled = True
+        await db.commit()
+        return {"message": "Factor 2 (View/Submission) TOTP successfully enabled.", "is_totp_factor2_enabled": True}
+
+    raise HTTPException(status_code=401, detail="Invalid or expired Factor 2 TOTP code. Please verify your device clock.")
+
+
+@router.post("/2fa/factor2/validate")
+@limiter.limit("10/minute")
+async def validate_totp_factor2(
+    request: Request,
+    token: str = Body(..., embed=True),
+    user: User = Depends(get_current_active_user)
+):
+    """Validate a Factor 2 TOTP code before allowing document view or submission."""
+    if not user.is_totp_factor2_enabled or not user.totp_factor2_secret:
+        raise HTTPException(status_code=400, detail="Factor 2 TOTP is not enabled for this user.")
+
+    if security.verify_totp(user.totp_factor2_secret, token):
+        return {"valid": True}
+
+    raise HTTPException(status_code=401, detail="Invalid or expired Factor 2 TOTP code.")
+
+
+@router.post("/2fa/factor2/disable")
+async def disable_totp_factor2(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Disable Factor 2 TOTP for the current user."""
+    user.is_totp_factor2_enabled = False
+    user.totp_factor2_secret = None
+    await db.commit()
+    return {"message": "Factor 2 (View/Submission) TOTP disabled.", "is_totp_factor2_enabled": False}
+
+
+@router.post("/2fa/factor2/reset")
+async def reset_totp_factor2(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Clear Factor 2 TOTP secret for re-enrollment."""
+    user.is_totp_factor2_enabled = False
+    user.totp_factor2_secret = None
+    await db.commit()
+    return {"message": "Factor 2 TOTP reset.", "is_totp_factor2_enabled": False}
+
+
+# --- Factor 3 TOTP (Mint / Approval / Revision Factor) ---
+
+@router.post("/2fa/factor3/setup")
+@limiter.limit("5/minute")
+async def setup_totp_factor3(request: Request, user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Generate a new Factor 3 TOTP secret for mint, approval, and revision authorizations."""
+    if user.is_totp_factor3_enabled:
+        raise HTTPException(status_code=400, detail="Factor 3 (Mint/Approval/Revision) TOTP is already enabled.")
+
+    secret = security.generate_totp_secret()
+    uri = security.get_totp_uri(
+        user.name or user.wallet_address,
+        secret,
+        issuer_name="LexCorp - Factor 3 (Mint/Approve/Revise)"
+    )
+
+    user.totp_factor3_secret = secret
+    await db.commit()
+
+    return {"secret": secret, "uri": uri}
+
+
+@router.post("/2fa/factor3/verify")
+@limiter.limit("5/minute")
+async def verify_totp_factor3_setup(
+    request: Request,
+    token: str = Body(..., embed=True),
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify Factor 3 TOTP code to finalize enrollment."""
+    if not user.totp_factor3_secret:
+        raise HTTPException(status_code=400, detail="Factor 3 TOTP setup not initiated.")
+
+    if security.verify_totp(user.totp_factor3_secret, token):
+        user.is_totp_factor3_enabled = True
+        await db.commit()
+        return {"message": "Factor 3 (Mint/Approval/Revision) TOTP successfully enabled.", "is_totp_factor3_enabled": True}
+
+    raise HTTPException(status_code=401, detail="Invalid or expired Factor 3 TOTP code. Please verify your device clock.")
+
+
+@router.post("/2fa/factor3/validate")
+@limiter.limit("10/minute")
+async def validate_totp_factor3(
+    request: Request,
+    token: str = Body(..., embed=True),
+    user: User = Depends(get_current_active_user)
+):
+    """Validate a Factor 3 TOTP code before allowing mint, approval, or revision."""
+    if not user.is_totp_factor3_enabled or not user.totp_factor3_secret:
+        raise HTTPException(status_code=400, detail="Factor 3 TOTP is not enabled for this user.")
+
+    if security.verify_totp(user.totp_factor3_secret, token):
+        return {"valid": True}
+
+    raise HTTPException(status_code=401, detail="Invalid or expired Factor 3 TOTP code.")
+
+
+@router.post("/2fa/factor3/disable")
+async def disable_totp_factor3(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Disable Factor 3 TOTP for the current user."""
+    user.is_totp_factor3_enabled = False
+    user.totp_factor3_secret = None
+    await db.commit()
+    return {"message": "Factor 3 (Mint/Approval/Revision) TOTP disabled.", "is_totp_factor3_enabled": False}
+
+
+@router.post("/2fa/factor3/reset")
+async def reset_totp_factor3(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+    """Clear Factor 3 TOTP secret for re-enrollment."""
+    user.is_totp_factor3_enabled = False
+    user.totp_factor3_secret = None
+    await db.commit()
+    return {"message": "Factor 3 TOTP reset.", "is_totp_factor3_enabled": False}
 
 
 # --- WebAuthn (Passkeys / Biometrics) ---

@@ -22,11 +22,11 @@ def generate_totp_secret() -> str:
     """Generate a high-entropy secret for new TOTP enrollment."""
     return pyotp.random_base32()
 
-def get_totp_uri(username: str, secret: str) -> str:
+def get_totp_uri(username: str, secret: str, issuer_name: str = "LexCorp SIH26125") -> str:
     """Generate OTP Auth URI for QR code generation."""
     return pyotp.totp.TOTP(secret).provisioning_uri(
         name=username,
-        issuer_name="LexCorp SIH26125"
+        issuer_name=issuer_name
     )
 
 def verify_totp(secret: str, provided_token: str) -> bool:
