@@ -55,6 +55,7 @@ class UserResponse(BaseModel):
     wallet_address: str
     name: Optional[str] = None
     contact_number: Optional[str] = None
+    department: Optional[str] = None
     did: Optional[str] = None
     role: str
     is_active: bool
@@ -67,6 +68,7 @@ class CreateUserRequest(BaseModel):
     wallet_address: str
     name: Optional[str] = None
     contact_number: Optional[str] = None
+    department: Optional[str] = None
     role: str = "USER"  # ADMIN, MANAGER, AUDITOR, USER
 
 
@@ -80,7 +82,15 @@ async def list_users(
     current_user: User = Depends(get_current_active_user)
 ):
     """List all registered users and their current roles."""
-    result = await db.execute(select(User).where(User.is_active == True).order_by(User.created_at.desc()))
+    query = select(User).where(User.is_active == True)
+
+    # Department scoping: Managers can only see users in their department
+    if current_user.role == "MANAGER":
+        if not current_user.department:
+            return [] # Manager with no department sees no one
+        query = query.where(User.department == current_user.department)
+
+    result = await db.execute(query.order_by(User.created_at.desc()))
     users = result.scalars().all()
     return [
         UserResponse(
@@ -88,6 +98,7 @@ async def list_users(
             wallet_address=u.wallet_address,
             name=u.name,
             contact_number=u.contact_number,
+            department=u.department,
             did=u.did,
             role=u.role,
             is_active=u.is_active,
@@ -168,12 +179,28 @@ async def create_or_register_user(
             detail="User already exists for this wallet address. Use the role update action instead of registering it again.",
         )
 
+    # Department Enforcement: Managers can only create users in their own department
+    target_department = request.department
+    if current_user.role == "MANAGER":
+        if not current_user.department:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Manager has no assigned department and cannot create users.",
+            )
+        if target_department and target_department != current_user.department:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Managers can only create users in their own department ({current_user.department}).",
+            )
+        target_department = current_user.department
+
     # Issue DID and create new record
     did = f"did:ethr:{settings.CHAIN_ID}:{checksummed.lower()}"
     new_user = User(
         wallet_address=checksummed.lower(),
         name=request.name,
         contact_number=request.contact_number,
+        department=target_department,
         did=did,
         role=role_clean,
         is_active=True,
@@ -190,6 +217,7 @@ async def create_or_register_user(
         wallet_address=new_user.wallet_address,
         name=new_user.name,
         contact_number=new_user.contact_number,
+        department=new_user.department,
         did=new_user.did,
         role=new_user.role,
         is_active=new_user.is_active,
@@ -242,6 +270,13 @@ async def update_user_role(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
+    # Department restriction for modifications
+    if current_user.role == "MANAGER" and user.department != current_user.department:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Managers can only modify users in their own department ({current_user.department}).",
+        )
+
     existing_role_level = ROLE_HIERARCHY.get(user.role, 0)
     if existing_role_level >= acting_role_level and current_user.role != "ADMIN":
         raise HTTPException(
@@ -289,6 +324,13 @@ async def delete_user(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
+    # Department restriction for revocation
+    if current_user.role == "MANAGER" and user.department != current_user.department:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Managers can only revoke users in their own department ({current_user.department}).",
+        )
+
     acting_role_level = ROLE_HIERARCHY.get(current_user.role, 0)
     target_role_level = ROLE_HIERARCHY.get(user.role, 0)
 
@@ -332,6 +374,13 @@ async def fund_user_wallet(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    # Department restriction for funding
+    if current_user.role == "MANAGER" and user.department != current_user.department:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Managers can only fund users in their own department ({current_user.department}).",
         )
 
     try:

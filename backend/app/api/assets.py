@@ -91,6 +91,23 @@ async def prepare_transfer(request: TransferRequest, current_user: User = Depend
             detail=f"Role '{current_user.role}' is not permitted to transfer assets."
         )
 
+    # Department & Asset Type checks for MANAGER
+    if current_user.role == "MANAGER":
+        asset = contract_service.get_digital_asset(request.token_id)
+        if asset and asset.get("is_digital"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers are not permitted to transfer DIGITAL assets. Managers can only transfer PHYSICAL defense hardware."
+            )
+        res = await db.execute(select(Asset).filter(Asset.token_id == request.token_id))
+        asset_db = res.scalar_one_or_none()
+        if asset_db and asset_db.department and current_user.department:
+            if asset_db.department != current_user.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Managers can only transfer assets within their own department ({current_user.department})."
+                )
+
     # AI Risk Check: Block HIGH-risk actors from sensitive transfer operations
     from app.services.ai import check_actor_risk_level
     actor_did = f"did:ethr:13371:{current_user.wallet_address.lower()}"
@@ -169,6 +186,15 @@ async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depen
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Managers are not permitted to revoke DIGITAL assets. Managers can only revoke PHYSICAL defense hardware. Digital assets can only be revoked by their owner or an Administrator."
             )
+        # Department check
+        res = await db.execute(select(Asset).filter(Asset.token_id == token_id))
+        asset_db = res.scalar_one_or_none()
+        if asset_db and asset_db.department and current_user.department:
+            if asset_db.department != current_user.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Managers can only revoke assets within their own department ({current_user.department})."
+                )
 
     # ADMIN: no restrictions (can revoke both types)
 
@@ -714,6 +740,20 @@ async def assign_asset_custodian(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Role '{current_user.role}' is not authorized to reassign asset custody. Manager or Admin privileges required."
         )
+
+    # Department scoping: Managers can only assign custody within/to their own department
+    if current_user.role == "MANAGER":
+        if not current_user.department:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Manager has no assigned department and cannot reassign asset custody."
+            )
+        # If target department is specified, it must match manager's department
+        if req.custodian_department and req.custodian_department != current_user.department:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Managers can only assign custody to their own department ({current_user.department})."
+            )
 
     token_id = contract_service.get_token_by_serial(serial)
     if token_id is None:
