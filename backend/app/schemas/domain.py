@@ -93,6 +93,20 @@ class DocumentActionCreate(BaseSchema):
     purpose: Optional[str] = None
     details: Optional[dict] = None
 
+class DocumentProposalRequest(BaseSchema):
+    name: str # Document Title
+    serial_number: str
+    file_hash: str
+    offchain_uri: str
+    department: Optional[str] = None
+    purpose: Optional[str] = None
+    totp_code: Optional[str] = None
+
+class DocumentApprovalRequest(BaseSchema):
+    decision: str # "APPROVE" or "REJECT"
+    totp_code: Optional[str] = None
+    rejection_reason: Optional[str] = None
+
 class DocumentActionRead(DocumentActionBase):
     id: uuid.UUID
     actor_id: uuid.UUID

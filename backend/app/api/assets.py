@@ -15,7 +15,9 @@ from app.api.dependencies import get_db, get_current_user, get_current_active_us
 from app.services.contract import contract_service
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
-from app.models.domain import Asset, MaintenanceRecord, User
+from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction
+from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead
+from app.services.security import verify_totp
 from sqlalchemy import select, desc
 
 # Simple in-memory TTL cache (60 seconds) for registry queries
@@ -767,7 +769,7 @@ async def assign_asset_custodian(
         asset_db = Asset(
             serial_number=serial,
             token_id=token_id,
-            owner_id=uuid.uuid4(), # System placeholder
+            owner_id=current_user.id,
             custodian_did=req.custodian_did,
             custodian_department=req.custodian_department,
             lifecycle_status=req.lifecycle_status or "ASSIGNED"
@@ -977,3 +979,164 @@ async def delete_asset(
 
     calldata = contract_service.prepare_revoke_calldata(token_id)
     return {"message": "Prepare revocation calldata", "calldata": calldata, "token_id": token_id}
+
+@router.post("/document/propose", response_model=DocumentActionRead)
+async def propose_document_creation(
+    request: DocumentProposalRequest, 
+    current_user: User = Depends(get_current_active_user), 
+    db: AsyncSession = Depends(get_db)
+):
+    """Propose a new digital document for creation and approval."""
+    if current_user.role == "AUDITOR":
+        raise HTTPException(status_code=403, detail="Auditors cannot propose documents.")
+
+    dept = request.department or current_user.department
+    if current_user.role == "USER" and dept != current_user.department:
+        raise HTTPException(status_code=403, detail="Users can only propose documents for their assigned department.")
+
+    if current_user.is_totp_factor2_enabled:
+        if not request.totp_code or not verify_totp(current_user.totp_factor2_secret, request.totp_code):
+            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP code.")
+
+    res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
+    if res.scalar_one_or_none():
+         raise HTTPException(status_code=400, detail="Asset serial number already exists.")
+
+    action_id_str = f"CRT-{uuid.uuid4().hex[:12].upper()}"
+    
+    # Temporarily allocate a unique mock token_id for the draft. Real token_id will be minted later.
+    import random
+    temp_token_id = random.randint(1000000000, 2000000000)
+
+    draft_asset = Asset(
+        token_id=temp_token_id, 
+        serial_number=request.serial_number,
+        name=request.name,
+        asset_type="DOCUMENT",
+        file_hash=request.file_hash,
+        metadata_cid=request.offchain_uri,
+        owner_id=current_user.id,
+        department=dept,
+        is_physical=False,
+        lifecycle_status="CREATED",
+        approval_status="PENDING_APPROVAL",
+        action_id=action_id_str,
+        action_type="CREATION"
+    )
+    db.add(draft_asset)
+    await db.flush()
+
+    action = DocumentAction(
+        action_id=action_id_str,
+        action_type="CREATION",
+        asset_id=draft_asset.id,
+        asset_serial=request.serial_number,
+        actor_id=current_user.id,
+        actor_did=current_user.did,
+        status="PENDING",
+        purpose=request.purpose,
+        details={"name": request.name, "file_hash": request.file_hash, "offchain_uri": request.offchain_uri}
+    )
+    db.add(action)
+    await db.commit()
+    await db.refresh(action)
+    return action
+
+
+@router.get("/document/pending", response_model=list[DocumentActionRead])
+async def get_pending_documents(
+    action_type: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user), 
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve pending document actions awaiting approval."""
+    query = select(DocumentAction).filter(DocumentAction.status == "PENDING")
+    if action_type:
+        query = query.filter(DocumentAction.action_type == action_type)
+        
+    if current_user.role == "USER":
+        query = query.filter(DocumentAction.actor_id == current_user.id)
+    elif current_user.role == "MANAGER":
+        query = query.join(Asset, DocumentAction.asset_id == Asset.id).filter(Asset.department == current_user.department)
+        
+    result = await db.execute(query.order_by(desc(DocumentAction.created_at)))
+    return result.scalars().all()
+
+
+class ApprovalCalldataResponse(BaseModel):
+    calldata: Optional[dict] = None
+    contract_address: Optional[str] = None
+    decision: str
+    status: str
+
+@router.post("/document/approval/{action_id}", response_model=ApprovalCalldataResponse)
+async def approve_document(
+    action_id: str,
+    request: DocumentApprovalRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Approve or reject a pending document action."""
+    if current_user.role not in ["ADMIN", "MANAGER"]:
+        raise HTTPException(status_code=403, detail="Only Managers and Admins can approve documents.")
+        
+    res = await db.execute(select(DocumentAction).filter(DocumentAction.action_id == action_id))
+    action = res.scalar_one_or_none()
+    
+    if not action or action.status != "PENDING":
+        raise HTTPException(status_code=404, detail="Action not found or no longer pending.")
+        
+    asset_res = await db.execute(select(Asset).filter(Asset.id == action.asset_id))
+    asset = asset_res.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Associated asset not found.")
+
+    if current_user.role == "MANAGER":
+        if asset.department != current_user.department:
+            raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
+            
+    if current_user.is_totp_factor3_enabled:
+        if not request.totp_code or not verify_totp(current_user.totp_factor3_secret, request.totp_code):
+            raise HTTPException(status_code=401, detail="Invalid Factor 3 TOTP code.")
+
+    if request.decision.upper() == "APPROVE":
+        action.status = "APPROVED"
+        action.approver_id = current_user.id
+        action.approver_did = current_user.did
+        asset.approval_status = "APPROVED"
+        await db.commit()
+        
+        calldata = None
+        if action.action_type == "CREATION":
+            owner_address = action.actor_did.split(":")[-1]
+            calldata = contract_service.prepare_mint_digital_calldata(
+                to_address=owner_address,
+                token_id=asset.token_id,
+                serial_number=asset.serial_number,
+                owner_did=action.actor_did,
+                file_hash=asset.file_hash or "",
+                offchain_uri=asset.metadata_cid or ""
+            )
+            return ApprovalCalldataResponse(
+                calldata=calldata,
+                contract_address=contract_service.contract_address,
+                decision="APPROVE",
+                status="APPROVED"
+            )
+            
+        return ApprovalCalldataResponse(decision="APPROVE", status="APPROVED")
+        
+    elif request.decision.upper() == "REJECT":
+        action.status = "REJECTED"
+        action.approver_id = current_user.id
+        action.approver_did = current_user.did
+        
+        details = dict(action.details) if action.details else {}
+        details["rejection_reason"] = request.rejection_reason
+        action.details = details
+        asset.approval_status = "REJECTED"
+        await db.commit()
+        
+        return ApprovalCalldataResponse(decision="REJECT", status="REJECTED")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid decision.")
