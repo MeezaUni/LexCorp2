@@ -1,7 +1,8 @@
 import uuid
+from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer
+from sqlalchemy import String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer, UniqueConstraint, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -23,9 +24,17 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(default=True)
     session_version: Mapped[int] = mapped_column(Integer, default=0)
 
-    # 2FA / TOTP support
+    # Factor 1: Login TOTP (existing — backward-compatible rename)
     totp_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     is_totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Factor 2: View / Submission TOTP
+    totp_factor2_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    is_totp_factor2_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Factor 3: Mint / Approve / Modify TOTP
+    totp_factor3_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    is_totp_factor3_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # High-Assurance Hardware WebAuthn/Passkey Credentials
     webauthn_credentials: Mapped[List["WebAuthnCredential"]] = relationship(
@@ -77,8 +86,51 @@ class Asset(Base, TimestampMixin):
     custodian_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     custodian_department: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    # Lifecycle State: CREATED -> VERIFIED -> ASSIGNED -> TRANSFERRED -> MAINTENANCE -> RETURNED -> RETIRED
+    # Lifecycle State
     lifecycle_status: Mapped[str] = mapped_column(String(30), default="CREATED")
+
+    # Revision Tree (Phase 7)
+    parent_asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    parent_asset: Mapped[Optional["Asset"]] = relationship(remote_side=[id], back_populates="revisions")
+    revisions: Mapped[List["Asset"]] = relationship(back_populates="parent_asset")
+
+    # Action / Approval Tracking (Phase 4, 6)
+    action_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    action_type: Mapped[Optional[str]] = mapped_column(String(20), index=True, nullable=True)
+    approval_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    watermark_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # Physical Asset Constraint Fields (Phase 9)
+    is_physical: Mapped[bool] = mapped_column(Boolean, default=False)
+    mac_address: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    device_unique_address: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True, nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+
+class DocumentAction(Base, TimestampMixin):
+    __tablename__ = "document_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid.uuid4
+    )
+    action_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    action_type: Mapped[str] = mapped_column(String(20), index=True)  # VIEW, DOWNLOAD, CREATION, MODIFICATION
+    asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    asset_serial: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
+
+    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    actor_did: Mapped[str] = mapped_column(String, index=True)
+    approver_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approver_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    purpose: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    client_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    download_token: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True, nullable=True)
+    token_expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    watermark_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class MaintenanceRecord(Base, TimestampMixin):

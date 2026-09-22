@@ -20,6 +20,8 @@ class UserBase(BaseSchema):
     role: str = "USER"
     is_active: bool = True
     is_totp_enabled: bool = False
+    is_totp_factor2_enabled: bool = False
+    is_totp_factor3_enabled: bool = False
 
 class UserCreate(UserBase):
     pass
@@ -42,6 +44,16 @@ class AssetBase(BaseSchema):
     custodian_did: Optional[str] = None
     custodian_department: Optional[str] = None
     lifecycle_status: str = "CREATED"
+    parent_asset_id: Optional[uuid.UUID] = None
+    action_id: Optional[str] = None
+    action_type: Optional[str] = None
+    approval_status: str = "ACTIVE"
+    watermark_metadata: Optional[dict] = None
+    is_physical: bool = False
+    mac_address: Optional[str] = None
+    device_unique_address: Optional[str] = None
+    location: Optional[str] = None
+    department: Optional[str] = None
 
 class AssetCreate(AssetBase):
     owner_id: uuid.UUID
@@ -54,6 +66,37 @@ class AssetRead(AssetBase):
     owner_wallet: Optional[str] = None
     owner_name: Optional[str] = None
     custodian_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# Document Action Schemas
+class DocumentActionBase(BaseSchema):
+    action_id: str
+    action_type: str
+    asset_id: Optional[uuid.UUID] = None
+    asset_serial: Optional[str] = None
+    actor_did: str
+    approver_did: Optional[str] = None
+    status: str = "PENDING"
+    purpose: Optional[str] = None
+    client_ip: Optional[str] = None
+    download_token: Optional[str] = None
+    token_expires_at: Optional[datetime] = None
+    watermark_text: Optional[str] = None
+    details: Optional[dict] = None
+
+class DocumentActionCreate(BaseSchema):
+    action_type: str
+    asset_id: Optional[uuid.UUID] = None
+    asset_serial: Optional[str] = None
+    purpose: Optional[str] = None
+    details: Optional[dict] = None
+
+class DocumentActionRead(DocumentActionBase):
+    id: uuid.UUID
+    actor_id: uuid.UUID
+    approver_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
 

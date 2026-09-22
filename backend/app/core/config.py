@@ -15,9 +15,9 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
 
-    # Database
-    DATABASE_URL: str = f"sqlite+aiosqlite:///{DB_FILE.as_posix()}"
-    DATABASE_URL_SYNC: str = f"sqlite:///{DB_FILE.as_posix()}"
+    # Database — PostgreSQL for production, SQLite fallback for local dev
+    DATABASE_URL: str = "postgresql+asyncpg://lexcorp:lexcorp_dev@localhost:5432/lexcorp_sih"
+    DATABASE_URL_SYNC: str = "postgresql://lexcorp:lexcorp_dev@localhost:5432/lexcorp_sih"
 
     # CORS & WebAuthn
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
