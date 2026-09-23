@@ -1076,6 +1076,18 @@ async def propose_physical_asset_creation(
     # 1. Uniqueness check on serial_number
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
     if res.scalar_one_or_none():
+        audit_event = AuditEvent(
+            event_type="DUPLICATE_PHYSICAL_ASSET_ATTEMPT",
+            tx_hash=f"audit_dup_serial_{uuid.uuid4().hex}",
+            block_number=0,
+            actor_did=current_user.did,
+            asset_serial=request.serial_number,
+            risk_score=0.85,
+            risk_label="HIGH",
+            risk_factors={"reason": "Duplicate Serial Number Attempt", "serial_number": request.serial_number}
+        )
+        db.add(audit_event)
+        await db.commit()
         raise HTTPException(status_code=400, detail="Asset serial number already exists.")
 
     # 2. Uniqueness check on mac_address
@@ -1094,7 +1106,7 @@ async def propose_physical_asset_creation(
             )
             db.add(audit_event)
             await db.commit()
-            raise HTTPException(status_code=409, detail="MAC address is already registered to an asset.")
+            raise HTTPException(status_code=400, detail="MAC address is already registered to an asset.")
 
     # 3. Uniqueness check on device_unique_address
     if request.device_unique_address:
@@ -1112,7 +1124,7 @@ async def propose_physical_asset_creation(
             )
             db.add(audit_event)
             await db.commit()
-            raise HTTPException(status_code=409, detail="Device unique address is already registered to an asset.")
+            raise HTTPException(status_code=400, detail="Device unique address is already registered to an asset.")
 
     action_id_str = f"CRT-PHY-{uuid.uuid4().hex[:10].upper()}"
 
