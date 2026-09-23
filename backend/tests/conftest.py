@@ -50,10 +50,10 @@ TEST_USERS = [
     {
         "wallet_address": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8".lower(),
         "role": "AUDITOR",
-        "session_version": 0,
-        "is_active": False,
+        "session_version": 1,
+        "is_active": True,
         "department": "Cyber",
-        "name": "Inactive Auditor"
+        "name": "Test Auditor"
     }
 ]
 

@@ -102,6 +102,17 @@ class DocumentProposalRequest(BaseSchema):
     purpose: Optional[str] = None
     totp_code: Optional[str] = None
 
+class PhysicalProposalRequest(BaseSchema):
+    name: str
+    serial_number: str
+    asset_type: str = "EQUIPMENT"
+    mac_address: Optional[str] = None
+    device_unique_address: Optional[str] = None
+    location: Optional[str] = None
+    department: Optional[str] = None
+    purpose: Optional[str] = None
+    totp_code: Optional[str] = None
+
 class DocumentRevisionRequest(BaseSchema):
     parent_asset_serial: str
     name: str # New Document Title

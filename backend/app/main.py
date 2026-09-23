@@ -35,8 +35,16 @@ async def lifespan(app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables verified/created successfully.")
+
+        # Run DID auto-migration on startup
+        from app.core.database import async_session_maker
+        from app.services.auth import migrate_user_dids
+        async with async_session_maker() as db:
+            migrated = await migrate_user_dids(db)
+            if migrated > 0:
+                logger.info(f"Startup DID migration completed: {migrated} user DIDs updated.")
     except Exception as e:
-        logger.error(f"Failed to initialize database tables: {e}")
+        logger.error(f"Failed to initialize database tables or migrate DIDs: {e}")
 
     # Initialize AI Risk Engine model
     from app.services.ai import ai_engine

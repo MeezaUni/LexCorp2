@@ -33,6 +33,16 @@ _EVENT_TYPE_MAP = {
     "AccessPermissionGranted": "RoleAssigned",
     "AccessPermissionRevoked": "RoleRevoked",
     "AccessAttempted": "AccessAttempted",
+    "PhysicalAssetProposed": "AssetMinted",
+    "PhysicalAssetApproved": "AssetMinted",
+    "DocumentCreationProposed": "AssetMinted",
+    "DocumentCreationApproved": "AssetMinted",
+    "DocumentRevisionProposed": "AssetUpdated",
+    "DocumentRevisionApproved": "AssetUpdated",
+    "DocumentDownloadRequested": "AccessAttempted",
+    "DocumentDownloadApproved": "AccessAttempted",
+    "DocumentViewed": "AccessAttempted",
+    "DUPLICATE_PHYSICAL_ASSET_ATTEMPT": "AccessAttempted",
 }
 
 # Mapping of on-chain permission levels + system roles to the "actor_to_asset_relationship_depth" feature.

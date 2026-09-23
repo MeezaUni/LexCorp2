@@ -86,6 +86,12 @@ class ContractService:
         except Exception:
             return None
 
+    def _get_gas_price(self) -> int:
+        try:
+            return self.w3.eth.gas_price
+        except Exception:
+            return 0
+
     def prepare_mint_calldata(
         self,
         to_address: str,
@@ -105,8 +111,9 @@ class ContractService:
         ).build_transaction({
             "from": "0x0000000000000000000000000000000000000000",  # Placeholder — frontend replaces
             "gas": 300000,
-            "gasPrice": self.w3.eth.gas_price,
+            "gasPrice": self._get_gas_price(),
             "nonce": 0,  # Frontend fetches the real nonce
+            "chainId": settings.CHAIN_ID,
         })
 
         return {
@@ -131,8 +138,9 @@ class ContractService:
         ).build_transaction({
             "from": "0x0000000000000000000000000000000000000000",
             "gas": 200000,
-            "gasPrice": self.w3.eth.gas_price,
+            "gasPrice": self._get_gas_price(),
             "nonce": 0,
+            "chainId": settings.CHAIN_ID,
         })
 
         return {
@@ -159,8 +167,9 @@ class ContractService:
         ).build_transaction({
             "from": "0x0000000000000000000000000000000000000000",
             "gas": 250000,
-            "gasPrice": self.w3.eth.gas_price,
+            "gasPrice": self._get_gas_price(),
             "nonce": 0,
+            "chainId": settings.CHAIN_ID,
         })
         return {
             "to": self.contract_address,
@@ -175,8 +184,9 @@ class ContractService:
         tx_data = self.contract.functions.revoke(token_id).build_transaction({
             "from": "0x0000000000000000000000000000000000000000",
             "gas": 150000,
-            "gasPrice": self.w3.eth.gas_price,
+            "gasPrice": self._get_gas_price(),
             "nonce": 0,
+            "chainId": settings.CHAIN_ID,
         })
 
         return {
@@ -238,8 +248,9 @@ class ContractService:
         ).build_transaction({
             "from": "0x0000000000000000000000000000000000000000",
             "gas": 400000,
-            "gasPrice": self.w3.eth.gas_price,
+            "gasPrice": self._get_gas_price(),
             "nonce": 0,
+            "chainId": settings.CHAIN_ID,
         })
         return {
             "to": self.contract_address,
@@ -264,8 +275,9 @@ class ContractService:
         ).build_transaction({
             "from": "0x0000000000000000000000000000000000000000",
             "gas": 150000,
-            "gasPrice": self.w3.eth.gas_price,
+            "gasPrice": self._get_gas_price(),
             "nonce": 0,
+            "chainId": settings.CHAIN_ID,
         })
         return {
             "to": self.contract_address,
