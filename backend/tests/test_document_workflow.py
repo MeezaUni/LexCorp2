@@ -210,7 +210,7 @@ async def test_approval_factor3_totp_enforcement(client, db_session):
         json={"decision": "APPROVE", "totp_code": "000000"}
     )
     assert res_fail.status_code == 401
-    assert "Invalid Factor 3 TOTP code" in res_fail.json()["detail"]
+    assert "Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed." in res_fail.json()["detail"]
 
     # Approve with valid TOTP code
     totp = pyotp.TOTP(secret)

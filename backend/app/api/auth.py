@@ -228,7 +228,7 @@ async def get_passkey_login_options(options_req: PasskeyLoginOptionsRequest, req
         rp_id=rp_id,
     )
     options_json = json.loads(webauthn.options_to_json(options))
-    auth.store_challenge(str(user.id), options_json["challenge"])
+    auth.store_challenge(str(user.id), "login", options_json["challenge"])
     return {"options": options_json}
 
 
@@ -250,7 +250,7 @@ async def login_with_passkey(passkey_req: PasskeyLoginVerifyRequest, request: Re
         WebAuthnCredential.credential_id == passkey_req.credential_id,
         WebAuthnCredential.is_active.is_(True),
     ))).scalar_one_or_none()
-    challenge = auth.get_challenge(str(user.id))
+    challenge = auth.get_challenge(str(user.id), "login")
     if not credential or not challenge:
         raise HTTPException(status_code=401, detail="Passkey challenge or credential not found.")
 
@@ -557,7 +557,7 @@ async def get_webauthn_registration_options(
 
     import webauthn
     options_json = json.loads(webauthn.options_to_json(options))
-    auth.store_challenge(str(user.id), options_json["challenge"])
+    auth.store_challenge(str(user.id), "registration", options_json["challenge"])
 
     return {"options": options_json}
 
@@ -589,7 +589,7 @@ async def get_webauthn_login_options(
 
     import webauthn
     options_json = json.loads(webauthn.options_to_json(options))
-    auth.store_challenge(str(user.id), options_json["challenge"])
+    auth.store_challenge(str(user.id), "login", options_json["challenge"])
 
     return {"options": options_json}
 
@@ -608,7 +608,7 @@ async def verify_webauthn_login(
 
     logger = logging.getLogger(__name__)
 
-    challenge = auth.get_challenge(str(user.id))
+    challenge = auth.get_challenge(str(user.id), "login")
     if not challenge:
         logger.warning(f"WebAuthn challenge not found for user {user.id}")
         raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry.")
@@ -655,6 +655,181 @@ async def verify_webauthn_login(
         raise HTTPException(status_code=400, detail=f"WebAuthn verification failed: {str(e)}")
 
 
+# --- Purpose-Bound Factor 2 (View / Submission) WebAuthn ---
+
+@router.post("/webauthn/factor2/options", response_model=WebAuthnLoginOptionsResponse)
+async def get_webauthn_factor2_options(
+    req: Request,
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Generate options to start WebAuthn authentication specifically for Factor 2 (View/Submission)."""
+    from sqlalchemy import select
+    res = await db.execute(select(WebAuthnCredential).filter(WebAuthnCredential.user_id == user.id, WebAuthnCredential.is_active.is_(True)))
+    creds = res.scalars().all()
+    if not creds:
+        raise HTTPException(status_code=400, detail="No active WebAuthn credentials registered for this user.")
+
+    cred_ids = [bytes.fromhex(c.credential_id) for c in creds]
+    rp_id = settings.RP_ID
+    options = security.generate_webauthn_login_options(cred_ids, rp_id=rp_id)
+
+    import webauthn
+    options_json = json.loads(webauthn.options_to_json(options))
+    auth.store_challenge(str(user.id), "factor2", options_json["challenge"])
+
+    return {"options": options_json}
+
+
+@router.post("/webauthn/factor2/verify")
+async def verify_webauthn_factor2(
+    request: WebAuthnLoginVerifyRequest,
+    req: Request,
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify WebAuthn authentication specifically for Factor 2 (View/Submission)."""
+    import logging
+    import webauthn
+    from webauthn.helpers import base64url_to_bytes
+    from sqlalchemy import select
+
+    logger = logging.getLogger(__name__)
+
+    challenge = auth.get_challenge(str(user.id), "factor2")
+    if not challenge:
+        logger.warning(f"WebAuthn factor 2 challenge not found for user {user.id}")
+        raise HTTPException(status_code=400, detail="Factor 2 challenge not found or expired. Please retry.")
+
+    origin = req.headers.get("origin")
+    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
+        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
+
+    rp_id = settings.RP_ID
+
+    res = await db.execute(select(WebAuthnCredential).filter(
+        WebAuthnCredential.credential_id == request.credential_id,
+        WebAuthnCredential.user_id == user.id,
+        WebAuthnCredential.is_active.is_(True)
+    ))
+    db_cred = res.scalar_one_or_none()
+
+    if not db_cred:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    try:
+        verification = webauthn.verify_authentication_response(
+            credential=request.response,
+            expected_challenge=base64url_to_bytes(challenge) if isinstance(challenge, str) else challenge,
+            expected_origin=origin,
+            expected_rp_id=rp_id,
+            credential_public_key=bytes.fromhex(db_cred.public_key) if isinstance(db_cred.public_key, str) and len(db_cred.public_key)>64 else db_cred.public_key.encode() if isinstance(db_cred.public_key, str) else db_cred.public_key,
+            credential_current_sign_count=db_cred.sign_count,
+            require_user_verification=False
+        )
+
+        db_cred.sign_count = verification.new_sign_count
+        await db.commit()
+
+        # Mark assertion as verified for factor2
+        auth.verify_assertion(str(user.id), "factor2")
+
+        logger.info(f"WebAuthn Factor 2 verification successful for user {user.id}")
+        return {"message": "WebAuthn Factor 2 verification successful", "valid": True}
+
+    except Exception as e:
+        logger.error(f"WebAuthn Factor 2 verification failed: {e}")
+        raise HTTPException(status_code=400, detail=f"WebAuthn Factor 2 verification failed: {str(e)}")
+
+
+# --- Purpose-Bound Factor 3 (Mint / Approval / Modification) WebAuthn ---
+
+@router.post("/webauthn/factor3/options", response_model=WebAuthnLoginOptionsResponse)
+async def get_webauthn_factor3_options(
+    req: Request,
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Generate options to start WebAuthn authentication specifically for Factor 3 (Mint/Approval/Modification)."""
+    from sqlalchemy import select
+    res = await db.execute(select(WebAuthnCredential).filter(WebAuthnCredential.user_id == user.id, WebAuthnCredential.is_active.is_(True)))
+    creds = res.scalars().all()
+    if not creds:
+        raise HTTPException(status_code=400, detail="No active WebAuthn credentials registered for this user.")
+
+    cred_ids = [bytes.fromhex(c.credential_id) for c in creds]
+    rp_id = settings.RP_ID
+    options = security.generate_webauthn_login_options(cred_ids, rp_id=rp_id)
+
+    import webauthn
+    options_json = json.loads(webauthn.options_to_json(options))
+    auth.store_challenge(str(user.id), "factor3", options_json["challenge"])
+
+    return {"options": options_json}
+
+
+@router.post("/webauthn/factor3/verify")
+async def verify_webauthn_factor3(
+    request: WebAuthnLoginVerifyRequest,
+    req: Request,
+    user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify WebAuthn authentication specifically for Factor 3 (Mint/Approval/Modification)."""
+    import logging
+    import webauthn
+    from webauthn.helpers import base64url_to_bytes
+    from sqlalchemy import select
+
+    logger = logging.getLogger(__name__)
+
+    challenge = auth.get_challenge(str(user.id), "factor3")
+    if not challenge:
+        logger.warning(f"WebAuthn factor 3 challenge not found for user {user.id}")
+        raise HTTPException(status_code=400, detail="Factor 3 challenge not found or expired. Please retry.")
+
+    origin = req.headers.get("origin")
+    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
+        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
+
+    rp_id = settings.RP_ID
+
+    res = await db.execute(select(WebAuthnCredential).filter(
+        WebAuthnCredential.credential_id == request.credential_id,
+        WebAuthnCredential.user_id == user.id,
+        WebAuthnCredential.is_active.is_(True)
+    ))
+    db_cred = res.scalar_one_or_none()
+
+    if not db_cred:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    try:
+        verification = webauthn.verify_authentication_response(
+            credential=request.response,
+            expected_challenge=base64url_to_bytes(challenge) if isinstance(challenge, str) else challenge,
+            expected_origin=origin,
+            expected_rp_id=rp_id,
+            credential_public_key=bytes.fromhex(db_cred.public_key) if isinstance(db_cred.public_key, str) and len(db_cred.public_key)>64 else db_cred.public_key.encode() if isinstance(db_cred.public_key, str) else db_cred.public_key,
+            credential_current_sign_count=db_cred.sign_count,
+            require_user_verification=False
+        )
+
+        db_cred.sign_count = verification.new_sign_count
+        await db.commit()
+
+        # Mark assertion as verified for factor3
+        auth.verify_assertion(str(user.id), "factor3")
+
+        logger.info(f"WebAuthn Factor 3 verification successful for user {user.id}")
+        return {"message": "WebAuthn Factor 3 verification successful", "valid": True}
+
+    except Exception as e:
+        logger.error(f"WebAuthn Factor 3 verification failed: {e}")
+        raise HTTPException(status_code=400, detail=f"WebAuthn Factor 3 verification failed: {str(e)}")
+
+
+
 @router.post("/webauthn/register/verify")
 @limiter.limit("5/minute")
 async def verify_webauthn_registration(
@@ -670,7 +845,7 @@ async def verify_webauthn_registration(
 
     logger = logging.getLogger(__name__)
 
-    challenge = auth.get_challenge(str(user.id))
+    challenge = auth.get_challenge(str(user.id), "registration")
     if not challenge:
         logger.warning(f"WebAuthn registration challenge not found for user {user.id}")
         raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry registration.")

@@ -30,8 +30,10 @@ class NonceData(BaseModel):
 # In-memory nonce store — in production, use Redis with TTL
 _nonce_store: dict[str, NonceData] = {}
 
-# Store WebAuthn challenges for registration and login
+# Store WebAuthn challenges for registration and login, keyed by purpose
 _challenge_store: dict[str, str] = {}
+# Verified assertions for purpose-specific factors
+_verified_assertion_store: dict[str, datetime] = {}
 
 
 class AuthError(Exception):
@@ -65,13 +67,40 @@ def clear_nonce(address: str) -> None:
     """Remove a used nonce."""
     _nonce_store.pop(address.lower(), None)
 
-def store_challenge(user_id: str, challenge: str) -> None:
-    """Store WebAuthn challenge for a user."""
-    _challenge_store[user_id] = challenge
 
-def get_challenge(user_id: str) -> Optional[str]:
-    """Get and clear stored WebAuthn challenge."""
-    return _challenge_store.pop(user_id, None)
+def store_challenge(user_id: str, purpose: str, challenge: str) -> None:
+    """Store WebAuthn challenge for a user and purpose."""
+    key = f"{user_id}:{purpose}"
+    _challenge_store[key] = challenge
+
+
+def get_challenge(user_id: str, purpose: str) -> Optional[str]:
+    """Get and clear stored WebAuthn challenge for a user and purpose."""
+    key = f"{user_id}:{purpose}"
+    return _challenge_store.pop(key, None)
+
+
+def verify_assertion(user_id: str, purpose: str) -> None:
+    """Register a successful verified assertion."""
+    key = f"{user_id}:{purpose}"
+    # Valid for 5 minutes
+    expires_at = datetime.now(UTC) + timedelta(minutes=5)
+    _verified_assertion_store[key] = expires_at
+
+
+def is_assertion_valid(user_id: str, purpose: str) -> bool:
+    """Check if a verified assertion exists and is valid."""
+    key = f"{user_id}:{purpose}"
+    expires_at = _verified_assertion_store.get(key)
+    if not expires_at:
+        return False
+    if datetime.now(UTC) > expires_at:
+        _verified_assertion_store.pop(key, None)
+        return False
+    # Single-use: once verified, clear it
+    _verified_assertion_store.pop(key, None)
+    return True
+
 
 def create_jwt(wallet_address: str, did: str, role: str, session_version: int = 0, client_ip: Optional[str] = None) -> str:
     """Create a short-lived JWT session token with optional IP binding."""
@@ -150,3 +179,19 @@ async def verify_siwe_message(
         if isinstance(e, AuthError):
             raise
         raise AuthError(f"Authentication verification error: {e}")
+
+
+async def migrate_user_dids(db: AsyncSession) -> int:
+    """Ensure all users in the database have valid W3C DIDs formatted as did:ethr:{CHAIN_ID}:{wallet_address}."""
+    result = await db.execute(select(User))
+    users = result.scalars().all()
+    migrated_count = 0
+    for user in users:
+        expected_did = f"did:ethr:{settings.CHAIN_ID}:{user.wallet_address.lower()}"
+        if user.did != expected_did:
+            user.did = expected_did
+            migrated_count += 1
+    if migrated_count > 0:
+        await db.commit()
+    return migrated_count
+

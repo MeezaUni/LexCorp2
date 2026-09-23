@@ -20,9 +20,10 @@ from app.services.contract import contract_service
 from app.services.watermark import apply_watermark
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
-from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction
-from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest
+from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent
+from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest
 from app.services.security import verify_totp
+from app.services import auth
 from sqlalchemy import select, desc
 
 # Simple in-memory TTL cache (60 seconds) for registry queries
@@ -1000,8 +1001,10 @@ async def propose_document_creation(
         raise HTTPException(status_code=403, detail="Users can only propose documents for their assigned department.")
 
     if current_user.is_totp_factor2_enabled:
-        if not request.totp_code or not verify_totp(current_user.totp_factor2_secret, request.totp_code):
-            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP code.")
+        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
+        if not (is_totp_valid or is_passkey_valid):
+            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
 
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
     if res.scalar_one_or_none():
@@ -1048,6 +1051,119 @@ async def propose_document_creation(
     return action
 
 
+@router.post("/physical/propose", response_model=DocumentActionRead)
+async def propose_physical_asset_creation(
+    request: PhysicalProposalRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Propose a new physical asset for creation and approval."""
+    if current_user.role == "AUDITOR":
+        raise HTTPException(status_code=403, detail="Auditors cannot propose assets.")
+    if current_user.role not in ["ADMIN", "MANAGER"]:
+        raise HTTPException(status_code=403, detail="Only Managers and Administrators can propose physical assets.")
+
+    dept = request.department or current_user.department
+    if current_user.role == "MANAGER" and dept != current_user.department:
+        raise HTTPException(status_code=403, detail="Managers can only propose physical assets for their assigned department.")
+
+    if current_user.is_totp_factor2_enabled:
+        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
+        if not (is_totp_valid or is_passkey_valid):
+            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+
+    # 1. Uniqueness check on serial_number
+    res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
+    if res.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Asset serial number already exists.")
+
+    # 2. Uniqueness check on mac_address
+    if request.mac_address:
+        res = await db.execute(select(Asset).filter(Asset.mac_address == request.mac_address))
+        if res.scalar_one_or_none():
+            audit_event = AuditEvent(
+                event_type="DUPLICATE_PHYSICAL_ASSET_ATTEMPT",
+                tx_hash=f"audit_dup_mac_{uuid.uuid4().hex}",
+                block_number=0,
+                actor_did=current_user.did,
+                asset_serial=request.serial_number,
+                risk_score=0.85,
+                risk_label="HIGH",
+                risk_factors={"reason": "Duplicate MAC Address Attempt", "mac_address": request.mac_address, "serial_number": request.serial_number}
+            )
+            db.add(audit_event)
+            await db.commit()
+            raise HTTPException(status_code=409, detail="MAC address is already registered to an asset.")
+
+    # 3. Uniqueness check on device_unique_address
+    if request.device_unique_address:
+        res = await db.execute(select(Asset).filter(Asset.device_unique_address == request.device_unique_address))
+        if res.scalar_one_or_none():
+            audit_event = AuditEvent(
+                event_type="DUPLICATE_PHYSICAL_ASSET_ATTEMPT",
+                tx_hash=f"audit_dup_dev_{uuid.uuid4().hex}",
+                block_number=0,
+                actor_did=current_user.did,
+                asset_serial=request.serial_number,
+                risk_score=0.85,
+                risk_label="HIGH",
+                risk_factors={"reason": "Duplicate Device Unique Address Attempt", "device_unique_address": request.device_unique_address, "serial_number": request.serial_number}
+            )
+            db.add(audit_event)
+            await db.commit()
+            raise HTTPException(status_code=409, detail="Device unique address is already registered to an asset.")
+
+    action_id_str = f"CRT-PHY-{uuid.uuid4().hex[:10].upper()}"
+
+    # Temporarily allocate a unique mock token_id for the draft. Real token_id will be minted later.
+    import random
+    temp_token_id = random.randint(1000000000, 2000000000)
+
+    draft_asset = Asset(
+        token_id=temp_token_id,
+        serial_number=request.serial_number,
+        name=request.name,
+        asset_type=request.asset_type or "EQUIPMENT",
+        is_physical=True,
+        mac_address=request.mac_address,
+        device_unique_address=request.device_unique_address,
+        location=request.location,
+        department=dept,
+        owner_id=current_user.id,
+        lifecycle_status="CREATED",
+        approval_status="PENDING_APPROVAL",
+        action_id=action_id_str,
+        action_type="CREATION"
+    )
+    db.add(draft_asset)
+    await db.flush()
+
+    action = DocumentAction(
+        action_id=action_id_str,
+        action_type="CREATION",
+        asset_id=draft_asset.id,
+        asset_serial=request.serial_number,
+        actor_id=current_user.id,
+        actor_did=current_user.did,
+        status="PENDING",
+        purpose=request.purpose,
+        details={
+            "name": request.name,
+            "asset_type": request.asset_type or "EQUIPMENT",
+            "is_physical": True,
+            "mac_address": request.mac_address,
+            "device_unique_address": request.device_unique_address,
+            "location": request.location,
+            "department": dept
+        }
+    )
+    db.add(action)
+    await db.commit()
+    await db.refresh(action)
+    return action
+
+
 @router.get("/document/pending", response_model=list[DocumentActionRead])
 async def get_pending_documents(
     action_type: Optional[str] = None,
@@ -1068,6 +1184,29 @@ async def get_pending_documents(
     return result.scalars().all()
 
 
+@router.get("/physical/pending", response_model=list[DocumentActionRead])
+async def get_pending_physical_assets(
+    action_type: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve pending physical asset actions awaiting approval."""
+    query = select(DocumentAction).join(Asset, DocumentAction.asset_id == Asset.id).filter(
+        DocumentAction.status == "PENDING",
+        Asset.is_physical == True
+    )
+    if action_type:
+        query = query.filter(DocumentAction.action_type == action_type)
+
+    if current_user.role == "USER":
+        query = query.filter(DocumentAction.actor_id == current_user.id)
+    elif current_user.role == "MANAGER":
+        query = query.filter(Asset.department == current_user.department)
+
+    result = await db.execute(query.order_by(desc(DocumentAction.created_at)))
+    return result.scalars().all()
+
+
 class ApprovalCalldataResponse(BaseModel):
     calldata: Optional[dict] = None
     contract_address: Optional[str] = None
@@ -1078,6 +1217,7 @@ class ApprovalCalldataResponse(BaseModel):
     token_expires_at: Optional[datetime] = None
 
 @router.post("/document/approval/{action_id}", response_model=ApprovalCalldataResponse)
+@router.post("/physical/approval/{action_id}", response_model=ApprovalCalldataResponse)
 async def approve_document(
     action_id: str,
     request: DocumentApprovalRequest,
@@ -1104,8 +1244,10 @@ async def approve_document(
             raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
 
     if current_user.is_totp_factor3_enabled:
-        if not request.totp_code or not verify_totp(current_user.totp_factor3_secret, request.totp_code):
-            raise HTTPException(status_code=401, detail="Invalid Factor 3 TOTP code.")
+        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
+        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
+        if not (is_totp_valid or is_passkey_valid):
+            raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
 
     if request.decision.upper() == "APPROVE":
         action.status = "APPROVED"
@@ -1120,14 +1262,24 @@ async def approve_document(
 
         if action.action_type == "CREATION":
             owner_address = action.actor_did.split(":")[-1]
-            calldata = contract_service.prepare_mint_digital_calldata(
-                to_address=owner_address,
-                token_id=asset.token_id,
-                serial_number=asset.serial_number,
-                owner_did=action.actor_did,
-                file_hash=asset.file_hash or "",
-                offchain_uri=asset.metadata_cid or ""
-            )
+            if asset.is_physical:
+                # Need to use the correct function but wait, I should check the exact name or just use the same as digital?
+                # The function is contract_service.prepare_mint_calldata
+                calldata = contract_service.prepare_mint_calldata(
+                    to_address=owner_address,
+                    token_id=asset.token_id,
+                    serial_number=asset.serial_number,
+                    owner_did=action.actor_did
+                )
+            else:
+                calldata = contract_service.prepare_mint_digital_calldata(
+                    to_address=owner_address,
+                    token_id=asset.token_id,
+                    serial_number=asset.serial_number,
+                    owner_did=action.actor_did,
+                    file_hash=asset.file_hash or "",
+                    offchain_uri=asset.metadata_cid or ""
+                )
         elif action.action_type == "MODIFICATION":
             asset.lifecycle_status = "CREATED"
             if asset.parent_asset_id:
@@ -1301,8 +1453,10 @@ async def request_document_download(
     
     # 1. MFA Factor 2 Enforcement
     if current_user.is_totp_factor2_enabled:
-        if not request.totp_code or not verify_totp(current_user.totp_factor2_secret, request.totp_code):
-            raise HTTPException(status_code=401, detail="Invalid Factor 2 TOTP code required for download requests")
+        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
+        if not (is_totp_valid or is_passkey_valid):
+            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
 
     # 2. Asset Verification
     asset_res = await db.execute(select(Asset).filter(Asset.serial_number == request.asset_serial))
@@ -1386,10 +1540,17 @@ async def revise_document(
         if parent_asset.department and current_user.department and parent_asset.department != current_user.department:
             raise HTTPException(status_code=403, detail="Managers can only revise documents in their own department.")
 
-    # 3. Factor 2 TOTP Check
-    if current_user.is_totp_factor2_enabled:
-        if not request.totp_code or not verify_totp(current_user.totp_factor2_secret, request.totp_code):
-            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP code.")
+    # 3. Factor 3 / Factor 2 MFA Check (Modification requires Factor 3, with fallback to Factor 2)
+    if current_user.is_totp_factor3_enabled:
+        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
+        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
+        if not (is_totp_valid or is_passkey_valid):
+            raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+    elif current_user.is_totp_factor2_enabled:
+        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
+        if not (is_totp_valid or is_passkey_valid):
+            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
 
     # 4. Uniqueness check for new serial number
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.new_serial_number))
