@@ -1352,28 +1352,54 @@ async def approve_document(
         raise HTTPException(status_code=400, detail="Invalid decision.")
 
 
-@router.get("/document/view/{action_id}")
+@router.get("/document/view/{identifier}")
 async def view_digital_document(
-    action_id: str,
+    identifier: str,
+    totp_code: Optional[str] = None,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Securely render a document with on-the-fly dynamic watermarking."""
-    res = await db.execute(select(DocumentAction).filter(DocumentAction.action_id == action_id))
-    action = res.scalar_one_or_none()
-    if not action:
-        raise HTTPException(status_code=404, detail="Document action not found.")
-        
-    asset_res = await db.execute(select(Asset).filter(Asset.id == action.asset_id))
-    asset = asset_res.scalar_one_or_none()
+
+    # 1. MFA Factor 2 Enforcement
+    if current_user.is_totp_factor2_enabled:
+        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+        is_totp_valid = totp_code and verify_totp(current_user.totp_factor2_secret, totp_code)
+        if not (is_totp_valid or is_passkey_valid):
+            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+
+    # 2. Lookup asset or action
+    asset = None
+    # Try by Action ID (Creation action)
+    res_a = await db.execute(select(DocumentAction).filter(DocumentAction.action_id == identifier))
+    action = res_a.scalar_one_or_none()
+    if action:
+        asset_res = await db.execute(select(Asset).filter(Asset.id == action.asset_id))
+        asset = asset_res.scalar_one_or_none()
+
+    # Try by Serial
     if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found.")
+        asset_res = await db.execute(select(Asset).filter(Asset.serial_number == identifier))
+        asset = asset_res.scalar_one_or_none()
+
+    # Try by Token ID (int)
+    if not asset and identifier.isdigit():
+        asset_res = await db.execute(select(Asset).filter(Asset.token_id == int(identifier)))
+        asset = asset_res.scalar_one_or_none()
+
+    if not asset:
+        raise HTTPException(status_code=404, detail="Document asset not found.")
 
     # Authorization logic
-    if current_user.role == "USER" and action.actor_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Users can only view their own documents.")
-    if current_user.role == "MANAGER" and asset.department != current_user.department:
-        raise HTTPException(status_code=403, detail="Managers can only view documents in their own department.")
+    if current_user.role == "USER":
+        # Check if owner, custodian, or department match
+        if (str(asset.owner_id) != str(current_user.id) and
+            str(asset.custodian_id) != str(current_user.id) and
+            asset.department != current_user.department):
+            raise HTTPException(status_code=403, detail="Users can only view their own or department documents.")
+    elif current_user.role == "MANAGER":
+        if asset.department != current_user.department:
+            raise HTTPException(status_code=403, detail="Managers can only view documents in their own department.")
 
     if not asset.metadata_cid:
         raise HTTPException(status_code=404, detail="No offchain URI stored for this document.")
@@ -1513,6 +1539,7 @@ async def request_document_download(
 
 
 @router.post("/document/download/approve/{action_id}")
+@router.post("/document/download/approval/{action_id}")
 async def approve_document_download(
     action_id: str,
     request: DocumentApprovalRequest,

@@ -1,43 +1,70 @@
-import { useState, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { ethers } from 'ethers';
 import { useAuth } from '../context/AuthContext';
-import { uploadDocument } from '../services/api';
 import {
-  mintAsset,
-  mintDigitalAsset,
+  uploadDocument,
+  proposeDocument,
+  proposePhysicalAsset,
+  getPendingDocuments,
+  getPendingPhysicalAssets,
+  getPendingDownloadRequests,
+  approveDocument,
+  approvePhysicalAsset,
+  approveDownloadRequest,
+  getDownloadDocumentUrl
+} from '../services/api';
+import {
   grantAssetAccess,
   revokeAssetAccess,
   transferAsset,
   revokeAsset,
   getAsset,
-  addTokenToMetaMask,
   checkManagerRole,
   recordAccessAttempt
 } from '../services/web3';
-import deployment from '../../../contracts/deployments/localhost.json';
 
 export default function ManagerDashboard() {
   const { signer, user } = useAuth();
-  const [activeTab, setActiveTab] = useState('digital'); // 'digital' | 'physical' | 'access' | 'transfer'
+  const [activeTab, setActiveTab] = useState('pending'); // 'pending' | 'propose_doc' | 'propose_phys' | 'access' | 'transfer'
+  const [pendingSubTab, setPendingSubTab] = useState('docs'); // 'docs' | 'physical' | 'downloads'
 
-  // Digital Mint State
-  const [digitalTokenId, setDigitalTokenId] = useState('');
+  // Queue Data
+  const [pendingDocs, setPendingDocs] = useState([]);
+  const [pendingPhysical, setPendingPhysical] = useState([]);
+  const [pendingDownloads, setPendingDownloads] = useState([]);
+  const [loadingQueue, setLoadingQueue] = useState(false);
+
+  // Factor 3 Approval Modal State
+  const [selectedAction, setSelectedAction] = useState(null); // { type: 'doc' | 'physical' | 'download', item: ... }
+  const [factor3Code, setFactor3Code] = useState('');
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [isProcessingApproval, setIsProcessingApproval] = useState(false);
+  const [approvalResult, setApprovalResult] = useState(null);
+
+  // Digital Propose State
+  const [docName, setDocName] = useState('');
   const [digitalSerial, setDigitalSerial] = useState('');
-  const [digitalRecipient, setDigitalRecipient] = useState('');
+  const [docPurpose, setDocPurpose] = useState('');
+  const [docTotpCode, setDocTotpCode] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileHash, setFileHash] = useState('');
   const [offchainURI, setOffchainURI] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [digitalMinting, setDigitalMinting] = useState(false);
-  const [digitalMintResult, setDigitalMintResult] = useState(null);
+  const [proposingDoc, setProposingDoc] = useState(false);
+  const [docProposalResult, setDocProposalResult] = useState(null);
 
-  // Physical Mint State
-  const [mintTokenId, setMintTokenId] = useState('');
-  const [mintSerial, setMintSerial] = useState('');
-  const [mintRecipient, setMintRecipient] = useState('');
-  const [minting, setMinting] = useState(false);
-  const [mintedAsset, setMintedAsset] = useState(null);
+  // Physical Propose State
+  const [physName, setPhysName] = useState('');
+  const [physSerial, setPhysSerial] = useState('');
+  const [physType, setPhysType] = useState('EQUIPMENT');
+  const [physMac, setPhysMac] = useState('');
+  const [physDevAddr, setPhysDevAddr] = useState('');
+  const [physLocation, setPhysLocation] = useState('');
+  const [physPurpose, setPhysPurpose] = useState('');
+  const [physTotpCode, setPhysTotpCode] = useState('');
+  const [proposingPhys, setProposingPhys] = useState(false);
+  const [physProposalResult, setPhysProposalResult] = useState(null);
 
   // Access Control State
   const [accessDocTokenId, setAccessDocTokenId] = useState('');
@@ -58,6 +85,74 @@ export default function ManagerDashboard() {
   const [revokeResult, setRevokeResult] = useState(null);
 
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+
+  // Fetch Pending Items
+  const fetchPendingQueues = async () => {
+    setLoadingQueue(true);
+    setError('');
+    try {
+      const [docs, phys, dls] = await Promise.all([
+        getPendingDocuments().catch(() => []),
+        getPendingPhysicalAssets().catch(() => []),
+        getPendingDownloadRequests().catch(() => [])
+      ]);
+      setPendingDocs(Array.isArray(docs) ? docs : []);
+      setPendingPhysical(Array.isArray(phys) ? phys : []);
+      setPendingDownloads(Array.isArray(dls) ? dls : []);
+    } catch (err) {
+      console.error('Failed to load pending queues:', err);
+    } finally {
+      setLoadingQueue(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'pending') {
+      fetchPendingQueues();
+    }
+  }, [activeTab]);
+
+  // Handle Approvals / Rejections (Factor 3 Enforced)
+  const handleDecision = async (decision) => {
+    if (!selectedAction) return;
+    setIsProcessingApproval(true);
+    setError('');
+    setSuccessMsg('');
+    setApprovalResult(null);
+
+    const { type, item } = selectedAction;
+    const actionId = item.action_id;
+
+    try {
+      const payload = {
+        decision,
+        totp_code: factor3Code || null,
+        rejection_reason: decision === 'REJECT' ? (rejectionReason || 'Rejected by Department Manager') : null
+      };
+
+      let res;
+      if (type === 'doc') {
+        res = await approveDocument(actionId, payload);
+      } else if (type === 'physical') {
+        res = await approvePhysicalAsset(actionId, payload);
+      } else if (type === 'download') {
+        res = await approveDownloadRequest(actionId, payload);
+      }
+
+      setSuccessMsg(`Action ${actionId} successfully marked as ${decision}!`);
+      setApprovalResult(res);
+      setSelectedAction(null);
+      setFactor3Code('');
+      setRejectionReason('');
+      await fetchPendingQueues();
+    } catch (err) {
+      console.error('Approval execution error:', err);
+      setError(err.response?.data?.detail || err.message || 'Operation failed');
+    } finally {
+      setIsProcessingApproval(false);
+    }
+  };
 
   // Handle File Upload & Off-chain SHA-256 generation
   const handleFileUpload = async (e) => {
@@ -76,6 +171,7 @@ export default function ManagerDashboard() {
       setFileHash(data.file_hash);
       setOffchainURI(data.offchain_uri);
       if (!digitalSerial) setDigitalSerial(`DOC-${Date.now()}-${file.name.toUpperCase().substring(0, 30)}`);
+      if (!docName) setDocName(file.name.replace(/\.[^/.]+$/, ''));
     } catch (err) {
       console.error('File upload error:', err);
       setError(err.response?.data?.detail || 'File processing failed');
@@ -84,152 +180,94 @@ export default function ManagerDashboard() {
     }
   };
 
-  const handleDigitalMint = async (e) => {
+  // Propose Digital Document (Factor 2 Protected)
+  const handleProposeDocument = async (e) => {
     e.preventDefault();
     setError('');
-    setDigitalMinting(true);
-    setDigitalMintResult(null);
+    setSuccessMsg('');
+    setProposingDoc(true);
+    setDocProposalResult(null);
 
     try {
-      if (!signer) {
-        throw new Error('Unlock your wallet again before minting assets.');
-      }
-      if (!ethers.isAddress(digitalRecipient)) {
-        throw new Error('Enter a valid recipient wallet address (0x...).');
-      }
       if (!fileHash || !offchainURI) {
-        throw new Error('Please upload a document to generate its SHA-256 hash first.');
+        throw new Error('Please select and upload a document first.');
+      }
+      if (!docName.trim()) {
+        throw new Error('Please enter a document title.');
+      }
+      if (!digitalSerial.trim()) {
+        throw new Error('Please enter a document serial number.');
       }
 
-      // Ensure token ID and serial are unique and don't conflict with existing on-chain tokens
-      // On-chain tokens already include: 101 (LEX-DRONE-ALPHA-01), 102 (LEX-SECURE-SERVER-99), 201 (LEX-CONFIDENTIAL-AI-SPECS.pdf), 202 (LEX-QUANTUM-ALGO-V2.pdf), 501, 601
-      const tokenIdNum = parseInt(digitalTokenId) || 0;
-      const serialUsed = digitalSerial ? ['LEX-DRONE-ALPHA-01', 'LEX-SECURE-SERVER-99', 'LEX-CONFIDENTIAL-AI-SPECS.pdf', 'LEX-QUANTUM-ALGO-V2.pdf', 'LEX-E2E-PHYSICAL-001', 'LEX-E2E-DIGITAL-DOC-001'].includes(digitalSerial) : false;
-      const tokenUsed = [101, 102, 201, 202, 501, 601].includes(tokenIdNum);
+      const payload = {
+        name: docName,
+        serial_number: digitalSerial,
+        file_hash: fileHash,
+        offchain_uri: offchainURI,
+        purpose: docPurpose || 'Defense Technical Documentation',
+        totp_code: docTotpCode || null,
+      };
 
-      if (!tokenIdNum || tokenIdNum <= 0) {
-        throw new Error('Token ID must be a positive integer (e.g., 301, 401, 701 — avoid 101, 102, 201, 202, 501, 601 which already exist on-chain).');
-      }
-      if (tokenUsed) {
-        throw new Error(`Token ID #${tokenIdNum} already exists on-chain. Please use a unique token ID (e.g., 301, 401, 701, 801, 901, etc.).`);
-      }
-      if (serialUsed) {
-        throw new Error(`Serial number "${digitalSerial}" already exists on-chain. Please use a unique serial number.`);
-      }
-      if (!digitalSerial || digitalSerial.trim().length === 0) {
-        throw new Error('Serial number is required. The smart contract requires EmptySerialNumber to be non-empty.');
-      }
-      if (!fileHash || fileHash.trim().length === 0) {
-        throw new Error('File hash is required (SHA-256). Upload a document first.');
-      }
-      if (!offchainURI || offchainURI.trim().length === 0) {
-        throw new Error('Off-chain URI is required. Upload a document first.');
-      }
-
-      const did = `did:ethr:13371:${digitalRecipient.toLowerCase()}`;
-      const result = await mintDigitalAsset(
-        signer,
-        digitalRecipient,
-        parseInt(digitalTokenId),
-        digitalSerial,
-        did,
-        fileHash,
-        offchainURI
-      );
-
-      setDigitalMintResult({
-        tokenId: digitalTokenId,
-        serialNumber: digitalSerial,
-        fileHash,
-        offchainURI,
-        ownerDID: did,
-        txHash: result.txHash,
-      });
-
-      await addTokenToMetaMask(deployment.address, digitalTokenId);
+      const result = await proposeDocument(payload);
+      setSuccessMsg(`Document proposal ${result.action_id} submitted! Pending Factor 3 approval.`);
+      setDocProposalResult(result);
+      setDocName('');
+      setDigitalSerial('');
+      setDocPurpose('');
+      setDocTotpCode('');
+      setFileHash('');
+      setOffchainURI('');
+      setSelectedFile(null);
     } catch (err) {
-      console.error('Digital Minting error:', err);
-      setError(err.message || 'Digital Minting failed');
+      console.error('Document proposal error:', err);
+      setError(err.response?.data?.detail || err.message || 'Proposal failed');
     } finally {
-      setDigitalMinting(false);
+      setProposingDoc(false);
     }
   };
 
-  const handlePhysicalMint = async (e) => {
+  // Propose Physical Hardware (Factor 2 Protected)
+  const handleProposePhysical = async (e) => {
     e.preventDefault();
     setError('');
-    setMinting(true);
-    setMintedAsset(null);
+    setSuccessMsg('');
+    setProposingPhys(true);
+    setPhysProposalResult(null);
 
     try {
-      if (!signer) {
-        throw new Error('Unlock your wallet again before minting assets.');
-      }
-      if (!ethers.isAddress(mintRecipient)) {
-        throw new Error('Enter a valid recipient wallet address (0x...).');
-      }
-      const callerAddress = await signer.getAddress();
-      const isMgr = await checkManagerRole(signer, callerAddress);
-      const userDID = `did:ethr:13371:${callerAddress.toLowerCase()}`;
+      if (!physName.trim()) throw new Error('Hardware unit name is required.');
+      if (!physSerial.trim()) throw new Error('Serial number is required.');
 
-      if (!isMgr) {
-        try {
-          await recordAccessAttempt(
-            signer,
-            parseInt(mintTokenId) || 0,
-            userDID,
-            false,
-            'Unauthorized Physical Mint Attempt (Missing MANAGER_ROLE)'
-          );
-        } catch (logErr) {
-          console.warn('Failed to record on-chain access attempt:', logErr);
-        }
-        throw new Error('Access Denied: Your account does not possess the MANAGER_ROLE on the smart contract registry. An unauthorized attempt has been logged to the audit ledger.');
-      }
+      const payload = {
+        name: physName,
+        serial_number: physSerial,
+        asset_type: physType,
+        mac_address: physMac.trim() || null,
+        device_unique_address: physDevAddr.trim() || null,
+        location: physLocation.trim() || null,
+        purpose: physPurpose.trim() || 'Tactical Defense Deployment',
+        totp_code: physTotpCode || null
+      };
 
-      // Validate unique token/serial for physical mint (avoid existing: 101, 102, 501)
-      const pTokenNum = parseInt(mintTokenId) || 0;
-      const pSerialUsed = mintSerial ? ['LEX-DRONE-ALPHA-01', 'LEX-SECURE-SERVER-99', 'LEX-CONFIDENTIAL-AI-SPECS.pdf', 'LEX-QUANTUM-ALGO-V2.pdf', 'LEX-E2E-PHYSICAL-001', 'LEX-E2E-DIGITAL-DOC-001'].includes(mintSerial) : false;
-      const pTokenUsed = [101, 102, 201, 202, 501, 601].includes(pTokenNum);
-      if (!pTokenNum || pTokenNum <= 0) {
-        throw new Error('Physical Token ID must be a positive integer (e.g., 301, 401 — avoid 101, 102, 501, 601 which exist on-chain).');
-      }
-      if (pTokenUsed) {
-        throw new Error(`Physical Token ID #${pTokenNum} already exists on-chain. Use a unique ID.`);
-      }
-      if (pSerialUsed) {
-        throw new Error(`Physical Serial "${mintSerial}" already exists on-chain. Use a unique serial.`);
-      }
-      if (!mintSerial || mintSerial.trim().length === 0) {
-        throw new Error('Physical Serial number is required (smart contract requires non-empty serial number).');
-      }
-
-      const did = `did:ethr:13371:${mintRecipient.toLowerCase()}`;
-      const result = await mintAsset(
-        signer,
-        mintRecipient,
-        parseInt(mintTokenId),
-        mintSerial,
-        did
-      );
-
-      const asset = await getAsset(mintTokenId);
-      setMintedAsset({
-        ...(asset || {}),
-        tokenId: mintTokenId,
-        serialNumber: mintSerial,
-        txHash: result.txHash,
-      });
-
-      await addTokenToMetaMask(deployment.address, mintTokenId);
+      const result = await proposePhysicalAsset(payload);
+      setSuccessMsg(`Physical asset proposal ${result.action_id} submitted! Pending Factor 3 approval.`);
+      setPhysProposalResult(result);
+      setPhysName('');
+      setPhysSerial('');
+      setPhysMac('');
+      setPhysDevAddr('');
+      setPhysLocation('');
+      setPhysPurpose('');
+      setPhysTotpCode('');
     } catch (err) {
-      console.error('Minting error:', err);
-      setError(err.message || 'Minting failed');
+      console.error('Physical asset proposal error:', err);
+      setError(err.response?.data?.detail || err.message || 'Proposal failed');
     } finally {
-      setMinting(false);
+      setProposingPhys(false);
     }
   };
 
+  // Grant Access Control
   const handleGrantAccess = async (e) => {
     e.preventDefault();
     setError('');
@@ -237,7 +275,6 @@ export default function ManagerDashboard() {
     setAccessResult(null);
 
     try {
-      // Normalize target DID to ensure chain ID 13371 and lowercase address format
       let formattedDID = accessTargetDID.trim();
       if (formattedDID.startsWith('0x')) {
         formattedDID = `did:ethr:13371:${formattedDID.toLowerCase()}`;
@@ -268,6 +305,7 @@ export default function ManagerDashboard() {
     }
   };
 
+  // Transfer Asset
   const handleTransfer = async (e) => {
     e.preventDefault();
     setError('');
@@ -291,7 +329,7 @@ export default function ManagerDashboard() {
         } catch (logErr) {
           console.warn('Failed to record on-chain access attempt:', logErr);
         }
-        throw new Error('Access Denied: Your account does not possess the MANAGER_ROLE on the smart contract registry. An unauthorized attempt has been logged to the audit ledger.');
+        throw new Error('Access Denied: Your account does not possess the MANAGER_ROLE on the smart contract registry.');
       }
 
       const result = await transferAsset(
@@ -314,6 +352,7 @@ export default function ManagerDashboard() {
     }
   };
 
+  // Revoke Physical Asset
   const handleRevoke = async (e) => {
     e.preventDefault();
     if (!window.confirm(`Permanently burn Token ID #${revokeTokenId} on-chain?`)) return;
@@ -328,21 +367,9 @@ export default function ManagerDashboard() {
       const userDID = `did:ethr:13371:${callerAddress.toLowerCase()}`;
 
       if (!isMgr) {
-        try {
-          await recordAccessAttempt(
-            signer,
-            parseInt(revokeTokenId) || 0,
-            userDID,
-            false,
-            'Unauthorized Asset Revoke Attempt (Missing MANAGER_ROLE)'
-          );
-        } catch (logErr) {
-          console.warn('Failed to record on-chain access attempt:', logErr);
-        }
-        throw new Error('Access Denied: Your account does not possess the MANAGER_ROLE on the smart contract registry. An unauthorized attempt has been logged to the audit ledger.');
+        throw new Error('Access Denied: Your account does not possess the MANAGER_ROLE on the smart contract registry.');
       }
 
-      // Role check: Managers can only revoke PHYSICAL assets
       const assetData = await getAsset(revokeTokenId);
       if (assetData?.isDigital && user?.role === 'MANAGER') {
         throw new Error('Policy Violation: Managers are only permitted to revoke PHYSICAL defense hardware. Revocation of digital documents is restricted to the asset owner or Administrator.');
@@ -362,30 +389,49 @@ export default function ManagerDashboard() {
     }
   };
 
-  const panelStyle = { border: '1px solid #e5e7eb', padding: '1.5rem', borderRadius: '12px', background: '#fff' };
+  const panelStyle = { border: '1px solid #e5e7eb', padding: '1.5rem', borderRadius: '12px', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' };
   const inputStyle = { width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #d1d5db', boxSizing: 'border-box', marginBottom: '1rem', fontFamily: 'monospace' };
   const labelStyle = { display: 'block', marginBottom: '6px', fontWeight: 'bold', fontSize: '12px', color: '#374151', textTransform: 'uppercase' };
+  const tableHeaderStyle = { padding: '12px 14px', background: '#f8fafc', color: '#475569', fontWeight: 'bold', fontSize: '12px', textAlign: 'left', borderBottom: '1px solid #e2e8f0' };
+  const tableCellStyle = { padding: '12px 14px', borderBottom: '1px solid #e2e8f0', fontSize: '13px', color: '#1e293b' };
 
   return (
-    <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
+    <div style={{ maxWidth: '1150px', margin: '0 auto', width: '100%' }}>
+      {/* Top Header */}
+      <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold', color: '#0f172a' }}>
+            Manager Command & Approval Portal
+          </h1>
+          <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '14px' }}>
+            Departmental Asset Approval, Defense Hardware Registration & Smart Contract Custody Control
+          </p>
+        </div>
+        <div style={{ background: '#e0e7ff', color: '#3730a3', padding: '6px 14px', borderRadius: '20px', fontWeight: 'bold', fontSize: '12px' }}>
+          Department: {user?.department || 'Operations'}
+        </div>
+      </div>
+
       {/* Navigation Tabs */}
-      <div style={{ display: 'flex', gap: '10px', marginBottom: '2rem', borderBottom: '2px solid #e5e7eb', paddingBottom: '10px' }}>
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '1.5rem', borderBottom: '2px solid #e5e7eb', paddingBottom: '10px' }}>
         {[
-          { id: 'digital', label: 'Mint Digital Asset (PDF / Cert)' },
-          { id: 'physical', label: 'Mint Physical Asset (QR / Serial)' },
-          { id: 'access', label: 'Asset Access Permissions' },
-          { id: 'transfer', label: 'Asset Transfer' },
+          { id: 'pending', label: `Pending Approvals (${pendingDocs.length + pendingPhysical.length + pendingDownloads.length})` },
+          { id: 'propose_doc', label: 'Propose Digital Document' },
+          { id: 'propose_phys', label: 'Propose Physical Hardware' },
+          { id: 'access', label: 'Granular ACL Permissions' },
+          { id: 'transfer', label: 'Transfer & Revoke' },
         ].map((tab) => (
           <button
             key={tab.id}
-            onClick={() => { setActiveTab(tab.id); setError(''); }}
+            onClick={() => { setActiveTab(tab.id); setError(''); setSuccessMsg(''); }}
             style={{
-              padding: '10px 16px',
+              padding: '10px 18px',
               border: 'none',
               borderRadius: '8px',
-              background: activeTab === tab.id ? '#4f46e5' : '#f3f4f6',
-              color: activeTab === tab.id ? '#fff' : '#4b5563',
-              fontWeight: 'bold',
+              background: activeTab === tab.id ? '#1e293b' : '#f1f5f9',
+              color: activeTab === tab.id ? '#ffffff' : '#475569',
+              fontWeight: '600',
+              fontSize: '13px',
               cursor: 'pointer',
             }}
           >
@@ -394,22 +440,295 @@ export default function ManagerDashboard() {
         ))}
       </div>
 
-      {error && (
-        <div style={{ marginBottom: '1.5rem', padding: '1rem', background: '#fee2e2', color: '#991b1b', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px' }}>
-          Error: {error}
+      {/* Messages */}
+      {successMsg && (
+        <div style={{ marginBottom: '1.5rem', padding: '1rem', background: '#ecfdf5', color: '#065f46', border: '1px solid #10b981', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px' }}>
+          ✓ {successMsg}
         </div>
       )}
 
-      {/* 1. DIGITAL ASSET MINTING */}
-      {activeTab === 'digital' && (
+      {error && (
+        <div style={{ marginBottom: '1.5rem', padding: '1rem', background: '#fef2f2', color: '#991b1b', border: '1px solid #ef4444', borderRadius: '8px', fontWeight: 'bold', fontSize: '14px' }}>
+          ⚠ {error}
+        </div>
+      )}
+
+      {/* TAB 1: PENDING APPROVAL QUEUE */}
+      {activeTab === 'pending' && (
         <div style={panelStyle}>
-          <h2 style={{ margin: '0 0 8px', fontSize: '20px', color: '#111827' }}>Digital Asset NFT Creation</h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>Departmental Review Queue</h2>
+              <p style={{ margin: '4px 0 0', fontSize: '13px', color: '#64748b' }}>
+                Review and approve document creation proposals, physical defense hardware proposals, and secure download requests. Approvals require Factor 3 MFA.
+              </p>
+            </div>
+            <button
+              onClick={fetchPendingQueues}
+              disabled={loadingQueue}
+              style={{ padding: '8px 14px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+            >
+              {loadingQueue ? 'Refreshing...' : '↻ Refresh Queue'}
+            </button>
+          </div>
+
+          {/* Sub-Queue Tabs */}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '1.5rem', background: '#f8fafc', padding: '4px', borderRadius: '8px', width: 'fit-content' }}>
+            <button
+              onClick={() => setPendingSubTab('docs')}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '6px',
+                border: 'none',
+                background: pendingSubTab === 'docs' ? '#ffffff' : 'transparent',
+                color: pendingSubTab === 'docs' ? '#0f172a' : '#64748b',
+                fontWeight: '600',
+                fontSize: '12px',
+                cursor: 'pointer',
+                boxShadow: pendingSubTab === 'docs' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'
+              }}
+            >
+              Digital Documents ({pendingDocs.length})
+            </button>
+            <button
+              onClick={() => setPendingSubTab('physical')}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '6px',
+                border: 'none',
+                background: pendingSubTab === 'physical' ? '#ffffff' : 'transparent',
+                color: pendingSubTab === 'physical' ? '#0f172a' : '#64748b',
+                fontWeight: '600',
+                fontSize: '12px',
+                cursor: 'pointer',
+                boxShadow: pendingSubTab === 'physical' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'
+              }}
+            >
+              Physical Hardware ({pendingPhysical.length})
+            </button>
+            <button
+              onClick={() => setPendingSubTab('downloads')}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '6px',
+                border: 'none',
+                background: pendingSubTab === 'downloads' ? '#ffffff' : 'transparent',
+                color: pendingSubTab === 'downloads' ? '#0f172a' : '#64748b',
+                fontWeight: '600',
+                fontSize: '12px',
+                cursor: 'pointer',
+                boxShadow: pendingSubTab === 'downloads' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'
+              }}
+            >
+              Download Requests ({pendingDownloads.length})
+            </button>
+          </div>
+
+          {/* Sub-tab 1: Pending Documents */}
+          {pendingSubTab === 'docs' && (
+            <div>
+              {pendingDocs.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#94a3b8' }}>
+                  No pending digital document proposals awaiting approval in your department.
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        <th style={tableHeaderStyle}>Action ID</th>
+                        <th style={tableHeaderStyle}>Document Serial</th>
+                        <th style={tableHeaderStyle}>Proposed By</th>
+                        <th style={tableHeaderStyle}>Purpose</th>
+                        <th style={tableHeaderStyle}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pendingDocs.map((item) => (
+                        <tr key={item.action_id}>
+                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontWeight: 'bold' }}>{item.action_id}</td>
+                          <td style={tableCellStyle}>{item.asset_serial || '—'}</td>
+                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontSize: '11px' }}>{item.actor_did ? `${item.actor_did.slice(0, 16)}...` : '—'}</td>
+                          <td style={tableCellStyle}>{item.purpose || 'Document Registration'}</td>
+                          <td style={tableCellStyle}>
+                            <button
+                              onClick={() => { setSelectedAction({ type: 'doc', item }); setFactor3Code(''); }}
+                              style={{ padding: '6px 12px', background: '#059669', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
+                            >
+                              Review & Approve →
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Sub-tab 2: Pending Physical Assets */}
+          {pendingSubTab === 'physical' && (
+            <div>
+              {pendingPhysical.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#94a3b8' }}>
+                  No pending physical hardware proposals awaiting approval.
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        <th style={tableHeaderStyle}>Action ID</th>
+                        <th style={tableHeaderStyle}>Hardware Serial</th>
+                        <th style={tableHeaderStyle}>Proposer DID</th>
+                        <th style={tableHeaderStyle}>Department</th>
+                        <th style={tableHeaderStyle}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pendingPhysical.map((item) => (
+                        <tr key={item.action_id}>
+                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontWeight: 'bold' }}>{item.action_id}</td>
+                          <td style={tableCellStyle}>{item.asset_serial || '—'}</td>
+                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontSize: '11px' }}>{item.actor_did ? `${item.actor_did.slice(0, 16)}...` : '—'}</td>
+                          <td style={tableCellStyle}>{item.department || 'Avionics'}</td>
+                          <td style={tableCellStyle}>
+                            <button
+                              onClick={() => { setSelectedAction({ type: 'physical', item }); setFactor3Code(''); }}
+                              style={{ padding: '6px 12px', background: '#059669', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
+                            >
+                              Review & Approve →
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Sub-tab 3: Pending Download Requests */}
+          {pendingSubTab === 'downloads' && (
+            <div>
+              {pendingDownloads.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#94a3b8' }}>
+                  No pending document download requests.
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        <th style={tableHeaderStyle}>Action ID</th>
+                        <th style={tableHeaderStyle}>Asset Serial</th>
+                        <th style={tableHeaderStyle}>Requested By</th>
+                        <th style={tableHeaderStyle}>Purpose / Justification</th>
+                        <th style={tableHeaderStyle}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pendingDownloads.map((item) => (
+                        <tr key={item.action_id}>
+                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontWeight: 'bold' }}>{item.action_id}</td>
+                          <td style={tableCellStyle}>{item.asset_serial || '—'}</td>
+                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontSize: '11px' }}>{item.actor_did ? `${item.actor_did.slice(0, 16)}...` : '—'}</td>
+                          <td style={tableCellStyle}>{item.purpose || 'Operational Assessment'}</td>
+                          <td style={tableCellStyle}>
+                            <button
+                              onClick={() => { setSelectedAction({ type: 'download', item }); setFactor3Code(''); }}
+                              style={{ padding: '6px 12px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
+                            >
+                              Approve Download →
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* FACTOR 3 APPROVAL MODAL */}
+      {selectedAction && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#ffffff', borderRadius: '12px', width: '100%', maxWidth: '520px', padding: '2rem', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.2rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', color: '#0f172a' }}>
+                Review Action: {selectedAction.item.action_id}
+              </h3>
+              <button
+                onClick={() => setSelectedAction(null)}
+                style={{ background: 'transparent', border: 'none', fontSize: '18px', cursor: 'pointer', color: '#64748b' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '12px', marginBottom: '1.5rem', fontSize: '13px' }}>
+              <div style={{ marginBottom: '6px' }}><strong>Asset Serial:</strong> {selectedAction.item.asset_serial || '—'}</div>
+              <div style={{ marginBottom: '6px' }}><strong>Proposed By:</strong> <span style={{ fontFamily: 'monospace', fontSize: '11px' }}>{selectedAction.item.actor_did}</span></div>
+              <div style={{ marginBottom: '6px' }}><strong>Purpose:</strong> {selectedAction.item.purpose || '—'}</div>
+              {selectedAction.item.file_hash && (
+                <div style={{ wordBreak: 'break-all', fontSize: '11px', fontFamily: 'monospace' }}>
+                  <strong>SHA-256:</strong> {selectedAction.item.file_hash}
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginBottom: '1.2rem' }}>
+              <label style={labelStyle}>
+                Factor 3 Multi-Factor Authentication Code (TOTP 3 / Passkey 3) *
+              </label>
+              <input
+                type="text"
+                value={factor3Code}
+                onChange={(e) => setFactor3Code(e.target.value)}
+                placeholder="Enter 6-digit Factor 3 code"
+                style={{ ...inputStyle, fontSize: '16px', letterSpacing: '2px', textAlign: 'center' }}
+                maxLength={6}
+              />
+              <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#64748b' }}>
+                Manager / Admin Factor 3 authentication is cryptographically enforced for all on-chain mints and download approvals.
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={() => handleDecision('APPROVE')}
+                disabled={isProcessingApproval}
+                style={{ flex: 1, padding: '12px', background: isProcessingApproval ? '#94a3b8' : '#059669', color: '#ffffff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                {isProcessingApproval ? 'Verifying MFA...' : '✓ Approve & Mint'}
+              </button>
+              <button
+                onClick={() => handleDecision('REJECT')}
+                disabled={isProcessingApproval}
+                style={{ padding: '12px 18px', background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: PROPOSE DIGITAL DOCUMENT */}
+      {activeTab === 'propose_doc' && (
+        <div style={panelStyle}>
+          <h2 style={{ margin: '0 0 8px', fontSize: '20px', color: '#111827' }}>Propose Classified Digital Document</h2>
           <p style={{ margin: '0 0 1.5rem', fontSize: '14px', color: '#6b7280' }}>
-            Upload off-chain document (PDF, certificate, software license) to anchor its cryptographic SHA-256 hash on-chain.
+            Upload off-chain document (PDF, specifications, security protocol) to anchor its cryptographic SHA-256 hash on-chain.
           </p>
 
-          <form onSubmit={handleDigitalMint}>
-            <label style={labelStyle}>1. Select Document to Hash & Store Off-Chain</label>
+          <form onSubmit={handleProposeDocument}>
+            <label style={labelStyle}>1. Select Document to Hash & Store Off-Chain *</label>
             <input type="file" onChange={handleFileUpload} style={inputStyle} required />
             {uploading && <p style={{ fontSize: '12px', color: '#4f46e5' }}>Calculating SHA-256 and storing off-chain...</p>}
             {fileHash && (
@@ -421,77 +740,186 @@ export default function ManagerDashboard() {
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div>
-                <label style={labelStyle}>Token ID</label>
-                <input type="number" value={digitalTokenId} onChange={(e) => setDigitalTokenId(e.target.value)} required style={inputStyle} placeholder="e.g. 301 (avoid 101, 102, 201, 202, 501, 601 — already on-chain)" />
+                <label style={labelStyle}>Document Name / Title *</label>
+                <input
+                  type="text"
+                  value={docName}
+                  onChange={(e) => setDocName(e.target.value)}
+                  required
+                  style={inputStyle}
+                  placeholder="e.g. Avionics Guidance Firmware Specs"
+                />
               </div>
               <div>
-                <label style={labelStyle}>Document Identifier / Name</label>
-                <input type="text" value={digitalSerial} onChange={(e) => setDigitalSerial(e.target.value)} required style={inputStyle} placeholder="e.g. LEX-DOC-301 (must be unique — not LEX-CONFIDENTIAL-AI-SPECS.pdf etc.)" />
+                <label style={labelStyle}>Document Serial Identifier *</label>
+                <input
+                  type="text"
+                  value={digitalSerial}
+                  onChange={(e) => setDigitalSerial(e.target.value)}
+                  required
+                  style={inputStyle}
+                  placeholder="e.g. BEL-DOC-AVIONICS-2026-001"
+                />
               </div>
             </div>
 
-            <label style={labelStyle}>Recipient Wallet Address</label>
-            <input type="text" value={digitalRecipient} onChange={(e) => setDigitalRecipient(e.target.value)} required style={inputStyle} placeholder="Enter any 0x... wallet address" />
+            <label style={labelStyle}>Purpose & Department Classification</label>
+            <input
+              type="text"
+              value={docPurpose}
+              onChange={(e) => setDocPurpose(e.target.value)}
+              style={inputStyle}
+              placeholder="e.g. Strategic Radar Upgrade Documentation"
+            />
 
-            <button type="submit" disabled={digitalMinting || uploading || !fileHash} style={{ width: '100%', padding: '12px', background: digitalMinting ? '#9ca3af' : '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
-              {digitalMinting ? 'Minting Digital NFT on Besu...' : 'Mint Digital Asset NFT'}
+            <label style={labelStyle}>Factor 2 TOTP Code (Submission MFA)</label>
+            <input
+              type="text"
+              value={docTotpCode}
+              onChange={(e) => setDocTotpCode(e.target.value)}
+              style={inputStyle}
+              placeholder="Enter 6-digit Factor 2 code (if configured)"
+              maxLength={6}
+            />
+
+            <button
+              type="submit"
+              disabled={proposingDoc || uploading || !fileHash}
+              style={{ width: '100%', padding: '12px', background: proposingDoc ? '#9ca3af' : '#1e293b', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              {proposingDoc ? 'Submitting Document Proposal...' : 'Submit Document Proposal'}
             </button>
           </form>
 
-          {digitalMintResult && (
+          {docProposalResult && (
             <div style={{ marginTop: '1.5rem', padding: '1rem', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px' }}>
-              <h4 style={{ margin: '0 0 10px 0', color: '#166534' }}>Digital Asset Minted Successfully on-chain!</h4>
+              <h4 style={{ margin: '0 0 10px 0', color: '#166534' }}>Document Proposal Created Successfully!</h4>
               <div style={{ fontSize: '12px', color: '#15803d', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                <strong>Token ID:</strong> #{digitalMintResult.tokenId}<br />
-                <strong>Identifier:</strong> {digitalMintResult.serialNumber}<br />
-                <strong>Owner DID:</strong> {digitalMintResult.ownerDID}<br />
-                <strong>Anchored File Hash:</strong> {digitalMintResult.fileHash}<br />
-                <strong>Tx Hash:</strong> {digitalMintResult.txHash}
+                <strong>Action ID:</strong> {docProposalResult.action_id}<br />
+                <strong>Serial:</strong> {docProposalResult.asset_serial}<br />
+                <strong>Status:</strong> {docProposalResult.status} (Pending Factor 3 Manager Approval)
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* 2. PHYSICAL ASSET MINTING */}
-      {activeTab === 'physical' && (
+      {/* TAB 3: PROPOSE PHYSICAL HARDWARE */}
+      {activeTab === 'propose_phys' && (
         <div style={panelStyle}>
-          <h2 style={{ margin: '0 0 8px', fontSize: '20px', color: '#111827' }}>Physical Asset NFT Creation</h2>
+          <h2 style={{ margin: '0 0 8px', fontSize: '20px', color: '#111827' }}>Propose Defense Physical Hardware Asset</h2>
           <p style={{ margin: '0 0 1.5rem', fontSize: '14px', color: '#6b7280' }}>
-            Mint physical asset token bound to hardware serial number and cryptographic verification QR.
+            Register tactical defense equipment with globally unique serial, MAC address, and device hardware identifiers.
           </p>
 
-          <form onSubmit={handlePhysicalMint}>
-            <label style={labelStyle}>Token ID</label>
-            <input type="number" value={mintTokenId} onChange={(e) => setMintTokenId(e.target.value)} required style={inputStyle} placeholder="e.g. 101" />
+          <form onSubmit={handleProposePhysical}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div>
+                <label style={labelStyle}>Hardware Name / Unit Title *</label>
+                <input
+                  type="text"
+                  value={physName}
+                  onChange={(e) => setPhysName(e.target.value)}
+                  required
+                  style={inputStyle}
+                  placeholder="e.g. Radar Signal Processor Mark-IV"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Physical Serial Number *</label>
+                <input
+                  type="text"
+                  value={physSerial}
+                  onChange={(e) => setPhysSerial(e.target.value)}
+                  required
+                  style={inputStyle}
+                  placeholder="e.g. BEL-HW-RADAR-901"
+                />
+              </div>
+            </div>
 
-            <label style={labelStyle}>Physical Serial / Hardware Tag</label>
-            <input type="text" value={mintSerial} onChange={(e) => setMintSerial(e.target.value)} required style={inputStyle} placeholder="e.g. LEX-SERVER-99" />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div>
+                <label style={labelStyle}>MAC Address (Hardware Tag)</label>
+                <input
+                  type="text"
+                  value={physMac}
+                  onChange={(e) => setPhysMac(e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. 00:1A:2B:3C:4D:5E"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Device Unique Hardware Address</label>
+                <input
+                  type="text"
+                  value={physDevAddr}
+                  onChange={(e) => setPhysDevAddr(e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. DEV-SECURE-CHIP-778"
+                />
+              </div>
+            </div>
 
-            <label style={labelStyle}>Recipient Wallet Address</label>
-            <input type="text" value={mintRecipient} onChange={(e) => setMintRecipient(e.target.value)} required style={inputStyle} placeholder="Enter any 0x... wallet address" />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div>
+                <label style={labelStyle}>Deployment Location / Bay</label>
+                <input
+                  type="text"
+                  value={physLocation}
+                  onChange={(e) => setPhysLocation(e.target.value)}
+                  style={inputStyle}
+                  placeholder="e.g. Bay-4 Avionics Testing Hangar"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Asset Classification Type</label>
+                <select
+                  value={physType}
+                  onChange={(e) => setPhysType(e.target.value)}
+                  style={inputStyle}
+                >
+                  <option value="EQUIPMENT">EQUIPMENT</option>
+                  <option value="WEAPON_SYSTEM">WEAPON SYSTEM</option>
+                  <option value="COMMUNICATION">COMMUNICATION</option>
+                  <option value="VEHICLE">TACTICAL VEHICLE</option>
+                </select>
+              </div>
+            </div>
 
-            <button type="submit" disabled={minting} style={{ width: '100%', padding: '12px', background: minting ? '#9ca3af' : '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
-              {minting ? 'Minting Physical NFT...' : 'Mint Physical Asset'}
+            <label style={labelStyle}>Factor 2 TOTP Code (Submission MFA)</label>
+            <input
+              type="text"
+              value={physTotpCode}
+              onChange={(e) => setPhysTotpCode(e.target.value)}
+              style={inputStyle}
+              placeholder="Enter 6-digit Factor 2 code (if configured)"
+              maxLength={6}
+            />
+
+            <button
+              type="submit"
+              disabled={proposingPhys}
+              style={{ width: '100%', padding: '12px', background: proposingPhys ? '#9ca3af' : '#1e293b', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              {proposingPhys ? 'Submitting Hardware Proposal...' : 'Submit Physical Asset Proposal'}
             </button>
           </form>
 
-          {mintedAsset && (
+          {physProposalResult && (
             <div style={{ marginTop: '1.5rem', padding: '1rem', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px' }}>
-              <h4 style={{ margin: '0 0 10px 0', color: '#166534' }}>Physical Asset Minted!</h4>
+              <h4 style={{ margin: '0 0 10px 0', color: '#166534' }}>Physical Hardware Proposal Created!</h4>
               <div style={{ fontSize: '12px', color: '#15803d', fontFamily: 'monospace' }}>
-                <strong>Serial:</strong> {mintedAsset.serialNumber}<br />
-                <strong>Tx:</strong> {mintedAsset.txHash}
-              </div>
-              <div style={{ marginTop: '1rem', textAlign: 'center' }}>
-                <img src={`/api/assets/serial/${mintedAsset.serialNumber}/qr?host=${window.location.host}`} alt="Asset QR" style={{ width: '120px', height: '120px', borderRadius: '8px' }} />
+                <strong>Action ID:</strong> {physProposalResult.action_id}<br />
+                <strong>Serial:</strong> {physProposalResult.asset_serial}<br />
+                <strong>Status:</strong> {physProposalResult.status} (Pending Factor 3 Manager Approval)
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* 3. ASSET-LEVEL ACCESS PERMISSIONS */}
+      {/* TAB 4: ASSET-LEVEL ACCESS PERMISSIONS */}
       {activeTab === 'access' && (
         <div style={panelStyle}>
           <h2 style={{ margin: '0 0 8px', fontSize: '20px', color: '#111827' }}>Asset-Level Access Control (Granular ACL)</h2>
@@ -500,11 +928,11 @@ export default function ManagerDashboard() {
           </p>
 
           <form onSubmit={handleGrantAccess}>
-            <label style={labelStyle}>Digital Asset Token ID</label>
+            <label style={labelStyle}>Digital Asset Token ID *</label>
             <input type="number" value={accessDocTokenId} onChange={(e) => setAccessDocTokenId(e.target.value)} required style={inputStyle} placeholder="e.g. 201" />
 
-            <label style={labelStyle}>Target User DID</label>
-            <input type="text" value={accessTargetDID} onChange={(e) => setAccessTargetDID(e.target.value)} required style={inputStyle} placeholder="did:ethr:13371:0x..." />
+            <label style={labelStyle}>Target User DID / Wallet Address *</label>
+            <input type="text" value={accessTargetDID} onChange={(e) => setAccessTargetDID(e.target.value)} required style={inputStyle} placeholder="did:ethr:13371:0x... or 0x..." />
 
             <label style={labelStyle}>Permission Level</label>
             <select value={accessLevel} onChange={(e) => setAccessLevel(Number(e.target.value))} style={inputStyle}>
@@ -531,14 +959,14 @@ export default function ManagerDashboard() {
         </div>
       )}
 
-      {/* 4. ASSET TRANSFER & REVOKE */}
+      {/* TAB 5: ASSET TRANSFER & REVOKE */}
       {activeTab === 'transfer' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
           {/* Transfer */}
           <div style={panelStyle}>
             <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Transfer Asset</h3>
             <p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '1rem' }}>
-              Transfer ownership of any active physical or digital asset to another wallet.
+              Transfer custody of any active physical defense hardware to another authorized operator within your department.
             </p>
             <form onSubmit={handleTransfer}>
               <label style={labelStyle}>Token ID</label>
@@ -548,7 +976,7 @@ export default function ManagerDashboard() {
               <input type="text" value={transferRecipient} onChange={(e) => setTransferRecipient(e.target.value)} required style={inputStyle} placeholder="0x..." />
 
               <button type="submit" disabled={transferring} style={{ width: '100%', padding: '10px', background: transferring ? '#9ca3af' : '#ea580c', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
-                {transferring ? 'Transferring Asset...' : 'Transfer Asset'}
+                {transferring ? 'Transferring Asset...' : 'Transfer Physical Asset'}
               </button>
             </form>
             {transferResult && (
@@ -560,9 +988,9 @@ export default function ManagerDashboard() {
 
           {/* Revoke */}
           <div style={panelStyle}>
-            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Revoke Asset</h3>
+            <h3 style={{ margin: '0 0 8px', color: '#111827' }}>Revoke Physical Asset</h3>
             <p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '1rem' }}>
-              Permanently revoke an asset from the active registry. This action is irreversible.
+              Permanently decommission/burn a physical asset token from the active registry.
             </p>
             <form onSubmit={handleRevoke}>
               <label style={labelStyle}>Token ID to Revoke</label>

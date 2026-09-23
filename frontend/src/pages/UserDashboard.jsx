@@ -2,7 +2,14 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { ethers } from 'ethers';
 import { useAuth } from '../context/AuthContext';
-import { getAssetsByOwner, getAssetCertificateUrl, uploadDocument } from '../services/api';
+import {
+  getAssetsByOwner,
+  getAssetCertificateUrl,
+  uploadDocument,
+  proposeDocument,
+  getViewDocumentUrl,
+  requestDocumentDownload
+} from '../services/api';
 import {
   checkAssetAccess,
   recordAccessAttempt,
@@ -32,16 +39,17 @@ export default function UserDashboard() {
   const [showSharesModal, setShowSharesModal] = useState(false);
   const [sharesModalType, setSharesModalType] = useState('by_me'); // 'by_me' | 'with_me'
 
-  // Digital Mint State
-  const [digitalTokenId, setDigitalTokenId] = useState('');
+  // Digital Propose State (Phase 4 / Phase 14)
+  const [docName, setDocName] = useState('');
   const [digitalSerial, setDigitalSerial] = useState('');
-  const [digitalRecipient, setDigitalRecipient] = useState('');
+  const [docPurpose, setDocPurpose] = useState('');
+  const [docTotpCode, setDocTotpCode] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileHash, setFileHash] = useState('');
   const [offchainURI, setOffchainURI] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [minting, setMinting] = useState(false);
-  const [mintResult, setMintResult] = useState(null);
+  const [proposing, setProposing] = useState(false);
+  const [proposalResult, setProposalResult] = useState(null);
 
   // Grant Access State
   const [shareTokenId, setShareTokenId] = useState('');
@@ -130,60 +138,51 @@ export default function UserDashboard() {
     }
   };
 
-  // Handle Minting Digital Asset NFT
-  const handleDigitalMint = async (e) => {
+  // Handle Proposing Digital Document (Phase 4 / Phase 14)
+  const handleDocumentPropose = async (e) => {
     e.preventDefault();
     setError(null);
-    setMinting(true);
-    setMintResult(null);
+    setProposing(true);
+    setProposalResult(null);
 
     try {
-      if (!signer) {
-        throw new Error('Unlock your wallet again before minting or changing assets.');
-      }
       if (!fileHash || !offchainURI) {
         throw new Error('Please select and upload a document first.');
       }
-      const tId = parseInt(digitalTokenId);
-      if (!tId || tId <= 0) {
-        throw new Error('Please enter a valid numeric Token ID (e.g., 301, 401, 701).');
+      if (!docName.trim()) {
+        throw new Error('Please enter a document title.');
       }
-      if (!ethers.isAddress(digitalRecipient)) {
-        throw new Error('Enter a valid recipient wallet address (0x...).');
+      if (!digitalSerial.trim()) {
+        throw new Error('Please enter a document serial number.');
       }
 
-      const tx = await mintDigitalAsset(
-        signer,
-        digitalRecipient,
-        tId,
-        digitalSerial,
-        `did:ethr:13371:${digitalRecipient.toLowerCase()}`,
-        fileHash,
-        offchainURI
-      );
+      const payload = {
+        name: docName,
+        serial_number: digitalSerial,
+        file_hash: fileHash,
+        offchain_uri: offchainURI,
+        purpose: docPurpose || 'Defense Technical Documentation',
+        totp_code: docTotpCode || null,
+      };
 
-      setMintResult({
-        tokenId: tId,
-        serialNumber: digitalSerial,
-        txHash: tx.txHash,
-        fileHash,
-      });
+      const result = await proposeDocument(payload);
 
-      setActionSuccessMsg(`Digital Asset #${tId} successfully minted and anchored on Hyperledger Besu!`);
-      setDigitalTokenId('');
+      setProposalResult(result);
+      setActionSuccessMsg(`Document proposal ${result.action_id} submitted! Pending Manager/Admin Factor 3 approval.`);
+      setDocName('');
       setDigitalSerial('');
-      setDigitalRecipient('');
+      setDocPurpose('');
+      setDocTotpCode('');
       setSelectedFile(null);
       setFileHash('');
       setOffchainURI('');
 
-      await addTokenToMetaMask(deployment.address, tId);
       await fetchDashboardData();
     } catch (err) {
-      console.error('Digital mint error:', err);
-      setError(err.message || 'Digital minting failed');
+      console.error('Document proposal error:', err);
+      setError(err.response?.data?.detail || err.message || 'Document proposal failed');
     } finally {
-      setMinting(false);
+      setProposing(false);
     }
   };
 
@@ -491,7 +490,7 @@ export default function UserDashboard() {
             cursor: 'pointer'
           }}
         >
-          + Mint Digital Document
+          + Propose Document
         </button>
 
         <button
@@ -527,41 +526,41 @@ export default function UserDashboard() {
         </button>
       </div>
 
-      {/* 1. MINT DIGITAL ASSET TAB */}
+      {/* 1. PROPOSE DIGITAL DOCUMENT TAB */}
       {activeSubTab === 'mint' && (
         <div style={panelStyle}>
           <h3 style={{ margin: '0 0 6px', fontSize: '18px', color: '#0f172a' }}>
-            Mint Secure Digital Document NFT
+            Propose Secure Digital Document (Factor 2 Protected)
           </h3>
           <p style={{ margin: '0 0 1.5rem', fontSize: '13px', color: '#64748b' }}>
-            Upload sensitive defense files or blueprints. The file is hashed with SHA-256 and anchored directly to the Hyperledger Besu consortium with your decentralized identifier (DID).
+            Submit a classified document creation proposal to your department. Proposals require Manager or Administrator Factor 3 approval before on-chain minting to Hyperledger Besu.
           </p>
 
-          <form onSubmit={handleDigitalMint}>
+          <form onSubmit={handleDocumentPropose}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem', marginBottom: '1.2rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
-                  Document Token ID *
+                  Document Title / Name *
                 </label>
                 <input
-                  type="number"
-                  value={digitalTokenId}
-                  onChange={(e) => setDigitalTokenId(e.target.value)}
-                  placeholder="e.g. 701, 702, 801"
+                  type="text"
+                  value={docName}
+                  onChange={(e) => setDocName(e.target.value)}
+                  placeholder="e.g. Radar Guidance Protocol Specs"
                   required
-                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
+                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
                 />
               </div>
 
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
-                  Document Serial / Reference *
+                  Document Serial Number *
                 </label>
                 <input
                   type="text"
                   value={digitalSerial}
                   onChange={(e) => setDigitalSerial(e.target.value)}
-                  placeholder="e.g. DOC-RADAR-SPECS-2026"
+                  placeholder="e.g. BEL-DOC-AVIONICS-0042"
                   required
                   style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
                 />
@@ -569,9 +568,29 @@ export default function UserDashboard() {
 
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
-                  Recipient Wallet Address *
+                  Purpose / Justification
                 </label>
-                <input type="text" value={digitalRecipient} onChange={(e) => setDigitalRecipient(e.target.value)} placeholder="0x..." required style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }} />
+                <input
+                  type="text"
+                  value={docPurpose}
+                  onChange={(e) => setDocPurpose(e.target.value)}
+                  placeholder="e.g. Avionics System Architecture Verification"
+                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
+                  Factor 2 TOTP Code (If Passkey not active)
+                </label>
+                <input
+                  type="text"
+                  value={docTotpCode}
+                  onChange={(e) => setDocTotpCode(e.target.value)}
+                  placeholder="6-digit TOTP (e.g. 123456)"
+                  maxLength={6}
+                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
+                />
               </div>
             </div>
 
@@ -595,19 +614,20 @@ export default function UserDashboard() {
 
             <button
               type="submit"
-              disabled={minting || uploading || !fileHash}
+              disabled={proposing || uploading || !fileHash}
               style={{
                 padding: '12px 24px',
-                background: (minting || uploading || !fileHash) ? '#94a3b8' : '#0f172a',
-                color: '#ffffff',
+                background: '#0f172a',
+                color: '#fff',
                 border: 'none',
-                borderRadius: '8px',
-                fontWeight: '700',
+                borderRadius: '6px',
+                fontWeight: 'bold',
                 fontSize: '13px',
-                cursor: (minting || uploading || !fileHash) ? 'not-allowed' : 'pointer'
+                cursor: proposing || uploading || !fileHash ? 'not-allowed' : 'pointer',
+                opacity: proposing || uploading || !fileHash ? 0.6 : 1
               }}
             >
-              {minting ? 'Anchoring to Hyperledger Besu...' : 'Mint & Anchor Digital Document'}
+              {proposing ? 'Submitting Proposal with Factor 2...' : 'Submit Document Proposal (CRT-)'}
             </button>
           </form>
         </div>
@@ -902,22 +922,31 @@ export default function UserDashboard() {
                   </button>
 
                   {asset.is_digital && asset.offchain_uri && (
-                    <button
-                      onClick={async () => {
-                        try {
-                          await recordAccessAttempt(signer, asset.token_id, userDID, true, 'Authorized File Download');
-                          const filename = asset.offchain_uri.split('/').pop();
-                          const url = `/api/assets/document/download/${filename}?token_id=${asset.token_id}&wallet_address=${walletAddress}&did=${encodeURIComponent(userDID)}`;
-                          window.open(url, '_blank');
-                        } catch (err) {
-                          console.error('Audit log failed', err);
-                          alert('Download transaction log required.');
-                        }
-                      }}
-                      style={{ flex: '1 1 120px', padding: '8px', background: '#059669', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
-                    >
-                      Download File
-                    </button>
+                    <div style={{ display: 'flex', gap: '8px', flex: '1 1 100%' }}>
+                      <button
+                        onClick={() => window.open(getViewDocumentUrl(asset.serial_number), '_blank')}
+                        style={{ flex: 1, padding: '8px', background: '#059669', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        View (Watermarked)
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await requestDocumentDownload({
+                              asset_serial: asset.serial_number,
+                              purpose: 'Forensic Download'
+                            });
+                            alert('Download request submitted, pending Manager Approval (Factor 3).');
+                          } catch (err) {
+                            console.error('Download request failed', err);
+                            alert(err.response?.data?.detail || 'Download request failed.');
+                          }
+                        }}
+                        style={{ flex: 1, padding: '8px', background: '#7c3aed', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        Request Download
+                      </button>
+                    </div>
                   )}
 
                   {asset.is_digital && (asset.permission_level === 'READ_WRITE' || asset.permission_level === 'OWNER' || asset.is_owner) && (

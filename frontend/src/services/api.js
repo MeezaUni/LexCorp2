@@ -15,6 +15,74 @@ axios.interceptors.request.use((config) => {
 
 const API_BASE = '/api';
 
+// Asset Proposal & Workflow
+export async function proposeDocument(data) {
+  const response = await axios.post(`${API_BASE}/assets/document/propose`, data);
+  return response.data;
+}
+
+export async function proposePhysicalAsset(data) {
+  const response = await axios.post(`${API_BASE}/assets/physical/propose`, data);
+  return response.data;
+}
+
+export async function getPendingDocuments() {
+  const response = await axios.get(`${API_BASE}/assets/document/pending`);
+  return response.data;
+}
+
+export async function getPendingPhysicalAssets() {
+  const response = await axios.get(`${API_BASE}/assets/physical/pending`);
+  return response.data;
+}
+
+export async function approveDocument(actionId, data) {
+  const response = await axios.post(`${API_BASE}/assets/document/approval/${actionId}`, data);
+  return response.data;
+}
+
+export async function approvePhysicalAsset(actionId, data) {
+  const response = await axios.post(`${API_BASE}/assets/physical/approval/${actionId}`, data);
+  return response.data;
+}
+
+export function getViewDocumentUrl(identifier, totpCode = null) {
+  let url = `${API_BASE}/assets/document/view/${identifier}`;
+  if (totpCode) url += `?totp_code=${totpCode}`;
+  return url;
+}
+
+export async function requestDocumentDownload(data) {
+  const response = await axios.post(`${API_BASE}/assets/document/download/request`, data);
+  return response.data;
+}
+
+export async function getPendingDownloadRequests() {
+  const response = await axios.get(`${API_BASE}/assets/document/download/pending`);
+  return response.data;
+}
+
+export async function approveDownloadRequest(actionId, data) {
+  const response = await axios.post(`${API_BASE}/assets/document/download/approval/${actionId}`, data);
+  return response.data;
+}
+
+export function getDownloadDocumentUrl(token) {
+  return `${API_BASE}/assets/document/download-token/${token}`;
+}
+
+// Passkey/MFA
+export async function getPasskeyOptions(factor) {
+  const response = await axios.post(`${API_BASE}/auth/webauthn/${factor}/options`);
+  return response.data;
+}
+
+export async function verifyPasskey(factor, data) {
+  const response = await axios.post(`${API_BASE}/auth/webauthn/${factor}/verify`, data);
+  return response.data;
+}
+
+
 export async function getNonce(address) {
   const response = await axios.post(`${API_BASE}/auth/nonce?address=${address}`);
   return response.data;
