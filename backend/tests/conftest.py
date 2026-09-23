@@ -91,6 +91,21 @@ async def seed_test_users():
         await session.commit()
     await engine.dispose()
 
+@pytest_asyncio.fixture(scope="function", autouse=True)
+async def reset_user_mfa(db_session):
+    """Ensure MFA is disabled for all test users before each test."""
+    for u_data in TEST_USERS:
+        res = await db_session.execute(
+            select(User).where(User.wallet_address == u_data["wallet_address"])
+        )
+        user = res.scalar_one_or_none()
+        if user:
+            user.is_totp_factor2_enabled = False
+            user.is_totp_factor3_enabled = False
+            user.totp_factor2_secret = None
+            user.totp_factor3_secret = None
+    await db_session.commit()
+
 @pytest_asyncio.fixture(scope="function")
 async def db_session():
     """Create a fresh async engine and session for each test to avoid event-loop closure conflicts."""

@@ -3,6 +3,7 @@
 import pytest
 import pyotp
 import uuid
+from unittest.mock import patch
 from app.services.auth import create_jwt
 from app.models.domain import User
 from sqlalchemy import select
@@ -214,11 +215,12 @@ async def test_approval_factor3_totp_enforcement(client, db_session):
     # Approve with valid TOTP code
     totp = pyotp.TOTP(secret)
     valid_code = totp.now()
-    res_success = await client.post(
-        f"/api/assets/document/approval/{action_id}",
-        headers={"Authorization": f"Bearer {mgr_token}"},
-        json={"decision": "APPROVE", "totp_code": valid_code}
-    )
+    with patch("app.services.contract.contract_service.prepare_mint_digital_calldata", return_value={"to": "0x123", "data": "0xabc"}):
+        res_success = await client.post(
+            f"/api/assets/document/approval/{action_id}",
+            headers={"Authorization": f"Bearer {mgr_token}"},
+            json={"decision": "APPROVE", "totp_code": valid_code}
+        )
     assert res_success.status_code == 200
     data = res_success.json()
     assert data["decision"] == "APPROVE"

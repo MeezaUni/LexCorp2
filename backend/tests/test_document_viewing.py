@@ -5,6 +5,7 @@ import uuid
 import os
 from PIL import Image
 import io
+from unittest.mock import patch
 from app.services.auth import create_jwt
 from app.models.domain import DocumentAction
 
@@ -39,11 +40,12 @@ async def test_view_digital_document_success(client, db_session):
 
     # Manager approves it
     mgr_token = get_token(MANAGER_WALLET, "MANAGER", 8)
-    appr_res = await client.post(
-        f"/api/assets/document/approval/{action_id}",
-        headers={"Authorization": f"Bearer {mgr_token}"},
-        json={"decision": "APPROVE"}
-    )
+    with patch("app.services.contract.contract_service.prepare_mint_digital_calldata", return_value={"to": "0x123", "data": "0xabc"}):
+        appr_res = await client.post(
+            f"/api/assets/document/approval/{action_id}",
+            headers={"Authorization": f"Bearer {mgr_token}"},
+            json={"decision": "APPROVE"}
+        )
     assert appr_res.status_code == 200
 
     # Create dummy image in offchain_storage so the watermark can apply properly

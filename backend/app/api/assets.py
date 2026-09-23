@@ -21,7 +21,7 @@ from app.services.watermark import apply_watermark
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction
-from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest
+from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest
 from app.services.security import verify_totp
 from sqlalchemy import select, desc
 
@@ -1128,6 +1128,31 @@ async def approve_document(
                 file_hash=asset.file_hash or "",
                 offchain_uri=asset.metadata_cid or ""
             )
+        elif action.action_type == "MODIFICATION":
+            asset.lifecycle_status = "CREATED"
+            if asset.parent_asset_id:
+                parent_res = await db.execute(select(Asset).filter(Asset.id == asset.parent_asset_id))
+                parent_asset = parent_res.scalar_one_or_none()
+                if parent_asset:
+                    parent_asset.lifecycle_status = "OBSOLETE"
+
+            owner_address = action.actor_did.split(":")[-1]
+            try:
+                calldata = contract_service.prepare_update_digital_asset_calldata(
+                    token_id=parent_asset.token_id if (asset.parent_asset_id and parent_asset) else asset.token_id,
+                    requester_did=action.actor_did,
+                    new_file_hash=asset.file_hash or "",
+                    new_offchain_uri=asset.metadata_cid or ""
+                )
+            except Exception:
+                calldata = contract_service.prepare_mint_digital_calldata(
+                    to_address=owner_address,
+                    token_id=asset.token_id,
+                    serial_number=asset.serial_number,
+                    owner_did=action.actor_did,
+                    file_hash=asset.file_hash or "",
+                    offchain_uri=asset.metadata_cid or ""
+                )
         elif action.action_type == "DOWNLOAD":
             download_token = f"dlt_{secrets.token_urlsafe(32)}"
             token_expires_at = datetime.utcnow() + timedelta(minutes=15)
@@ -1330,6 +1355,149 @@ async def approve_document_download(
 ):
     """Alias endpoint for approving download requests. Just routes to approve_document."""
     return await approve_document(action_id, request, current_user, db)
+
+
+@router.post("/document/revise", response_model=DocumentActionRead)
+async def revise_document(
+    request: DocumentRevisionRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Propose a modification/revision to an existing digital document."""
+    if current_user.role == "AUDITOR":
+        raise HTTPException(status_code=403, detail="Auditors cannot revise documents.")
+
+    # 1. Fetch parent asset
+    parent_res = await db.execute(select(Asset).filter(Asset.serial_number == request.parent_asset_serial))
+    parent_asset = parent_res.scalar_one_or_none()
+    if not parent_asset:
+        raise HTTPException(status_code=404, detail="Parent asset not found.")
+
+    if parent_asset.asset_type not in ["DIGITAL", "DOCUMENT"]:
+        raise HTTPException(status_code=400, detail="Only digital documents can be revised.")
+
+    # 2. Check department scoping for USER / MANAGER
+    if current_user.role == "USER":
+        if (parent_asset.department and parent_asset.department != current_user.department and
+            str(parent_asset.owner_id) != str(current_user.id) and
+            str(parent_asset.custodian_id) != str(current_user.id)):
+            raise HTTPException(status_code=403, detail="Users can only revise documents in their own department.")
+    elif current_user.role == "MANAGER":
+        if parent_asset.department and current_user.department and parent_asset.department != current_user.department:
+            raise HTTPException(status_code=403, detail="Managers can only revise documents in their own department.")
+
+    # 3. Factor 2 TOTP Check
+    if current_user.is_totp_factor2_enabled:
+        if not request.totp_code or not verify_totp(current_user.totp_factor2_secret, request.totp_code):
+            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP code.")
+
+    # 4. Uniqueness check for new serial number
+    res = await db.execute(select(Asset).filter(Asset.serial_number == request.new_serial_number))
+    if res.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Asset serial number already exists.")
+
+    action_id_str = f"MOD-{uuid.uuid4().hex[:12].upper()}"
+    import random
+    temp_token_id = random.randint(1000000000, 2000000000)
+
+    # 5. Create new draft child asset
+    revised_asset = Asset(
+        token_id=temp_token_id,
+        serial_number=request.new_serial_number,
+        name=request.name,
+        asset_type=parent_asset.asset_type,
+        file_hash=request.new_file_hash,
+        metadata_cid=request.new_offchain_uri,
+        owner_id=current_user.id,
+        department=parent_asset.department or current_user.department,
+        is_physical=False,
+        lifecycle_status="PENDING_APPROVAL",
+        approval_status="PENDING_APPROVAL",
+        parent_asset_id=parent_asset.id,
+        action_id=action_id_str,
+        action_type="MODIFICATION"
+    )
+    db.add(revised_asset)
+    await db.flush()
+
+    action = DocumentAction(
+        action_id=action_id_str,
+        action_type="MODIFICATION",
+        asset_id=revised_asset.id,
+        asset_serial=request.new_serial_number,
+        actor_id=current_user.id,
+        actor_did=current_user.did,
+        status="PENDING",
+        purpose=request.purpose,
+        details={
+            "name": request.name,
+            "parent_asset_serial": parent_asset.serial_number,
+            "parent_asset_id": str(parent_asset.id),
+            "file_hash": request.new_file_hash,
+            "offchain_uri": request.new_offchain_uri
+        }
+    )
+    db.add(action)
+    await db.commit()
+    await db.refresh(action)
+    return action
+
+
+@router.get("/document/lineage/{asset_serial}")
+async def get_document_lineage(
+    asset_serial: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch complete revision tree/history for a document."""
+    res = await db.execute(select(Asset).filter(Asset.serial_number == asset_serial))
+    asset = res.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found.")
+
+    # Find root asset
+    current = asset
+    visited = set()
+    while current.parent_asset_id and str(current.id) not in visited:
+        visited.add(str(current.id))
+        parent_res = await db.execute(select(Asset).filter(Asset.id == current.parent_asset_id))
+        parent = parent_res.scalar_one_or_none()
+        if not parent:
+            break
+        current = parent
+
+    root_asset = current
+
+    # Now collect all descendants from root
+    def asset_to_dict(a: Asset):
+        return {
+            "id": str(a.id),
+            "token_id": a.token_id,
+            "serial_number": a.serial_number,
+            "name": a.name,
+            "lifecycle_status": a.lifecycle_status,
+            "approval_status": a.approval_status,
+            "file_hash": a.file_hash,
+            "parent_asset_id": str(a.parent_asset_id) if a.parent_asset_id else None,
+            "created_at": a.created_at.isoformat() if a.created_at else None
+        }
+
+    lineage = [asset_to_dict(root_asset)]
+    to_explore = [root_asset.id]
+
+    while to_explore:
+        curr_id = to_explore.pop(0)
+        children_res = await db.execute(select(Asset).filter(Asset.parent_asset_id == curr_id).order_by(Asset.created_at))
+        children = children_res.scalars().all()
+        for child in children:
+            lineage.append(asset_to_dict(child))
+            to_explore.append(child.id)
+
+    return {
+        "root_serial": root_asset.serial_number,
+        "current_serial": asset.serial_number,
+        "lineage": lineage
+    }
 
 
 @router.get("/document/download-token/{token}")

@@ -102,6 +102,15 @@ class DocumentProposalRequest(BaseSchema):
     purpose: Optional[str] = None
     totp_code: Optional[str] = None
 
+class DocumentRevisionRequest(BaseSchema):
+    parent_asset_serial: str
+    name: str # New Document Title
+    new_serial_number: str
+    new_file_hash: str
+    new_offchain_uri: str
+    purpose: Optional[str] = None
+    totp_code: Optional[str] = None
+
 class DocumentApprovalRequest(BaseSchema):
     decision: str # "APPROVE" or "REJECT"
     totp_code: Optional[str] = None
