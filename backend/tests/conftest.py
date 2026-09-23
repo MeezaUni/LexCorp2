@@ -76,7 +76,9 @@ async def seed_test_users():
                     session_version=u_data["session_version"],
                     is_active=u_data["is_active"],
                     department=u_data["department"],
-                    name=u_data["name"]
+                    name=u_data["name"],
+                    is_totp_factor2_enabled=False,
+                    is_totp_factor3_enabled=False
                 )
                 session.add(u)
             else:
@@ -84,6 +86,8 @@ async def seed_test_users():
                 existing.session_version = u_data["session_version"]
                 existing.is_active = u_data["is_active"]
                 existing.department = u_data["department"]
+                existing.is_totp_factor2_enabled = False
+                existing.is_totp_factor3_enabled = False
         await session.commit()
     await engine.dispose()
 

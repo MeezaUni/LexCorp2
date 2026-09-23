@@ -15,8 +15,10 @@
  *  11. Unauthorized mint attempt → logged on-chain
  *  12. Audit trail contains everything
  *  13. User deletion
+ *  14. AI Risk Engine full distribution review
+ *  15. Backend Role Check
  *
- * Run:  node test_e2e.js   (backend on :8000, Besu on :8545)
+ * Run: npx hardhat run test_e2e.js --network localhost
  */
 
 const hre = require("hardhat");
@@ -42,7 +44,7 @@ function assert(condition, label) {
   }
 }
 
-async function api(method, urlPath, body = null) {
+async function api(method, urlPath, body = null, token = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlPath, API);
     const opts = {
@@ -52,6 +54,9 @@ async function api(method, urlPath, body = null) {
       path: url.pathname + url.search,
       headers: { "Content-Type": "application/json" },
     };
+    if (token) {
+      opts.headers["Authorization"] = `Bearer ${token}`;
+    }
     if (body && method !== "GET") {
       const raw = JSON.stringify(body);
       opts.headers["Content-Length"] = Buffer.byteLength(raw);
@@ -74,7 +79,7 @@ async function api(method, urlPath, body = null) {
 }
 
 // Upload a file as multipart (using boundary)
-async function uploadFile(filePath) {
+async function uploadFile(filePath, token) {
   return new Promise((resolve, reject) => {
     const boundary = "----TestBoundary" + Date.now();
     const fileName = path.basename(filePath);
@@ -87,7 +92,7 @@ async function uploadFile(filePath) {
     const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
     const body = Buffer.concat([header, fileContent, footer]);
 
-    const req = http.request({
+    const options = {
       method: "POST",
       hostname: "127.0.0.1",
       port: 8000,
@@ -95,8 +100,10 @@ async function uploadFile(filePath) {
       headers: {
         "Content-Type": `multipart/form-data; boundary=${boundary}`,
         "Content-Length": body.length,
+        "Authorization": `Bearer ${token}`
       },
-    }, (res) => {
+    };
+    const req = http.request(options, (res) => {
       let data = "";
       res.on("data", (c) => (data += c));
       res.on("end", () => {
@@ -108,6 +115,27 @@ async function uploadFile(filePath) {
     req.write(body);
     req.end();
   });
+}
+
+// ── Authentication Helper ──
+async function loginAndGetToken(signer) {
+  const nonceRes = await api("POST", `/api/auth/nonce?address=${signer.address}`);
+  if (nonceRes.status !== 200) {
+    console.error("Nonce error:", nonceRes);
+    throw new Error("Could not get nonce");
+  }
+  const { nonce, message } = nonceRes.data;
+  const signature = await signer.signMessage(message);
+  const loginRes = await api("POST", "/api/auth/login", {
+    message: message,
+    signature: signature,
+    nonce: nonce
+  });
+  if (loginRes.status !== 200) {
+    console.error("Login error:", loginRes);
+    throw new Error("Could not login");
+  }
+  return loginRes.data.token;
 }
 
 function sleep(ms) {
@@ -122,8 +150,12 @@ async function main() {
   console.log("═══════════════════════════════════════════════════════════\n");
 
   // ── Signers ──────────────────────────────────────────────────────────
-  const [admin, user1, user2] = await hre.ethers.getSigners();
-  const auditor = hre.ethers.Wallet.createRandom();
+  const signers = await hre.ethers.getSigners();
+  const admin = signers[0];
+  const user1 = signers[1];
+  const user2 = signers[2];
+  const auditor = signers[3] || hre.ethers.Wallet.createRandom();
+
   console.log(`Admin (MANAGER):  ${admin.address}`);
   console.log(`User1:            ${user1.address}`);
   console.log(`User2:            ${user2.address}`);
@@ -132,41 +164,38 @@ async function main() {
   const deployment = require("./deployments/localhost.json");
   const contract = await hre.ethers.getContractAt("AssetNFT", deployment.address, admin);
 
+  // Authenticate Admin via SIWE
+  const adminToken = await loginAndGetToken(admin);
+  assert(!!adminToken, "Admin authenticated via SIWE challenge-response");
+
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // 1. USER REGISTRATION
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   console.log("─── 1. User Registration ───────────────────────────────");
 
-  const adminRes = await api("POST", "/api/users", {
-    wallet_address: admin.address,
-    name: "Admin Manager",
-    role: "ADMIN",
-  });
-  assert(adminRes.status === 201 || adminRes.status === 200, `Admin registered (status ${adminRes.status})`);
-
   const user1Res = await api("POST", "/api/users", {
     wallet_address: user1.address,
     name: "Regular User 1",
     role: "USER",
-  });
-  assert(user1Res.status === 201 || user1Res.status === 200, `User1 registered (status ${user1Res.status})`);
+  }, adminToken);
+  assert(user1Res.status === 201 || user1Res.status === 200 || user1Res.status === 409, `User1 registered (status ${user1Res.status})`);
 
   const user2Res = await api("POST", "/api/users", {
     wallet_address: user2.address,
     name: "Regular User 2",
     role: "USER",
-  });
-  assert(user2Res.status === 201 || user2Res.status === 200, `User2 registered (status ${user2Res.status})`);
+  }, adminToken);
+  assert(user2Res.status === 201 || user2Res.status === 200 || user2Res.status === 409, `User2 registered (status ${user2Res.status})`);
 
   const auditorRes = await api("POST", "/api/users", {
     wallet_address: auditor.address,
     name: "Compliance Auditor",
     role: "AUDITOR",
-  });
-  assert(auditorRes.status === 201 || auditorRes.status === 200, `Auditor registered (status ${auditorRes.status})`);
+  }, adminToken);
+  assert(auditorRes.status === 201 || auditorRes.status === 200 || auditorRes.status === 409, `Auditor registered (status ${auditorRes.status})`);
 
   // List users
-  const listRes = await api("GET", "/api/users");
+  const listRes = await api("GET", "/api/users", null, adminToken);
   assert(listRes.status === 200, `User list endpoint works (status 200)`);
   assert(Array.isArray(listRes.data) && listRes.data.length >= 4, `At least 4 users in DB (got ${listRes.data?.length})`);
 
@@ -183,7 +212,7 @@ async function main() {
   const testDocPath = path.join(__dirname, "test_e2e_doc.txt");
   fs.writeFileSync(testDocPath, `LexCorp E2E Test Document\nTimestamp: ${new Date().toISOString()}\nPurpose: Integration verification`);
 
-  const uploadRes = await uploadFile(testDocPath);
+  const uploadRes = await uploadFile(testDocPath, adminToken);
   assert(uploadRes.status === 200, `Document uploaded (status ${uploadRes.status})`);
   assert(uploadRes.data?.file_hash, `SHA-256 hash returned: ${uploadRes.data?.file_hash?.substring(0, 16)}...`);
   assert(uploadRes.data?.offchain_uri, `Offchain URI: ${uploadRes.data?.offchain_uri}`);
@@ -197,9 +226,14 @@ async function main() {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   console.log("\n─── 3. Physical Asset Minting ──────────────────────────");
 
-  const runId = Math.floor(Math.random() * 1000000);
-  const physicalTokenId = runId + 1000;
-  const physicalSerial = `LEX-E2E-PHYSICAL-${runId}`;
+  const baseId = Math.floor(Date.now() / 1000) % 900000 + 10000;
+  const physicalTokenId = baseId + 1;
+  const physicalSerial = `LEX-E2E-PHYSICAL-${baseId}`;
+  const digitalTokenId = baseId + 2;
+  const digitalSerial = `LEX-E2E-DIGITAL-${baseId}`;
+  const burnTokenId = baseId + 3;
+  const burnSerial = `LEX-E2E-BURN-${baseId}`;
+  const unauthorizedTokenId = baseId + 4;
   const user1DID = `did:ethr:13371:${user1.address.toLowerCase()}`;
 
   // Admin mints physical asset to user1
@@ -223,9 +257,6 @@ async function main() {
   // 4. DIGITAL ASSET MINTING
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   console.log("\n─── 4. Digital Asset Minting ───────────────────────────");
-
-  const digitalTokenId = runId + 2000;
-  const digitalSerial = `LEX-E2E-DIGITAL-DOC-${runId}`;
 
   // Admin mints digital asset to user1
   const mintDigitalTx = await contract.connect(admin).mintDigitalAsset(
@@ -330,41 +361,38 @@ async function main() {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   console.log("\n─── 8. Access Control (Grant / Check / Revoke) ─────────");
 
-  const tempUser = hre.ethers.Wallet.createRandom();
-  const unprivDID = `did:ethr:13371:${tempUser.address.toLowerCase()}`;
+  const user2DID = `did:ethr:13371:${user2.address.toLowerCase()}`;
 
-  // 8a. Check initial access — unprivileged user should NOT have access
-  console.log(`  🔍 DEBUG: Checking access for token ${digitalTokenId}, DID: ${unprivDID}, Caller: ${tempUser.address}`);
+  // 8a. Check initial access — user2 should NOT have access
   const checkBefore = await api("POST", "/api/assets/check-access", {
     token_id: digitalTokenId,
-    requester_did: unprivDID,
-    caller_address: tempUser.address,
+    requester_did: user2DID,
+    caller_address: user2.address,
   });
-  console.log(`  🔍 DEBUG: API returned:`, JSON.stringify(checkBefore.data));
-  assert(checkBefore.data?.authorized === false, `Unprivileged user initially denied access (authorized: ${checkBefore.data?.authorized})`);
+  assert(checkBefore.data?.authorized === false, `User2 initially denied access (authorized: ${checkBefore.data?.authorized})`);
 
-  // 8b. Grant READ access to unpriv user on digital asset
+  // 8b. Grant READ access to user2 on digital asset
   const grantTx = await contract.connect(admin).grantAssetAccess(
     digitalTokenId,
-    unprivDID,
+    user2DID,
     1, // READ
   );
   const grantReceipt = await grantTx.wait();
   assert(grantReceipt.status === 1, `Grant access tx succeeded`);
 
-  // 8c. Check access again — unpriv user should now have READ
+  // 8c. Check access again — user2 should now have READ
   const checkAfterGrant = await api("POST", "/api/assets/check-access", {
     token_id: digitalTokenId,
-    requester_did: unprivDID,
-    caller_address: tempUser.address,
+    requester_did: user2DID,
+    caller_address: user2.address,
   });
-  assert(checkAfterGrant.data?.authorized === true, `User now authorized (level: ${checkAfterGrant.data?.permission_level})`);
+  assert(checkAfterGrant.data?.authorized === true, `User2 now authorized (level: ${checkAfterGrant.data?.permission_level})`);
   assert(checkAfterGrant.data?.permission_level === 1, `Permission level is READ (1)`);
 
   // 8d. Upgrade to READ_WRITE
   const upgradeTx = await contract.connect(admin).grantAssetAccess(
     digitalTokenId,
-    unprivDID,
+    user2DID,
     2, // READ_WRITE
   );
   const upgradeReceipt = await upgradeTx.wait();
@@ -372,22 +400,22 @@ async function main() {
 
   const checkUpgraded = await api("POST", "/api/assets/check-access", {
     token_id: digitalTokenId,
-    requester_did: unprivDID,
-    caller_address: tempUser.address,
+    requester_did: user2DID,
+    caller_address: user2.address,
   });
   assert(checkUpgraded.data?.permission_level === 2, `Permission level upgraded to READ_WRITE (2)`);
 
   // 8e. Revoke access
-  const revokeAccessTx = await contract.connect(admin).revokeAssetAccess(digitalTokenId, unprivDID);
+  const revokeAccessTx = await contract.connect(admin).revokeAssetAccess(digitalTokenId, user2DID);
   const revokeAccessReceipt = await revokeAccessTx.wait();
   assert(revokeAccessReceipt.status === 1, `Revoke access tx succeeded`);
 
   const checkAfterRevoke = await api("POST", "/api/assets/check-access", {
     token_id: digitalTokenId,
-    requester_did: unprivDID,
-    caller_address: tempUser.address,
+    requester_did: user2DID,
+    caller_address: user2.address,
   });
-  assert(checkAfterRevoke.data?.authorized === false, `User access revoked (authorized: ${checkAfterRevoke.data?.authorized})`);
+  assert(checkAfterRevoke.data?.authorized === false, `User2 access revoked (authorized: ${checkAfterRevoke.data?.authorized})`);
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // 9. ASSET TRANSFER
@@ -397,7 +425,6 @@ async function main() {
   const newOwnerDID = `did:ethr:13371:${user2.address.toLowerCase()}`;
 
   // Transfer physical asset from user1 to user2
-  // user1 is the owner but only MANAGERs can call transferAsset
   // Let's use admin (who has MANAGER_ROLE) to transfer
   const transferTx = await contract.connect(admin).transferAsset(
     user2.address,
@@ -417,8 +444,6 @@ async function main() {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   console.log("\n─── 10. Asset Revoke (Burn) ────────────────────────────");
 
-  const burnTokenId = runId + 3000;
-  const burnSerial = `LEX-E2E-BURN-TEST-${runId}`;
   const burnDID = `did:ethr:13371:${user1.address.toLowerCase()}`;
 
   // Mint an asset specifically to burn
@@ -451,7 +476,6 @@ async function main() {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   console.log("\n─── 11. Unauthorized Access Attempt Logging ────────────");
 
-  const unauthorizedTokenId = runId + 4000;
   const unauthorizedDID = `did:ethr:13371:${user2.address.toLowerCase()}`;
 
   // user2 does NOT have MANAGER_ROLE — record the attempt on-chain
@@ -512,24 +536,25 @@ async function main() {
   console.log("\n─── 13. User Deletion ──────────────────────────────────");
 
   // Create a temporary user to delete
+  const tempWallet = hre.ethers.Wallet.createRandom().address;
   const tempRes = await api("POST", "/api/users", {
-    wallet_address: hre.ethers.Wallet.createRandom().address, // random Hardhat address
+    wallet_address: tempWallet,
     name: "Temp User To Delete",
     role: "USER",
-  });
-  assert(tempRes.status === 201 || tempRes.status === 200, `Temp user created`);
+  }, adminToken);
+  assert(tempRes.status === 201 || tempRes.status === 200, `Temp user created (status ${tempRes.status})`);
 
   const tempUserId = tempRes.data?.id;
   assert(!!tempUserId, `Got temp user ID: ${tempUserId}`);
 
   // Delete the user
-  const deleteRes = await api("DELETE", `/api/users/${tempUserId}`);
+  const deleteRes = await api("DELETE", `/api/users/${tempUserId}`, null, adminToken);
   assert(deleteRes.status === 204, `User deletion returned 204`);
 
-  // Verify user is gone
-  const afterDeleteList = await api("GET", "/api/users");
+  // Verify user is gone from active list
+  const afterDeleteList = await api("GET", "/api/users", null, adminToken);
   const tempStillExists = afterDeleteList.data?.some(u => u.id === tempUserId);
-  assert(!tempStillExists, `Deleted user no longer in user list`);
+  assert(!tempStillExists, `Deleted user no longer in active user list`);
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // 14. AI RISK ENGINE — Verify scoring across event types

@@ -34,29 +34,6 @@ async def lifespan(app: FastAPI):
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            # Safe schema update for SQLite if newly added columns are missing
-            from sqlalchemy import text
-            for col_sql in [
-                "ALTER TABLE users ADD COLUMN contact_number VARCHAR(255)",
-                "ALTER TABLE users ADD COLUMN organization VARCHAR(255) DEFAULT 'Bharat Electronics Limited (BEL)'",
-                "ALTER TABLE users ADD COLUMN department VARCHAR(255)",
-                "ALTER TABLE users ADD COLUMN totp_secret VARCHAR(64)",
-                "ALTER TABLE users ADD COLUMN is_totp_enabled BOOLEAN DEFAULT 0",
-                "ALTER TABLE users ADD COLUMN session_version INTEGER DEFAULT 0",
-                "ALTER TABLE assets ADD COLUMN custodian_id CHAR(32)",
-                "ALTER TABLE assets ADD COLUMN custodian_did VARCHAR",
-                "ALTER TABLE assets ADD COLUMN custodian_department VARCHAR",
-                "ALTER TABLE assets ADD COLUMN lifecycle_status VARCHAR(30) DEFAULT 'CREATED'",
-                "ALTER TABLE assets ADD COLUMN name VARCHAR(255)",
-                "ALTER TABLE assets ADD COLUMN asset_type VARCHAR(50) DEFAULT 'EQUIPMENT'",
-                "ALTER TABLE assets ADD COLUMN metadata_cid VARCHAR",
-                "ALTER TABLE assets ADD COLUMN file_hash VARCHAR(64)",
-                "ALTER TABLE audit_events ADD COLUMN risk_factors JSON",
-            ]:
-                try:
-                    await conn.execute(text(col_sql))
-                except Exception:
-                    pass  # Column already exists
         logger.info("Database tables verified/created successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize database tables: {e}")

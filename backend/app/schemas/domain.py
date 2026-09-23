@@ -107,6 +107,11 @@ class DocumentApprovalRequest(BaseSchema):
     totp_code: Optional[str] = None
     rejection_reason: Optional[str] = None
 
+class DownloadRequest(BaseSchema):
+    asset_serial: str
+    purpose: Optional[str] = None
+    totp_code: Optional[str] = None
+
 class DocumentActionRead(DocumentActionBase):
     id: uuid.UUID
     actor_id: uuid.UUID
