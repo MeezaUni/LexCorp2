@@ -1500,6 +1500,72 @@ async def get_document_lineage(
     }
 
 
+@router.get("/verify/{serial_number}")
+async def verify_asset(
+    serial_number: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+     Phase 8: Digital QR Verification & Role-Based Redaction
+     QR codes resolve here to verify the asset and return redacted data based on the caller's role.
+    """
+    res = await db.execute(select(Asset).filter(Asset.serial_number == serial_number))
+    asset = res.scalar_one_or_none()
+
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Standard info (visible to all)
+    data = {
+        "serial_number": asset.serial_number,
+        "name": asset.name,
+        "asset_type": asset.asset_type,
+        "lifecycle_status": asset.lifecycle_status,
+        "is_physical": asset.is_physical,
+        "approval_status": asset.approval_status
+    }
+
+    # Redaction Logic
+    is_owner_or_custodian = (
+        str(asset.owner_id) == str(current_user.id) or
+        (asset.custodian_id and str(asset.custodian_id) == str(current_user.id))
+    )
+    is_in_department = (
+        asset.department and current_user.department and
+        asset.department == current_user.department
+    )
+
+    # Detailed info visibility:
+    # - ADMIN / AUDITOR: Always see full details
+    # - MANAGER / USER: See full details IF in their department or they own it/custody it.
+
+    show_details = False
+    if current_user.role in ["ADMIN", "AUDITOR"]:
+        show_details = True
+    elif current_user.role in ["MANAGER", "USER"]:
+        if is_in_department or is_owner_or_custodian:
+            show_details = True
+
+    if show_details:
+        data.update({
+            "token_id": asset.token_id,
+            "department": asset.department,
+            "file_hash": asset.file_hash,
+            "metadata_cid": asset.metadata_cid,
+            "mac_address": asset.mac_address,
+            "device_unique_address": asset.device_unique_address,
+            "location": asset.location,
+            "owner_id": str(asset.owner_id),
+            "custodian_id": str(asset.custodian_id) if asset.custodian_id else None,
+            "custodian_did": asset.custodian_did,
+            "action_id": asset.action_id,
+            "action_type": asset.action_type
+        })
+
+    return data
+
+
 @router.get("/document/download-token/{token}")
 async def download_document_with_token(
     token: str,
