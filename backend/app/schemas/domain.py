@@ -19,6 +19,7 @@ class UserBase(BaseSchema):
     did: Optional[str] = None
     role: str = "USER"
     is_active: bool = True
+    onboarding_pending: bool = True
     is_totp_enabled: bool = False
     is_totp_factor2_enabled: bool = False
     is_totp_factor3_enabled: bool = False
@@ -98,6 +99,8 @@ class DocumentProposalRequest(BaseSchema):
     serial_number: str
     file_hash: str
     offchain_uri: str
+    recipient_did: Optional[str] = None
+    recipient_address: str
     department: Optional[str] = None
     purpose: Optional[str] = None
     totp_code: Optional[str] = None
@@ -112,6 +115,8 @@ class PhysicalProposalRequest(BaseSchema):
     department: Optional[str] = None
     purpose: Optional[str] = None
     totp_code: Optional[str] = None
+    recipient_did: Optional[str] = None
+    recipient_address: str
 
 class DocumentRevisionRequest(BaseSchema):
     parent_asset_serial: str
@@ -122,10 +127,19 @@ class DocumentRevisionRequest(BaseSchema):
     purpose: Optional[str] = None
     totp_code: Optional[str] = None
 
+class ShareProposalRequest(BaseSchema):
+    asset_serial: str
+    target_did: str
+    access_level: int = 1
+    purpose: Optional[str] = None
+    totp_code: Optional[str] = None
+    max_views: Optional[int] = None
+
 class DocumentApprovalRequest(BaseSchema):
     decision: str # "APPROVE" or "REJECT"
     totp_code: Optional[str] = None
     rejection_reason: Optional[str] = None
+    max_views: Optional[int] = None
 
 class DownloadRequest(BaseSchema):
     asset_serial: str
@@ -182,9 +196,14 @@ class AuditEventBase(BaseSchema):
     actor_did: Optional[str] = None
     target_did: Optional[str] = None
     asset_serial: Optional[str] = None
+    client_ip: Optional[str] = None
     risk_score: Optional[float] = None
     risk_label: Optional[str] = None
     risk_factors: Optional[dict] = None
+    alert_status: Optional[str] = "OPEN"
+
+class AlertStatusUpdateRequest(BaseSchema):
+    alert_status: str # FORWARDED_TO_MANAGER, ESCALATED_TO_ADMIN, DISMISSED, RESOLVED
 
 class AuditEventCreate(AuditEventBase):
     pass

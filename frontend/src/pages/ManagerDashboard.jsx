@@ -12,7 +12,10 @@ import {
   approveDocument,
   approvePhysicalAsset,
   approveDownloadRequest,
-  getDownloadDocumentUrl
+  getDownloadDocumentUrl,
+  getAuditEvents,
+  updateAlertStatus,
+  authenticateWithPasskey
 } from '../services/api';
 import {
   grantAssetAccess,
@@ -33,20 +36,25 @@ export default function ManagerDashboard() {
   const [pendingDocs, setPendingDocs] = useState([]);
   const [pendingPhysical, setPendingPhysical] = useState([]);
   const [pendingDownloads, setPendingDownloads] = useState([]);
+  const [forwardedIncidents, setForwardedIncidents] = useState([]);
   const [loadingQueue, setLoadingQueue] = useState(false);
 
   // Factor 3 Approval Modal State
   const [selectedAction, setSelectedAction] = useState(null); // { type: 'doc' | 'physical' | 'download', item: ... }
   const [factor3Code, setFactor3Code] = useState('');
+  const [maxViewsLimit, setMaxViewsLimit] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
   const [isProcessingApproval, setIsProcessingApproval] = useState(false);
   const [approvalResult, setApprovalResult] = useState(null);
+  const [passkeyFactor3Verified, setPasskeyFactor3Verified] = useState(false);
 
   // Digital Propose State
   const [docName, setDocName] = useState('');
   const [digitalSerial, setDigitalSerial] = useState('');
   const [docPurpose, setDocPurpose] = useState('');
   const [docTotpCode, setDocTotpCode] = useState('');
+  const [docRecipientAddress, setDocRecipientAddress] = useState('');
+  const [docPasskeyVerified, setDocPasskeyVerified] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileHash, setFileHash] = useState('');
   const [offchainURI, setOffchainURI] = useState('');
@@ -63,6 +71,9 @@ export default function ManagerDashboard() {
   const [physLocation, setPhysLocation] = useState('');
   const [physPurpose, setPhysPurpose] = useState('');
   const [physTotpCode, setPhysTotpCode] = useState('');
+  const [physRecipientAddress, setPhysRecipientAddress] = useState('');
+  const [physPasskeyVerified, setPhysPasskeyVerified] = useState(false);
+  const [hasMac, setHasMac] = useState(false);
   const [proposingPhys, setProposingPhys] = useState(false);
   const [physProposalResult, setPhysProposalResult] = useState(null);
 
@@ -87,23 +98,72 @@ export default function ManagerDashboard() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  // Fetch Pending Items
+  // Fetch Pending Items & Escalated Incidents
   const fetchPendingQueues = async () => {
     setLoadingQueue(true);
     setError('');
     try {
-      const [docs, phys, dls] = await Promise.all([
+      const [docs, phys, dls, incidents] = await Promise.all([
         getPendingDocuments().catch(() => []),
         getPendingPhysicalAssets().catch(() => []),
-        getPendingDownloadRequests().catch(() => [])
+        getPendingDownloadRequests().catch(() => []),
+        getAuditEvents({ alert_status: 'FORWARDED_TO_MANAGER', limit: 50 }).catch(() => [])
       ]);
       setPendingDocs(Array.isArray(docs) ? docs : []);
       setPendingPhysical(Array.isArray(phys) ? phys : []);
       setPendingDownloads(Array.isArray(dls) ? dls : []);
+      setForwardedIncidents(Array.isArray(incidents) ? incidents : []);
     } catch (err) {
       console.error('Failed to load pending queues:', err);
     } finally {
       setLoadingQueue(false);
+    }
+  };
+
+  const handleAlertAction = async (eventId, newStatus) => {
+    try {
+      await updateAlertStatus(eventId, newStatus);
+      setSuccessMsg(`Incident updated to ${newStatus}`);
+      fetchPendingQueues();
+    } catch (err) {
+      console.error('Failed to update incident:', err);
+      setError(err.response?.data?.detail || 'Failed to update alert');
+    }
+  };
+
+  const handlePasskeyF2Doc = async () => {
+    try {
+      setError('');
+      await authenticateWithPasskey('factor2');
+      setDocPasskeyVerified(true);
+      setSuccessMsg('Passkey Factor 2 verified successfully!');
+    } catch (err) {
+      console.error('Passkey verification failed:', err);
+      setError('Passkey authentication failed or not registered. Use 6-digit TOTP code.');
+    }
+  };
+
+  const handlePasskeyF2Phys = async () => {
+    try {
+      setError('');
+      await authenticateWithPasskey('factor2');
+      setPhysPasskeyVerified(true);
+      setSuccessMsg('Passkey Factor 2 verified successfully!');
+    } catch (err) {
+      console.error('Passkey verification failed:', err);
+      setError('Passkey authentication failed or not registered. Use 6-digit TOTP code.');
+    }
+  };
+
+  const handlePasskeyF3 = async () => {
+    try {
+      setError('');
+      await authenticateWithPasskey('factor3');
+      setPasskeyFactor3Verified(true);
+      setSuccessMsg('Passkey Factor 3 verified successfully!');
+    } catch (err) {
+      console.error('Passkey verification failed:', err);
+      setError('Passkey authentication failed or not registered. Use 6-digit Factor 3 TOTP code.');
     }
   };
 
@@ -128,7 +188,8 @@ export default function ManagerDashboard() {
       const payload = {
         decision,
         totp_code: factor3Code || null,
-        rejection_reason: decision === 'REJECT' ? (rejectionReason || 'Rejected by Department Manager') : null
+        rejection_reason: decision === 'REJECT' ? (rejectionReason || 'Rejected by Department Manager') : null,
+        ...(maxViewsLimit && { max_views: parseInt(maxViewsLimit) })
       };
 
       let res;
@@ -205,6 +266,7 @@ export default function ManagerDashboard() {
         file_hash: fileHash,
         offchain_uri: offchainURI,
         purpose: docPurpose || 'Defense Technical Documentation',
+        recipient_address: docRecipientAddress.trim() || null,
         totp_code: docTotpCode || null,
       };
 
@@ -214,6 +276,7 @@ export default function ManagerDashboard() {
       setDocName('');
       setDigitalSerial('');
       setDocPurpose('');
+      setDocRecipientAddress('');
       setDocTotpCode('');
       setFileHash('');
       setOffchainURI('');
@@ -242,10 +305,11 @@ export default function ManagerDashboard() {
         name: physName,
         serial_number: physSerial,
         asset_type: physType,
-        mac_address: physMac.trim() || null,
-        device_unique_address: physDevAddr.trim() || null,
+        mac_address: hasMac ? (physMac.trim() || null) : null,
+        device_unique_address: !hasMac ? (physDevAddr.trim() || null) : null,
         location: physLocation.trim() || null,
         purpose: physPurpose.trim() || 'Tactical Defense Deployment',
+        recipient_address: physRecipientAddress.trim() || null,
         totp_code: physTotpCode || null
       };
 
@@ -258,6 +322,8 @@ export default function ManagerDashboard() {
       setPhysDevAddr('');
       setPhysLocation('');
       setPhysPurpose('');
+      setPhysRecipientAddress('');
+      setHasMac(false);
       setPhysTotpCode('');
     } catch (err) {
       console.error('Physical asset proposal error:', err);
@@ -416,8 +482,8 @@ export default function ManagerDashboard() {
       <div style={{ display: 'flex', gap: '8px', marginBottom: '1.5rem', borderBottom: '2px solid #e5e7eb', paddingBottom: '10px' }}>
         {[
           { id: 'pending', label: `Pending Approvals (${pendingDocs.length + pendingPhysical.length + pendingDownloads.length})` },
-          { id: 'propose_doc', label: 'Propose Digital Document' },
-          { id: 'propose_phys', label: 'Propose Physical Hardware' },
+          ...(user?.role !== 'ADMIN' ? [{ id: 'propose_doc', label: 'Propose Digital Document' }] : []),
+          ...(user?.role !== 'ADMIN' ? [{ id: 'propose_phys', label: 'Propose Physical Hardware' }] : []),
           { id: 'access', label: 'Granular ACL Permissions' },
           { id: 'transfer', label: 'Transfer & Revoke' },
         ].map((tab) => (
@@ -521,6 +587,22 @@ export default function ManagerDashboard() {
               }}
             >
               Download Requests ({pendingDownloads.length})
+            </button>
+            <button
+              onClick={() => setPendingSubTab('incidents')}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '6px',
+                border: 'none',
+                background: pendingSubTab === 'incidents' ? '#ffffff' : 'transparent',
+                color: pendingSubTab === 'incidents' ? '#0f172a' : '#64748b',
+                fontWeight: '600',
+                fontSize: '12px',
+                cursor: 'pointer',
+                boxShadow: pendingSubTab === 'incidents' ? '0 1px 2px rgba(0,0,0,0.05)' : 'none'
+              }}
+            >
+              Escalated Incidents ({forwardedIncidents.length})
             </button>
           </div>
 
@@ -652,6 +734,45 @@ export default function ManagerDashboard() {
               )}
             </div>
           )}
+
+          {/* Sub-tab 4: Escalated Incidents */}
+          {pendingSubTab === 'incidents' && (
+            <div>
+              {forwardedIncidents.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#94a3b8' }}>
+                  No escalated security incidents awaiting management review.
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        <th style={tableHeaderStyle}>Event ID</th>
+                        <th style={tableHeaderStyle}>Event</th>
+                        <th style={tableHeaderStyle}>Actor</th>
+                        <th style={tableHeaderStyle}>Risk</th>
+                        <th style={tableHeaderStyle}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {forwardedIncidents.map((e) => (
+                        <tr key={e.id}>
+                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontSize: '11px' }}>{e.id.slice(0, 8)}...</td>
+                          <td style={tableCellStyle}>{e.event_type}</td>
+                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontSize: '11px' }}>{e.actor_did ? `${e.actor_did.slice(0, 16)}...` : '—'}</td>
+                          <td style={{...tableCellStyle, fontWeight: 'bold', color: '#dc2626'}}>{e.risk_label}</td>
+                          <td style={tableCellStyle}>
+                            <button onClick={() => handleAlertAction(e.id, 'ESCALATED_TO_ADMIN')} style={{ padding: '4px 8px', marginRight: '4px', background: '#dc2626', color: 'white', borderRadius: '4px', border: 'none', cursor: 'pointer', fontSize: '11px' }}>Escalate to Admin</button>
+                            <button onClick={() => handleAlertAction(e.id, 'DISMISSED')} style={{ padding: '4px 8px', background: '#e2e8f0', color: 'black', borderRadius: '4px', border: 'none', cursor: 'pointer', fontSize: '11px' }}>Dismiss</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -686,26 +807,55 @@ export default function ManagerDashboard() {
               <label style={labelStyle}>
                 Factor 3 Multi-Factor Authentication Code (TOTP 3 / Passkey 3) *
               </label>
-              <input
-                type="text"
-                value={factor3Code}
-                onChange={(e) => setFactor3Code(e.target.value)}
-                placeholder="Enter 6-digit Factor 3 code"
-                style={{ ...inputStyle, fontSize: '16px', letterSpacing: '2px', textAlign: 'center' }}
-                maxLength={6}
-              />
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  value={factor3Code}
+                  onChange={(e) => setFactor3Code(e.target.value)}
+                  placeholder="6-digit Factor 3 code"
+                  style={{ ...inputStyle, marginBottom: 0, fontSize: '16px', letterSpacing: '2px', textAlign: 'center', flex: 1 }}
+                  maxLength={6}
+                />
+                <button
+                  type="button"
+                  onClick={handlePasskeyF3}
+                  style={{ padding: '0 16px', background: passkeyFactor3Verified ? '#10b981' : '#f1f5f9', color: passkeyFactor3Verified ? '#fff' : '#1e293b', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+                >
+                  {passkeyFactor3Verified ? '✓ Passkey Verified' : '🔑 Use Passkey'}
+                </button>
+              </div>
               <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#64748b' }}>
                 Manager / Admin Factor 3 authentication is cryptographically enforced for all on-chain mints and download approvals.
               </p>
             </div>
 
+            {selectedAction.item.action_type === 'SHARE' && (
+              <div style={{ marginBottom: '1.2rem' }}>
+                <label style={labelStyle}>Max Allowed Views (Optional Quota)</label>
+                <input
+                  type="number"
+                  value={maxViewsLimit}
+                  onChange={(e) => setMaxViewsLimit(e.target.value)}
+                  placeholder="e.g. 5 (leave blank for unlimited)"
+                  style={inputStyle}
+                  min={1}
+                />
+              </div>
+            )}
+
+            {selectedAction.item.action_type === 'MODIFICATION' && (
+              <div style={{ padding: '8px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px', marginBottom: '1.2rem', fontSize: '12px', color: '#92400e' }}>
+                <strong>Note:</strong> This is a MODIFICATION proposal. Approving this will generate the on-chain calldata to overwrite the asset's URI and SHA-256 hash.
+              </div>
+            )}
+
             <div style={{ display: 'flex', gap: '10px' }}>
               <button
                 onClick={() => handleDecision('APPROVE')}
-                disabled={isProcessingApproval}
-                style={{ flex: 1, padding: '12px', background: isProcessingApproval ? '#94a3b8' : '#059669', color: '#ffffff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+                disabled={isProcessingApproval || (!factor3Code && !passkeyFactor3Verified)}
+                style={{ flex: 1, padding: '12px', background: isProcessingApproval || (!factor3Code && !passkeyFactor3Verified) ? '#94a3b8' : '#059669', color: '#ffffff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
               >
-                {isProcessingApproval ? 'Verifying MFA...' : '✓ Approve & Mint'}
+                {isProcessingApproval ? 'Verifying MFA...' : '✓ Approve Action'}
               </button>
               <button
                 onClick={() => handleDecision('REJECT')}
@@ -763,6 +913,16 @@ export default function ManagerDashboard() {
               </div>
             </div>
 
+            <label style={labelStyle}>Forward to Recipient Address *</label>
+            <input
+              type="text"
+              value={docRecipientAddress}
+              onChange={(e) => setDocRecipientAddress(e.target.value)}
+              required
+              style={inputStyle}
+              placeholder="e.g. 0x123... or DID"
+            />
+
             <label style={labelStyle}>Purpose & Department Classification</label>
             <input
               type="text"
@@ -772,15 +932,24 @@ export default function ManagerDashboard() {
               placeholder="e.g. Strategic Radar Upgrade Documentation"
             />
 
-            <label style={labelStyle}>Factor 2 TOTP Code (Submission MFA)</label>
-            <input
-              type="text"
-              value={docTotpCode}
-              onChange={(e) => setDocTotpCode(e.target.value)}
-              style={inputStyle}
-              placeholder="Enter 6-digit Factor 2 code (if configured)"
-              maxLength={6}
-            />
+            <label style={labelStyle}>Factor 2 Submission MFA (TOTP / Passkey) *</label>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '1rem' }}>
+              <input
+                type="text"
+                value={docTotpCode}
+                onChange={(e) => setDocTotpCode(e.target.value)}
+                style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+                placeholder="Enter 6-digit Factor 2 code"
+                maxLength={6}
+              />
+              <button
+                type="button"
+                onClick={handlePasskeyF2Doc}
+                style={{ padding: '0 16px', background: docPasskeyVerified ? '#10b981' : '#f1f5f9', color: docPasskeyVerified ? '#fff' : '#1e293b', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                {docPasskeyVerified ? '✓ Passkey Verified' : '🔑 Use Passkey'}
+              </button>
+            </div>
 
             <button
               type="submit"
@@ -840,28 +1009,55 @@ export default function ManagerDashboard() {
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div>
-                <label style={labelStyle}>MAC Address (Hardware Tag)</label>
-                <input
-                  type="text"
-                  value={physMac}
-                  onChange={(e) => setPhysMac(e.target.value)}
+                <label style={labelStyle}>Does this device have a MAC Address? *</label>
+                <select
+                  value={hasMac}
+                  onChange={(e) => setHasMac(e.target.value === 'true')}
                   style={inputStyle}
-                  placeholder="e.g. 00:1A:2B:3C:4D:5E"
-                />
+                >
+                  <option value={false}>No</option>
+                  <option value={true}>Yes</option>
+                </select>
               </div>
-              <div>
-                <label style={labelStyle}>Device Unique Hardware Address</label>
-                <input
-                  type="text"
-                  value={physDevAddr}
-                  onChange={(e) => setPhysDevAddr(e.target.value)}
-                  style={inputStyle}
-                  placeholder="e.g. DEV-SECURE-CHIP-778"
-                />
-              </div>
+              {hasMac ? (
+                <div>
+                  <label style={labelStyle}>MAC Address (Hardware Tag) *</label>
+                  <input
+                    type="text"
+                    value={physMac}
+                    onChange={(e) => setPhysMac(e.target.value)}
+                    required
+                    style={inputStyle}
+                    placeholder="e.g. 00:1A:2B:3C:4D:5E"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label style={labelStyle}>Device Unique Hardware Address *</label>
+                  <input
+                    type="text"
+                    value={physDevAddr}
+                    onChange={(e) => setPhysDevAddr(e.target.value)}
+                    required
+                    style={inputStyle}
+                    placeholder="e.g. DEV-SECURE-CHIP-778"
+                  />
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div>
+                <label style={labelStyle}>Forward to Recipient Address *</label>
+                <input
+                  type="text"
+                  value={physRecipientAddress}
+                  onChange={(e) => setPhysRecipientAddress(e.target.value)}
+                  required
+                  style={inputStyle}
+                  placeholder="e.g. 0x123... or DID"
+                />
+              </div>
               <div>
                 <label style={labelStyle}>Deployment Location / Bay</label>
                 <input
@@ -872,30 +1068,40 @@ export default function ManagerDashboard() {
                   placeholder="e.g. Bay-4 Avionics Testing Hangar"
                 />
               </div>
-              <div>
-                <label style={labelStyle}>Asset Classification Type</label>
-                <select
-                  value={physType}
-                  onChange={(e) => setPhysType(e.target.value)}
-                  style={inputStyle}
-                >
-                  <option value="EQUIPMENT">EQUIPMENT</option>
-                  <option value="WEAPON_SYSTEM">WEAPON SYSTEM</option>
-                  <option value="COMMUNICATION">COMMUNICATION</option>
-                  <option value="VEHICLE">TACTICAL VEHICLE</option>
-                </select>
-              </div>
             </div>
 
-            <label style={labelStyle}>Factor 2 TOTP Code (Submission MFA)</label>
-            <input
-              type="text"
-              value={physTotpCode}
-              onChange={(e) => setPhysTotpCode(e.target.value)}
-              style={inputStyle}
-              placeholder="Enter 6-digit Factor 2 code (if configured)"
-              maxLength={6}
-            />
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={labelStyle}>Asset Classification Type</label>
+              <select
+                value={physType}
+                onChange={(e) => setPhysType(e.target.value)}
+                style={inputStyle}
+              >
+                <option value="EQUIPMENT">EQUIPMENT</option>
+                <option value="WEAPON_SYSTEM">WEAPON SYSTEM</option>
+                <option value="COMMUNICATION">COMMUNICATION</option>
+                <option value="VEHICLE">TACTICAL VEHICLE</option>
+              </select>
+            </div>
+
+            <label style={labelStyle}>Factor 2 Submission MFA (TOTP / Passkey) *</label>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '1rem' }}>
+              <input
+                type="text"
+                value={physTotpCode}
+                onChange={(e) => setPhysTotpCode(e.target.value)}
+                style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+                placeholder="Enter 6-digit Factor 2 code"
+                maxLength={6}
+              />
+              <button
+                type="button"
+                onClick={handlePasskeyF2Phys}
+                style={{ padding: '0 16px', background: physPasskeyVerified ? '#10b981' : '#f1f5f9', color: physPasskeyVerified ? '#fff' : '#1e293b', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                {physPasskeyVerified ? '✓ Passkey Verified' : '🔑 Use Passkey'}
+              </button>
+            </div>
 
             <button
               type="submit"

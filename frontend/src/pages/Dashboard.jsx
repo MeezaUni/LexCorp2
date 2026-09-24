@@ -119,6 +119,14 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('auto');
 
   useEffect(() => {
+    if (user && user.onboarding_pending) {
+      if (activeTab !== 'identity') {
+        setActiveTab('identity');
+      }
+    }
+  }, [user, activeTab]);
+
+  useEffect(() => {
     if (!wallet) {
       setActiveTab('auto');
     }

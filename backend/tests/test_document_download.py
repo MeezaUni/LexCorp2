@@ -33,7 +33,8 @@ async def test_download_workflow_success(client, db_session):
                 "name": "Download Doc",
                 "serial_number": serial,
                 "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "offchain_uri": "secure-vault://documents/test.txt"
+                "offchain_uri": "secure-vault://documents/test.txt",
+        "recipient_address": "0x123abc",
             }
         )
         assert propose_res.status_code == 200, propose_res.text

@@ -1,55 +1,72 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { ethers } from 'ethers';
 import {
-  createNewWallet,
   importWallet,
   unlockWallet,
   hasEncryptedWallet,
-  removeWallet
 } from '../services/walletCore';
 
 export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticated, forceLogin = false }) {
-  const [mode, setMode] = useState('unlock'); // 'unlock', 'create', 'import', 'show_phrase'
-  const [password, setPassword] = useState('');
+  const [activeTab, setActiveTab] = useState('import');
   const [importKey, setImportKey] = useState('');
-  const [createdPhrase, setCreatedPhrase] = useState('');
-  const [createdAddress, setCreatedAddress] = useState('');
+  const [importOtp, setImportOtp] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
-  const [loginMethod, setLoginMethod] = useState('password');
   const [loginAddress, setLoginAddress] = useState('');
   const [otpCode, setOtpCode] = useState('');
 
-  const walletExists = hasEncryptedWallet();
+  const walletStored = hasEncryptedWallet();
 
   useEffect(() => {
     if (isOpen) {
       setError('');
-      setPassword('');
       setImportKey('');
-      if (walletExists || forceLogin) {
-        setMode('unlock');
+      setImportOtp('');
+      setOtpCode('');
+      // If a wallet is already stored, default to Mobile Auth or Passkey, else default to First-time Import
+      if (walletStored) {
+        setActiveTab('mobile');
       } else {
-        setMode('create');
+        setActiveTab('import');
       }
     }
-  }, [isOpen, walletExists, forceLogin]);
+  }, [isOpen, walletStored]);
 
   if (!isOpen) return null;
 
-  const handleUnlock = async (e) => {
+  const handleImportWithOtp = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
-    setStatusMsg('Decrypting secure enclave...');
+    setStatusMsg('Verifying credentials...');
 
     try {
-      const wallet = await unlockWallet(password);
-      onUnlocked(wallet);
+      // 1. Derive wallet from Key/Phrase
+      let wallet;
+      const keyOrPhrase = importKey.trim();
+      if (keyOrPhrase.includes(' ')) {
+        wallet = ethers.Wallet.fromPhrase(keyOrPhrase);
+      } else {
+        wallet = new ethers.Wallet(keyOrPhrase);
+      }
+
+      // 2. Verify Single-Use 3-Hour OTP with backend
+      await axios.post('/api/auth/otp/verify-import', {
+        wallet_address: wallet.address,
+        pin: importOtp.trim()
+      });
+
+      // 3. Save wallet locally without passwords
+      await importWallet(keyOrPhrase);
+
+      // 4. Authenticate & sign in with SIWE
+      await onUnlocked(wallet);
       onClose();
     } catch (err) {
-      setError(err.message || 'Failed to unlock wallet');
+      console.error('Import error:', err);
+      setError(err.response?.data?.detail || err.message || 'Account import and verification failed.');
     } finally {
       setLoading(false);
       setStatusMsg('');
@@ -60,14 +77,19 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
     e.preventDefault();
     setError('');
     setLoading(true);
+    setStatusMsg('Authenticating session...');
     try {
-      const result = await axios.post('/api/auth/login/totp', { wallet_address: loginAddress, token: otpCode });
+      const result = await axios.post('/api/auth/login/totp', {
+        wallet_address: loginAddress.trim(),
+        token: otpCode.trim()
+      });
       onAuthenticated(result.data);
       onClose();
     } catch (err) {
       setError(err.response?.data?.detail || 'Mobile authenticator login failed.');
     } finally {
       setLoading(false);
+      setStatusMsg('');
     }
   };
 
@@ -76,10 +98,15 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
   const encodeHex = (value) => Array.from(new Uint8Array(value), (byte) => byte.toString(16).padStart(2, '0')).join('');
 
   const handlePasskeyLogin = async () => {
+    if (!loginAddress.trim()) {
+      setError('Please enter your wallet address first.');
+      return;
+    }
     setError('');
     setLoading(true);
+    setStatusMsg('Requesting passkey authentication...');
     try {
-      const optionResponse = await axios.post('/api/auth/login/passkey/options', { wallet_address: loginAddress });
+      const optionResponse = await axios.post('/api/auth/login/passkey/options', { wallet_address: loginAddress.trim() });
       const options = optionResponse.data.options;
       const credential = await navigator.credentials.get({
         publicKey: {
@@ -91,7 +118,7 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
       });
       if (!credential) throw new Error('Passkey prompt was cancelled.');
       const result = await axios.post('/api/auth/login/passkey/verify', {
-        wallet_address: loginAddress,
+        wallet_address: loginAddress.trim(),
         credential_id: encodeHex(credential.rawId),
         response: {
           id: credential.id,
@@ -111,62 +138,7 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
       setError(err.response?.data?.detail || err.message || 'Passkey login failed.');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleCreate = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    setStatusMsg('Generating high-entropy cryptographic keypair...');
-
-    try {
-      const wallet = await createNewWallet(password);
-      setCreatedAddress(wallet.address);
-      setCreatedPhrase(wallet.mnemonic ? wallet.mnemonic.phrase : 'Private key generated directly');
-      setMode('show_phrase');
-    } catch (err) {
-      setError(err.message || 'Failed to create wallet');
-    } finally {
-      setLoading(false);
       setStatusMsg('');
-    }
-  };
-
-  const handleImport = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    setStatusMsg('Importing and encrypting key container...');
-
-    try {
-      const wallet = await importWallet(importKey, password);
-      onUnlocked(wallet);
-      onClose();
-    } catch (err) {
-      setError(err.message || 'Failed to import wallet');
-    } finally {
-      setLoading(false);
-      setStatusMsg('');
-    }
-  };
-
-  const handleFinishCreation = async () => {
-    // Unlock with the password we used
-    try {
-      const wallet = await unlockWallet(password);
-      onUnlocked(wallet);
-      onClose();
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  const handleReset = () => {
-    if (window.confirm('Are you sure you want to remove the current wallet from this browser? Make sure you have your backup phrase/private key saved!')) {
-      removeWallet();
-      setMode('create');
-      setError('');
     }
   };
 
@@ -177,8 +149,8 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
       left: 0,
       right: 0,
       bottom: 0,
-      backgroundColor: 'rgba(15, 23, 42, 0.7)',
-      backdropFilter: 'blur(4px)',
+      backgroundColor: 'rgba(15, 23, 42, 0.75)',
+      backdropFilter: 'blur(6px)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -210,7 +182,7 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
               LexCorp Authentication
             </h3>
             <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#94a3b8' }}>
-              Secure Identity Verification (Consortium 13371)
+              Passwordless Identity &amp; Key Infrastructure (Consortium 13371)
             </p>
           </div>
           <button
@@ -229,24 +201,33 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
 
         {/* Content Body */}
         <div style={{ padding: '1.5rem' }}>
-          {mode === 'unlock' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', marginBottom: '1rem' }}>
-              {[
-                ['password', 'Password'],
-                ['mobile', 'Mobile Auth'],
-                ['passkey', 'Passkey']
-              ].map(([method, label]) => (
-                <button
-                  key={method}
-                  type="button"
-                  onClick={() => setLoginMethod(method)}
-                  style={{ background: loginMethod === method ? '#dbeafe' : '#f8fafc', color: loginMethod === method ? '#1d4ed8' : '#475569', border: `1px solid ${loginMethod === method ? '#93c5fd' : '#cbd5e1'}`, padding: '8px 4px', borderRadius: '6px', fontSize: '11px', fontWeight: '600', cursor: 'pointer' }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* Tab Selection */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', marginBottom: '1.5rem' }}>
+            {[
+              ['import', 'First-Time Setup'],
+              ['mobile', 'Mobile Auth'],
+              ['passkey', 'Passkey']
+            ].map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => { setActiveTab(tab); setError(''); }}
+                style={{
+                  background: activeTab === tab ? '#0f172a' : '#f8fafc',
+                  color: activeTab === tab ? '#ffffff' : '#475569',
+                  border: `1px solid ${activeTab === tab ? '#0f172a' : '#cbd5e1'}`,
+                  padding: '8px 4px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
           {error && (
             <div style={{
@@ -262,55 +243,68 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
             </div>
           )}
 
-          {/* Mode: UNLOCK WALLET */}
-          {mode === 'unlock' && loginMethod !== 'password' && (
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>Wallet Address</label>
-              <input type="text" value={loginAddress} onChange={(e) => setLoginAddress(e.target.value)} placeholder="0x..." required style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', boxSizing: 'border-box' }} />
+          {statusMsg && (
+            <div style={{
+              background: '#eff6ff',
+              border: '1px solid #bfdbfe',
+              color: '#1e40af',
+              padding: '0.75rem',
+              borderRadius: '8px',
+              fontSize: '12px',
+              marginBottom: '1rem'
+            }}>
+              {statusMsg}
             </div>
           )}
 
-          {mode === 'unlock' && loginMethod === 'mobile' && (
-            <form onSubmit={handleTotpLogin}>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>6-Digit Authenticator Code</label>
-              <input type="text" inputMode="numeric" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))} required style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '18px', letterSpacing: '4px', boxSizing: 'border-box' }} />
-              <button type="submit" disabled={loading} style={{ width: '100%', marginTop: '12px', background: '#2563eb', color: '#fff', border: 'none', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600' }}>{loading ? 'Verifying...' : 'Login with Mobile Auth'}</button>
-            </form>
-          )}
-
-          {mode === 'unlock' && loginMethod === 'passkey' && (
-            <div>
-              <p style={{ color: '#475569', fontSize: '12px', margin: '0 0 10px' }}>
-                Windows Hello on Windows laptops, Touch ID, or a security key can approve this passkey login.
+          {/* First-Time Setup (Key + PIN) */}
+          {activeTab === 'import' && (
+            <form onSubmit={handleImportWithOtp}>
+              <p style={{ fontSize: '13px', color: '#475569', marginBottom: '1rem', lineHeight: '1.4' }}>
+                First time logging in? Enter your provisioned recovery phrase or private key along with the 12-digit single-use PIN provided by your administrator.
               </p>
-              <button type="button" onClick={handlePasskeyLogin} disabled={loading} style={{ width: '100%', background: '#2563eb', color: '#fff', border: 'none', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600' }}>
-                {loading ? 'Waiting for passkey...' : 'Login with Passkey'}
-              </button>
-            </div>
-          )}
 
-          {mode === 'unlock' && loginMethod === 'password' && (
-            <form onSubmit={handleUnlock}>
-              <p style={{ fontSize: '13px', color: '#475569', marginBottom: '1rem' }}>
-                Enter your local PIN/Password to decrypt your private key and access your identity.
-              </p>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>
+                  Wallet Passphrase or Private Key
+                </label>
+                <textarea
+                  value={importKey}
+                  onChange={(e) => setImportKey(e.target.value)}
+                  placeholder="Paste 12/24-word recovery phrase or 0x private key"
+                  required
+                  rows={2}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                    fontSize: '13px',
+                    fontFamily: 'monospace',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
               <div style={{ marginBottom: '1.25rem' }}>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>
-                  Wallet Passphrase
+                  One-Time Setup PIN (12 Digits)
                 </label>
                 <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter encryption password"
-                  autoFocus
+                  type="text"
+                  value={importOtp}
+                  onChange={(e) => setImportOtp(e.target.value)}
+                  placeholder="e.g. 123456789012"
                   required
+                  maxLength={12}
                   style={{
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: '8px',
                     border: '1px solid #cbd5e1',
                     fontSize: '14px',
+                    fontFamily: 'monospace',
+                    letterSpacing: '1px',
                     boxSizing: 'border-box'
                   }}
                 />
@@ -319,130 +313,10 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
               <button
                 type="submit"
                 disabled={loading}
-                style={{
-                  width: '100%',
-                  background: '#2563eb',
-                  color: '#ffffff',
-                  border: 'none',
-                  padding: '12px',
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  cursor: loading ? 'not-allowed' : 'pointer'
-                }}
-              >
-                {loading ? (statusMsg || 'Unlocking...') : 'Unlock & Authenticate'}
-              </button>
-
-              <div style={{ marginTop: '1.25rem', textAlign: 'center', fontSize: '12px' }}>
-                <button
-                  type="button"
-                  onClick={handleReset}
-                  style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', padding: 0 }}
-                >
-                  Reset Identity
-                </button>
-              </div>
-            </form>
-          )}
-
-          {/* Mode: CREATE WALLET */}
-          {mode === 'create' && (
-            <form onSubmit={handleCreate}>
-              <p style={{ fontSize: '13px', color: '#475569', marginBottom: '1rem' }}>
-                Generate a new cryptographic EVM keypair directly in your browser.
-              </p>
-              <div style={{ marginBottom: '1.25rem' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>
-                  Create Encryption Password
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Minimum 6 characters"
-                  required
-                  minLength={6}
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid #cbd5e1',
-                    fontSize: '14px',
-                    boxSizing: 'border-box'
-                  }}
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                style={{
-                  width: '100%',
-                  background: '#0f172a',
-                  color: '#ffffff',
-                  border: 'none',
-                  padding: '12px',
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  cursor: loading ? 'not-allowed' : 'pointer'
-                }}
-              >
-                {loading ? (statusMsg || 'Creating Keyring...') : 'Generate New Keyring'}
-              </button>
-
-              <div style={{ marginTop: '1.25rem', textAlign: 'center', fontSize: '12px' }}>
-                <span style={{ color: '#64748b' }}>Already have a keypair? </span>
-                <button
-                  type="button"
-                  onClick={() => setMode('import')}
-                  style={{ background: 'none', border: 'none', color: '#2563eb', fontWeight: '600', cursor: 'pointer' }}
-                >
-                  Import Mnemonic/Key
-                </button>
-              </div>
-            </form>
-          )}
-
-          {/* Mode: SHOW RECOVERY PHRASE */}
-          {mode === 'show_phrase' && (
-            <div>
-              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', padding: '0.75rem', borderRadius: '8px', marginBottom: '1rem' }}>
-                <div style={{ fontSize: '12px', fontWeight: '700', color: '#166534', marginBottom: '4px' }}>
-                  Wallet Created Successfully!
-                </div>
-                <div style={{ fontSize: '11px', color: '#15803d', wordBreak: 'break-all', fontFamily: 'monospace' }}>
-                  Address: {createdAddress}
-                </div>
-              </div>
-
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', color: '#334155', marginBottom: '6px' }}>
-                Secret Recovery Phrase (Write this down!):
-              </label>
-              <div style={{
-                background: '#f8fafc',
-                border: '1px dashed #cbd5e1',
-                padding: '1rem',
-                borderRadius: '8px',
-                fontFamily: 'monospace',
-                fontSize: '13px',
-                color: '#0f172a',
-                lineHeight: '1.6',
-                marginBottom: '1.25rem',
-                wordBreak: 'break-word',
-                userSelect: 'all'
-              }}>
-                {createdPhrase}
-              </div>
-
-              <button
-                type="button"
-                onClick={handleFinishCreation}
                 style={{
                   width: '100%',
                   background: '#16a34a',
-                  color: '#ffffff',
+                  color: '#fff',
                   border: 'none',
                   padding: '12px',
                   borderRadius: '8px',
@@ -451,86 +325,131 @@ export default function WalletModal({ isOpen, onClose, onUnlocked, onAuthenticat
                   cursor: 'pointer'
                 }}
               >
-                I Have Saved It, Continue
+                {loading ? 'Verifying & Initializing...' : 'Verify & Setup Account'}
               </button>
-            </div>
+            </form>
           )}
 
-          {/* Mode: IMPORT WALLET */}
-          {mode === 'import' && (
-            <form onSubmit={handleImport}>
-              <div style={{ marginBottom: '1rem' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>
-                  Mnemonic (12 words) or Private Key (0x...)
-                </label>
-                <textarea
-                  value={importKey}
-                  onChange={(e) => setImportKey(e.target.value)}
-                  placeholder="Paste your 12-word recovery phrase or 0x... private key"
-                  required
-                  rows={3}
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid #cbd5e1',
-                    fontSize: '13px',
-                    boxSizing: 'border-box',
-                    fontFamily: 'monospace'
-                  }}
-                />
-              </div>
+          {/* Returning User: Mobile Authenticator (TOTP Factor 1) */}
+          {activeTab === 'mobile' && (
+            <form onSubmit={handleTotpLogin}>
+              <p style={{ fontSize: '13px', color: '#475569', marginBottom: '1rem', lineHeight: '1.4' }}>
+                Authenticate securely using your registered Mobile Authenticator app (Factor 1).
+              </p>
 
-              <div style={{ marginBottom: '1.25rem' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>
-                  Encryption Password
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Password to encrypt this wallet locally"
-                  required
-                  minLength={6}
-                  style={{
-                    width: '100%',
-                    padding: '10px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid #cbd5e1',
-                    fontSize: '14px',
-                    boxSizing: 'border-box'
-                  }}
-                />
-              </div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>
+                Wallet Address
+              </label>
+              <input
+                type="text"
+                value={loginAddress}
+                onChange={(e) => setLoginAddress(e.target.value)}
+                placeholder="0x..."
+                required
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  fontSize: '13px',
+                  fontFamily: 'monospace',
+                  marginBottom: '1rem',
+                  boxSizing: 'border-box'
+                }}
+              />
+
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>
+                6-Digit Authenticator Code
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="000000"
+                required
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  fontSize: '18px',
+                  letterSpacing: '4px',
+                  textAlign: 'center',
+                  fontFamily: 'monospace',
+                  boxSizing: 'border-box'
+                }}
+              />
 
               <button
                 type="submit"
                 disabled={loading}
                 style={{
                   width: '100%',
+                  marginTop: '1rem',
                   background: '#2563eb',
-                  color: '#ffffff',
+                  color: '#fff',
                   border: 'none',
                   padding: '12px',
                   borderRadius: '8px',
                   fontSize: '14px',
                   fontWeight: '600',
-                  cursor: loading ? 'not-allowed' : 'pointer'
+                  cursor: 'pointer'
                 }}
               >
-                {loading ? (statusMsg || 'Encrypting & Storing...') : 'Import Wallet'}
+                {loading ? 'Authenticating...' : 'Login with Mobile Auth'}
               </button>
-
-              <div style={{ marginTop: '1.25rem', textAlign: 'center', fontSize: '12px' }}>
-                <button
-                  type="button"
-                  onClick={() => setMode(walletExists ? 'unlock' : 'create')}
-                  style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer' }}
-                >
-                  Cancel
-                </button>
-              </div>
             </form>
+          )}
+
+          {/* Returning User: Hardware Passkey / WebAuthn */}
+          {activeTab === 'passkey' && (
+            <div>
+              <p style={{ fontSize: '13px', color: '#475569', marginBottom: '1rem', lineHeight: '1.4' }}>
+                Authenticate passwordlessly using Windows Hello, Touch ID, or a FIDO2 hardware security key.
+              </p>
+
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#334155', marginBottom: '4px' }}>
+                Wallet Address
+              </label>
+              <input
+                type="text"
+                value={loginAddress}
+                onChange={(e) => setLoginAddress(e.target.value)}
+                placeholder="0x..."
+                required
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  fontSize: '13px',
+                  fontFamily: 'monospace',
+                  marginBottom: '1rem',
+                  boxSizing: 'border-box'
+                }}
+              />
+
+              <button
+                type="button"
+                onClick={handlePasskeyLogin}
+                disabled={loading}
+                style={{
+                  width: '100%',
+                  background: '#2563eb',
+                  color: '#fff',
+                  border: 'none',
+                  padding: '12px',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                {loading ? 'Waiting for Security Key...' : 'Login with Passkey'}
+              </button>
+            </div>
           )}
         </div>
       </div>

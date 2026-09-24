@@ -7,21 +7,21 @@ from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, Fil
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+from typing import Optional, List, Any
 import time
 import secrets
 from datetime import datetime, timedelta
 
 
 from app.core.limiter import limiter
-from app.api.dependencies import get_db, get_current_user, get_current_active_user
+from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_onboarded_user, get_request_client_ip
 from app.core.config import settings
 from app.services.contract import contract_service
 from app.services.watermark import apply_watermark
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
-from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent
-from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest
+from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent, AssetAccessGrant
+from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead
 from app.services.security import verify_totp
 from app.services import auth
 from sqlalchemy import select, desc
@@ -83,7 +83,7 @@ class TransferRequest(BaseModel):
     new_owner_did: str
 
 @router.post("/transfer/prepare", response_model=MintCalldataResponse)
-async def prepare_transfer(request: TransferRequest, current_user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+async def prepare_transfer(request: TransferRequest, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
     """Prepare unsigned transfer transaction calldata.
 
     Authorization Rules:
@@ -145,7 +145,7 @@ async def prepare_transfer(request: TransferRequest, current_user: User = Depend
     )
 
 @router.post("/revoke/prepare", response_model=MintCalldataResponse)
-async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
+async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
     """Prepare unsigned revoke transaction calldata.
 
     Authorization Rules:
@@ -230,7 +230,7 @@ async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depen
     )
 
 @router.post("/mint/prepare", response_model=MintCalldataResponse)
-async def prepare_mint(request: MintRequest, current_user: User = Depends(get_current_active_user)):
+async def prepare_mint(request: MintRequest, current_user: User = Depends(get_onboarded_user)):
     """Prepare unsigned mint transaction calldata for physical asset.
 
     Authorization Rules:
@@ -255,7 +255,7 @@ async def prepare_mint(request: MintRequest, current_user: User = Depends(get_cu
     )
 
 @router.post("/mint-digital/prepare", response_model=MintCalldataResponse)
-async def prepare_mint_digital(request: DigitalMintRequest, current_user: User = Depends(get_current_active_user)):
+async def prepare_mint_digital(request: DigitalMintRequest, current_user: User = Depends(get_onboarded_user)):
     """Prepare unsigned mint transaction calldata for digital asset with SHA-256 hash.
 
     Authorization Rules:
@@ -292,7 +292,7 @@ class UpdateDigitalAssetRequest(BaseModel):
 @router.post("/update-digital/prepare", response_model=MintCalldataResponse)
 async def prepare_update_digital(
     request: UpdateDigitalAssetRequest,
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_onboarded_user)
 ):
     """Prepare unsigned updateDigitalAsset transaction calldata."""
     if current_user.role == "AUDITOR":
@@ -318,7 +318,7 @@ async def prepare_update_digital(
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
 ):
     """
     Secure Off-chain File Storage & Cryptographic Hashing.
@@ -375,7 +375,7 @@ async def download_document(
     token_id: int,
     wallet_address: Optional[str] = None,
     did: Optional[str] = None,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
 ):
     """
     Download a secured document from the off-chain vault.
@@ -434,158 +434,57 @@ async def check_access(request: AccessCheckRequest):
     }
 
 
-@router.get("/registry")
+@router.get("/registry", response_model=List[AssetRead])
 async def get_all_assets(db: AsyncSession = Depends(get_db)):
-    """Fetch all minted and active assets in the system across all owners."""
-    # Check in-memory cache (60s TTL)
-    cached = _get_cache("registry")
-    if cached is not None:
-        return cached
-    from sqlalchemy import select
-    from app.models.domain import AuditEvent, Asset
+    """Fetch all minted and active assets from the synchronized database index."""
+    from sqlalchemy.orm import selectinload
+    from app.models.domain import Asset
 
-    candidate_serials = set()
+    query = select(Asset).options(selectinload(Asset.owner), selectinload(Asset.custodian))
+    result = await db.execute(query)
+    assets = result.scalars().all()
 
-    # 1. Query database for all known assets and minted audit events
-    try:
-        query_assets = select(Asset.serial_number, Asset.token_id)
-        result = await db.execute(query_assets)
-        for row in result.fetchall():
-            if row[0]:
-                candidate_serials.add(row[0])
+    # Map ORM objects to Pydantic schemas, filling in owner/custodian fields for AssetRead
+    asset_schemas = []
+    for asset in assets:
+        asset_dict = asset.__dict__
+        asset_dict["owner_wallet"] = asset.owner.wallet_address if asset.owner else None
+        asset_dict["owner_name"] = asset.owner.name if asset.owner else None
+        asset_dict["custodian_name"] = asset.custodian.name if asset.custodian else None
+        asset_schemas.append(AssetRead.model_validate(asset_dict))
 
-        query_events = select(AuditEvent.asset_serial).filter(
-            AuditEvent.event_type.in_(["AssetMinted", "DigitalAssetMinted", "AssetTransferred"])
-        ).distinct()
-        result2 = await db.execute(query_events)
-        for row in result2.fetchall():
-            if row[0]:
-                candidate_serials.add(row[0])
-    except Exception:
-        pass
+    return asset_schemas
 
-    assets = []
-    for serial in candidate_serials:
-        try:
-            # Get token_id from serial number (database has token_id for all assets)
-            result = await db.execute(select(Asset.token_id).filter(Asset.serial_number == serial))
-            asset_row = result.scalar_one_or_none()
-            if not asset_row:
-                # Fallback: try contract lookup if not in DB
-                token_id = contract_service.get_token_by_serial(serial)
-                if token_id is None:
-                    continue
-            else:
-                token_id = asset_row
-
-            # Check if asset is burned/revoked (owner is 0x0)
-            try:
-                owner = contract_service.contract.functions.ownerOf(token_id).call()
-                if owner == "0x0000000000000000000000000000000000000000":
-                    continue
-            except Exception:
-                # Assume burned if owner check fails
-                continue
-
-            # Try fetching digital asset metadata first
-            asset = contract_service.get_digital_asset(token_id)
-            if not asset or not asset.get("is_digital"):
-                # Use DB record if available to avoid contract call
-                result_db = await db.execute(select(Asset).filter(Asset.token_id == token_id))
-                asset_db = result_db.scalar_one_or_none()
-                if asset_db:
-                    asset = {
-                        "token_id": token_id,
-                        "serial_number": asset_db.serial_number,
-                        "metadata_cid": asset_db.metadata_cid,
-                        "is_digital": False
-                    }
-                else:
-                    asset = contract_service.get_asset(token_id)
-
-            if asset:
-                assets.append(asset)
-        except Exception:
-            continue
-
-    assets.sort(key=lambda a: a.get("token_id", 0))
-    _set_cache("registry", assets)
-    return assets
-
-@router.get("/by-owner/{owner_address}")
+@router.get("/by-owner/{owner_address}", response_model=List[AssetRead])
 async def get_assets_by_owner(owner_address: str, db: AsyncSession = Depends(get_db)):
     """Fetch all assets owned by OR explicitly granted to a specific wallet address/DID."""
     from web3 import Web3
-    from sqlalchemy import select, or_, func
-    from app.models.domain import AuditEvent, Asset, User
+    from sqlalchemy.orm import selectinload
+    from app.models.domain import Asset, User
 
     try:
-        owner_address = Web3.to_checksum_address(owner_address)
+        clean_address = Web3.to_checksum_address(owner_address).lower()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid wallet address")
 
-    owner_did = f"did:ethr:{contract_service.w3.eth.chain_id}:{owner_address.lower()}"
-    candidate_items = []  # list of (serial, token_id)
-    seen_serials = set()
+    query = (
+        select(Asset)
+        .join(User, Asset.owner_id == User.id)
+        .filter(func.lower(User.wallet_address) == clean_address)
+        .options(selectinload(Asset.owner), selectinload(Asset.custodian))
+    )
+    result = await db.execute(query)
+    assets = result.scalars().all()
 
-    # 1. Query DB for all known candidate assets
-    try:
-        query_assets = select(Asset.serial_number, Asset.token_id)
-        res1 = await db.execute(query_assets)
-        for row in res1.fetchall():
-            if row[0] and row[0] not in seen_serials:
-                candidate_items.append((row[0], row[1]))
-                seen_serials.add(row[0])
+    asset_schemas = []
+    for asset in assets:
+        asset_dict = asset.__dict__
+        asset_dict["owner_wallet"] = asset.owner.wallet_address if asset.owner else None
+        asset_dict["owner_name"] = asset.owner.name if asset.owner else None
+        asset_dict["custodian_name"] = asset.custodian.name if asset.custodian else None
+        asset_schemas.append(AssetRead.model_validate(asset_dict))
 
-        query_events = select(AuditEvent.asset_serial).filter(
-            AuditEvent.event_type.in_(["AssetMinted", "DigitalAssetMinted", "AssetTransferred", "AccessPermissionGranted"])
-        ).distinct()
-        res2 = await db.execute(query_events)
-        for row in res2.fetchall():
-            if row[0] and row[0] not in seen_serials:
-                candidate_items.append((row[0], None))
-                seen_serials.add(row[0])
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning("Error fetching candidate assets from DB: %s", e)
-
-    assets = []
-    for serial, token_id in candidate_items:
-        try:
-            if token_id is None:
-                token_id = contract_service.get_token_by_serial(serial)
-                if token_id is None:
-                    continue
-
-            try:
-                current_owner = contract_service.contract.functions.ownerOf(token_id).call()
-            except Exception:
-                continue  # Burned or doesn't exist
-
-            is_owner = (current_owner.lower() == owner_address.lower())
-
-            # Check on-chain access permission
-            access_check = contract_service.check_asset_access(
-                token_id=token_id,
-                requester_did=owner_did,
-                caller_address=owner_address
-            )
-            is_authorized = access_check.get("authorized", False)
-
-            if is_owner or is_authorized:
-                asset = contract_service.get_digital_asset(token_id)
-                if not asset or not asset.get("is_digital"):
-                    asset = contract_service.get_asset(token_id)
-                if asset:
-                    # Enrich asset with permission level & ownership info
-                    asset["is_owner"] = is_owner
-                    asset["permission_level"] = "OWNER" if is_owner else ("READ_WRITE" if access_check.get("level") == 2 else "READ")
-                    assets.append(asset)
-        except Exception:
-            continue
-
-    assets.sort(key=lambda a: a.get("token_id", 0))
-    return assets
+    return asset_schemas
 
 
 @router.get("/serial/{serial}")
@@ -739,7 +638,7 @@ async def get_asset_certificate_card(
 async def assign_asset_custodian(
     serial: str,
     req: AssignCustodianRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Assign an asset to a custodian division/engineer (ADMIN and MANAGER only)."""
@@ -804,7 +703,7 @@ async def assign_asset_custodian(
 async def record_asset_maintenance(
     serial: str,
     req: MaintenanceRecordRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Record a field maintenance / calibration / inspection log for an asset."""
@@ -970,7 +869,7 @@ async def get_asset_full_verification_data_by_token(
 @router.delete("/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_asset(
     token_id: int,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke (burn) an asset NFT on-chain."""
@@ -988,23 +887,26 @@ async def delete_asset(
 
 @router.post("/document/propose", response_model=DocumentActionRead)
 async def propose_document_creation(
-    request: DocumentProposalRequest, 
-    current_user: User = Depends(get_current_active_user), 
-    db: AsyncSession = Depends(get_db)
+    request: DocumentProposalRequest,
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip)
 ):
     """Propose a new digital document for creation and approval."""
-    if current_user.role == "AUDITOR":
-        raise HTTPException(status_code=403, detail="Auditors cannot propose documents.")
+    if current_user.role in ["ADMIN", "MANAGER"]:
+        raise HTTPException(status_code=403, detail="Admins and Managers cannot propose documents. They act as approvers.")
 
     dept = request.department or current_user.department
-    if current_user.role == "USER" and dept != current_user.department:
+    if current_user.role in ["USER", "AUDITOR"] and dept != current_user.department:
         raise HTTPException(status_code=403, detail="Users can only propose documents for their assigned department.")
 
-    if current_user.is_totp_factor2_enabled:
-        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
-        if not (is_totp_valid or is_passkey_valid):
-            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    if not current_user.is_totp_factor2_enabled:
+        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to submit proposals.")
+
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
 
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
     if res.scalar_one_or_none():
@@ -1034,6 +936,7 @@ async def propose_document_creation(
     db.add(draft_asset)
     await db.flush()
 
+
     action = DocumentAction(
         action_id=action_id_str,
         action_type="CREATION",
@@ -1043,9 +946,89 @@ async def propose_document_creation(
         actor_did=current_user.did,
         status="PENDING",
         purpose=request.purpose,
-        details={"name": request.name, "file_hash": request.file_hash, "offchain_uri": request.offchain_uri}
+        details={
+            "name": request.name,
+            "file_hash": request.file_hash,
+            "offchain_uri": request.offchain_uri,
+            "recipient_address": request.recipient_address,
+            "recipient_did": request.recipient_did
+        }
     )
     db.add(action)
+    
+    audit_event = AuditEvent(
+        event_type="DocumentProposed",
+        tx_hash=f"audit_prop_doc_{uuid.uuid4().hex[:12]}",
+        block_number=0,
+        actor_did=current_user.did,
+        target_did=request.recipient_did,
+        asset_serial=request.serial_number,
+        client_ip=client_ip,
+        risk_score=0.1,
+        risk_label="LOW",
+        risk_factors={"reason": "Document Proposal Submitted", "action_id": action_id_str}
+    )
+    db.add(audit_event)
+
+    await db.commit()
+    await db.refresh(action)
+    return action
+
+
+@router.post("/document/share/propose", response_model=DocumentActionRead)
+async def propose_document_share(
+    request: ShareProposalRequest,
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip)
+):
+    """Propose sharing an asset with another DID."""
+    if not current_user.is_totp_factor2_enabled:
+        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to submit proposals.")
+
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+
+    res = await db.execute(select(Asset).filter(Asset.serial_number == request.asset_serial))
+    asset = res.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found.")
+
+    action_id_str = f"SHR-{uuid.uuid4().hex[:12].upper()}"
+
+    action = DocumentAction(
+        action_id=action_id_str,
+        action_type="SHARE",
+        asset_id=asset.id,
+        asset_serial=request.asset_serial,
+        actor_id=current_user.id,
+        actor_did=current_user.did,
+        status="PENDING",
+        purpose=request.purpose,
+        details={
+            "target_did": request.target_did,
+            "access_level": request.access_level,
+            "asset_serial": request.asset_serial
+        }
+    )
+    db.add(action)
+
+    audit_event = AuditEvent(
+        event_type="AssetShareProposed",
+        tx_hash=f"audit_share_prop_{uuid.uuid4().hex[:12]}",
+        block_number=0,
+        actor_did=current_user.did,
+        target_did=request.target_did,
+        asset_serial=request.asset_serial,
+        client_ip=client_ip,
+        risk_score=0.1,
+        risk_label="LOW",
+        risk_factors={"action_id": action_id_str, "target_did": request.target_did, "access_level": request.access_level}
+    )
+    db.add(audit_event)
+
     await db.commit()
     await db.refresh(action)
     return action
@@ -1054,8 +1037,9 @@ async def propose_document_creation(
 @router.post("/physical/propose", response_model=DocumentActionRead)
 async def propose_physical_asset_creation(
     request: PhysicalProposalRequest,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip)
 ):
     """Propose a new physical asset for creation and approval."""
     if current_user.role == "AUDITOR":
@@ -1067,11 +1051,13 @@ async def propose_physical_asset_creation(
     if current_user.role == "MANAGER" and dept != current_user.department:
         raise HTTPException(status_code=403, detail="Managers can only propose physical assets for their assigned department.")
 
-    if current_user.is_totp_factor2_enabled:
-        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
-        if not (is_totp_valid or is_passkey_valid):
-            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    if not current_user.is_totp_factor2_enabled:
+        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to submit proposals.")
+
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
 
     # 1. Uniqueness check on serial_number
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
@@ -1167,10 +1153,27 @@ async def propose_physical_asset_creation(
             "mac_address": request.mac_address,
             "device_unique_address": request.device_unique_address,
             "location": request.location,
-            "department": dept
+            "department": dept,
+            "recipient_address": request.recipient_address,
+            "recipient_did": request.recipient_did
         }
     )
     db.add(action)
+
+    audit_event = AuditEvent(
+        event_type="PhysicalAssetProposed",
+        tx_hash=f"audit_prop_phys_{uuid.uuid4().hex[:12]}",
+        block_number=0,
+        actor_did=current_user.did,
+        target_did=request.recipient_did,
+        asset_serial=request.serial_number,
+        client_ip=client_ip,
+        risk_score=0.1,
+        risk_label="LOW",
+        risk_factors={"reason": "Physical Hardware Proposal Submitted", "action_id": action_id_str}
+    )
+    db.add(audit_event)
+
     await db.commit()
     await db.refresh(action)
     return action
@@ -1179,7 +1182,7 @@ async def propose_physical_asset_creation(
 @router.get("/document/pending", response_model=list[DocumentActionRead])
 async def get_pending_documents(
     action_type: Optional[str] = None,
-    current_user: User = Depends(get_current_active_user), 
+    current_user: User = Depends(get_onboarded_user), 
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve pending document actions awaiting approval."""
@@ -1199,7 +1202,7 @@ async def get_pending_documents(
 @router.get("/physical/pending", response_model=list[DocumentActionRead])
 async def get_pending_physical_assets(
     action_type: Optional[str] = None,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve pending physical asset actions awaiting approval."""
@@ -1233,8 +1236,9 @@ class ApprovalCalldataResponse(BaseModel):
 async def approve_document(
     action_id: str,
     request: DocumentApprovalRequest,
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip)
 ):
     """Approve or reject a pending document action."""
     if current_user.role not in ["ADMIN", "MANAGER"]:
@@ -1255,11 +1259,13 @@ async def approve_document(
         if asset.department != current_user.department:
             raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
 
-    if current_user.is_totp_factor3_enabled:
-        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
-        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
-        if not (is_totp_valid or is_passkey_valid):
-            raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+    if not current_user.is_totp_factor3_enabled:
+        raise HTTPException(status_code=403, detail="Factor 3 setup required. Please complete your MFA onboarding to perform approvals.")
+
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
+    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
 
     if request.decision.upper() == "APPROVE":
         action.status = "APPROVED"
@@ -1274,21 +1280,39 @@ async def approve_document(
 
         if action.action_type == "CREATION":
             owner_address = action.actor_did.split(":")[-1]
+            owner_did = action.actor_did
+
+            if action.details:
+                req_address = action.details.get("recipient_address")
+                req_did = action.details.get("recipient_did")
+                if req_address:
+                    owner_address = req_address
+                if req_did:
+                    owner_did = req_did
+                    # Try to map DID to User to update the asset's DB owner
+                    target_res = await db.execute(select(User).filter(User.did == owner_did))
+                    target_user = target_res.scalar_one_or_none()
+                    if target_user:
+                        asset.owner_id = target_user.id
+                    elif req_address:
+                        target_res = await db.execute(select(User).filter(User.wallet_address == req_address.lower()))
+                        target_user = target_res.scalar_one_or_none()
+                        if target_user:
+                            asset.owner_id = target_user.id
+
             if asset.is_physical:
-                # Need to use the correct function but wait, I should check the exact name or just use the same as digital?
-                # The function is contract_service.prepare_mint_calldata
                 calldata = contract_service.prepare_mint_calldata(
                     to_address=owner_address,
                     token_id=asset.token_id,
                     serial_number=asset.serial_number,
-                    owner_did=action.actor_did
+                    owner_did=owner_did
                 )
             else:
                 calldata = contract_service.prepare_mint_digital_calldata(
                     to_address=owner_address,
                     token_id=asset.token_id,
                     serial_number=asset.serial_number,
-                    owner_did=action.actor_did,
+                    owner_did=owner_did,
                     file_hash=asset.file_hash or "",
                     offchain_uri=asset.metadata_cid or ""
                 )
@@ -1323,6 +1347,48 @@ async def approve_document(
             action.download_token = download_token
             action.token_expires_at = token_expires_at
             download_url = f"/api/assets/document/download-token/{download_token}"
+        elif action.action_type == "SHARE":
+            target_did = action.details.get("target_did") if action.details else None
+            level = action.details.get("access_level", 1) if action.details else 1
+            max_views = request.max_views if request.max_views is not None else (action.details.get("max_views") if action.details else None)
+            token_id = contract_service.get_token_by_serial(asset.serial_number) or asset.token_id
+            if target_did:
+                # Record the grant and view limit in the AssetAccessGrant registry
+                new_grant = AssetAccessGrant(
+                    asset_serial=asset.serial_number,
+                    grantee_did=target_did,
+                    granted_by_did=current_user.did,
+                    access_level=level,
+                    max_views=max_views,
+                    views_count=0,
+                    is_active=True
+                )
+                db.add(new_grant)
+
+                calldata = contract_service.prepare_grant_access_calldata(
+                    token_id=token_id,
+                    target_did=target_did,
+                    level=level
+                )
+
+        audit_event = AuditEvent(
+            event_type="AssetActionApproved",
+            tx_hash=f"audit_appr_{uuid.uuid4().hex[:12]}",
+            block_number=0,
+            actor_did=current_user.did,
+            target_did=action.actor_did,
+            asset_serial=asset.serial_number,
+            client_ip=client_ip,
+            risk_score=0.05,
+            risk_label="LOW",
+            risk_factors={
+                "action_id": action.action_id,
+                "action_type": action.action_type,
+                "decision": "APPROVED",
+                "is_physical": asset.is_physical
+            }
+        )
+        db.add(audit_event)
 
         await db.commit()
 
@@ -1345,6 +1411,26 @@ async def approve_document(
         details["rejection_reason"] = request.rejection_reason
         action.details = details
         asset.approval_status = "REJECTED"
+
+        audit_event = AuditEvent(
+            event_type="AssetActionRejected",
+            tx_hash=f"audit_rej_{uuid.uuid4().hex[:12]}",
+            block_number=0,
+            actor_did=current_user.did,
+            target_did=action.actor_did,
+            asset_serial=asset.serial_number,
+            client_ip=client_ip,
+            risk_score=0.25,
+            risk_label="LOW",
+            risk_factors={
+                "action_id": action.action_id,
+                "action_type": action.action_type,
+                "decision": "REJECTED",
+                "rejection_reason": request.rejection_reason
+            }
+        )
+        db.add(audit_event)
+
         await db.commit()
 
         return ApprovalCalldataResponse(decision="REJECT", status="REJECTED")
@@ -1356,17 +1442,19 @@ async def approve_document(
 async def view_digital_document(
     identifier: str,
     totp_code: Optional[str] = None,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Securely render a document with on-the-fly dynamic watermarking."""
 
     # 1. MFA Factor 2 Enforcement
-    if current_user.is_totp_factor2_enabled:
-        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-        is_totp_valid = totp_code and verify_totp(current_user.totp_factor2_secret, totp_code)
-        if not (is_totp_valid or is_passkey_valid):
-            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    if not current_user.is_totp_factor2_enabled:
+        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to view documents.")
+
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+    is_totp_valid = totp_code and verify_totp(current_user.totp_factor2_secret, totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
 
     # 2. Lookup asset or action
     asset = None
@@ -1390,13 +1478,34 @@ async def view_digital_document(
     if not asset:
         raise HTTPException(status_code=404, detail="Document asset not found.")
 
-    # Authorization logic
+    # Authorization logic & View Limit Enforcement
     if current_user.role == "USER":
-        # Check if owner, custodian, or department match
-        if (str(asset.owner_id) != str(current_user.id) and
-            str(asset.custodian_id) != str(current_user.id) and
-            asset.department != current_user.department):
-            raise HTTPException(status_code=403, detail="Users can only view their own or department documents.")
+        # Check if user has an explicit active AssetAccessGrant
+        grant_res = await db.execute(
+            select(AssetAccessGrant)
+            .filter(
+                AssetAccessGrant.asset_serial == asset.serial_number,
+                AssetAccessGrant.grantee_did == current_user.did,
+                AssetAccessGrant.is_active == True
+            )
+            .order_by(desc(AssetAccessGrant.created_at))
+        )
+        grant = grant_res.scalar_one_or_none()
+
+        if grant:
+            if grant.max_views is not None and grant.views_count >= grant.max_views:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"View limit of {grant.max_views} views exceeded for this document."
+                )
+            grant.views_count += 1
+            await db.commit()
+        else:
+            # Check if owner, custodian, or department match
+            if (str(asset.owner_id) != str(current_user.id) and
+                str(asset.custodian_id) != str(current_user.id) and
+                asset.department != current_user.department):
+                raise HTTPException(status_code=403, detail="Users can only view their own or department documents.")
     elif current_user.role == "MANAGER":
         if asset.department != current_user.department:
             raise HTTPException(status_code=403, detail="Managers can only view documents in their own department.")
@@ -1456,7 +1565,7 @@ async def view_digital_document(
 @router.get("/document/logs/{asset_serial}", response_model=list[DocumentActionRead])
 async def get_document_view_logs(
     asset_serial: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve viewing audit logs for a specific document."""
@@ -1484,17 +1593,19 @@ async def get_document_view_logs(
 async def request_document_download(
     request: DownloadRequest,
     req: Request,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Submit a request to download a digital document, pending Manager/Admin approval."""
     
     # 1. MFA Factor 2 Enforcement
-    if current_user.is_totp_factor2_enabled:
-        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
-        if not (is_totp_valid or is_passkey_valid):
-            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    if not current_user.is_totp_factor2_enabled:
+        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to submit proposals.")
+
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
+    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
 
     # 2. Asset Verification
     asset_res = await db.execute(select(Asset).filter(Asset.serial_number == request.asset_serial))
@@ -1543,7 +1654,7 @@ async def request_document_download(
 async def approve_document_download(
     action_id: str,
     request: DocumentApprovalRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Alias endpoint for approving download requests. Just routes to approve_document."""
@@ -1553,7 +1664,7 @@ async def approve_document_download(
 @router.post("/document/revise", response_model=DocumentActionRead)
 async def revise_document(
     request: DocumentRevisionRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Propose a modification/revision to an existing digital document."""
@@ -1580,11 +1691,16 @@ async def revise_document(
             raise HTTPException(status_code=403, detail="Managers can only revise documents in their own department.")
 
     # 3. Factor 3 / Factor 2 MFA Check (Modification requires Factor 3, with fallback to Factor 2)
+    if not current_user.is_totp_factor3_enabled and not current_user.is_totp_factor2_enabled:
+        raise HTTPException(status_code=403, detail="MFA setup required. Please complete your MFA onboarding to perform approvals.")
+
+    # Try Factor 3
     if current_user.is_totp_factor3_enabled:
         is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
         is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
         if not (is_totp_valid or is_passkey_valid):
             raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+    # Fallback to Factor 2
     elif current_user.is_totp_factor2_enabled:
         is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
         is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
@@ -1646,7 +1762,7 @@ async def revise_document(
 @router.get("/document/lineage/{asset_serial}")
 async def get_document_lineage(
     asset_serial: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Fetch complete revision tree/history for a document."""
@@ -1703,7 +1819,7 @@ async def get_document_lineage(
 @router.get("/verify/{serial_number}")
 async def verify_asset(
     serial_number: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """

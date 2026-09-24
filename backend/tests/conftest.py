@@ -1,18 +1,22 @@
+import pytest
 import pytest_asyncio
 import httpx
+from unittest.mock import patch
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from app.main import app
-from app.core.database import get_db
-from app.core.config import settings
-
-import pytest_asyncio
-import httpx
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.main import app
 from app.core.database import get_db
 from app.core.config import settings
 from app.models.domain import User
+
+@pytest_asyncio.fixture(scope="function", autouse=True)
+def mock_mfa_factors(request):
+    """Bypass MFA assertions for regression tests not specifically testing WebAuthn/TOTP assertions."""
+    if "test_passkey_factors.py" in str(request.node.fspath) or "test_approval_factor3_totp_enforcement" in request.node.name:
+        yield
+    else:
+        with patch("app.api.assets.auth.is_assertion_valid", return_value=True):
+            yield
 
 TEST_USERS = [
     {
@@ -58,6 +62,19 @@ TEST_USERS = [
 ]
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
+async def setup_database():
+    """Ensure tables exist and have latest columns."""
+    from app.core.database import engine
+    from app.models.base import Base
+    import app.models.domain  # Register models
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        # Ensure alert_status column exists
+        await conn.execute(text("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS alert_status VARCHAR DEFAULT 'OPEN';"))
+    await engine.dispose()
+    yield
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
 async def seed_test_users():
     """Ensure test users required for regression tests exist in the database."""
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
@@ -77,8 +94,10 @@ async def seed_test_users():
                     is_active=u_data["is_active"],
                     department=u_data["department"],
                     name=u_data["name"],
-                    is_totp_factor2_enabled=False,
-                    is_totp_factor3_enabled=False
+                    is_totp_enabled=True,
+                    is_totp_factor2_enabled=True,
+                    is_totp_factor3_enabled=True,
+                    onboarding_pending=False
                 )
                 session.add(u)
             else:
@@ -86,24 +105,28 @@ async def seed_test_users():
                 existing.session_version = u_data["session_version"]
                 existing.is_active = u_data["is_active"]
                 existing.department = u_data["department"]
-                existing.is_totp_factor2_enabled = False
-                existing.is_totp_factor3_enabled = False
+                existing.is_totp_enabled = True
+                existing.is_totp_factor2_enabled = True
+                existing.is_totp_factor3_enabled = True
+                existing.onboarding_pending = False
         await session.commit()
     await engine.dispose()
 
 @pytest_asyncio.fixture(scope="function", autouse=True)
 async def reset_user_mfa(db_session):
-    """Ensure MFA is disabled for all test users before each test."""
+    """Ensure MFA is disabled except for 2FA tracking and simulate onboarded state for all test users before each test."""
     for u_data in TEST_USERS:
         res = await db_session.execute(
             select(User).where(User.wallet_address == u_data["wallet_address"])
         )
         user = res.scalar_one_or_none()
         if user:
-            user.is_totp_factor2_enabled = False
-            user.is_totp_factor3_enabled = False
+            user.is_totp_enabled = True
+            user.is_totp_factor2_enabled = True
+            user.is_totp_factor3_enabled = True
             user.totp_factor2_secret = None
             user.totp_factor3_secret = None
+            user.onboarding_pending = False
     await db_session.commit()
 
 @pytest_asyncio.fixture(scope="function")

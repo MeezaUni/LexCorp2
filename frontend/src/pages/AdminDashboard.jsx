@@ -3,13 +3,16 @@ import axios from 'axios';
 import { ethers } from 'ethers';
 import { useAuth } from '../context/AuthContext';
 import { revokeAsset } from '../services/web3';
-import { getAssetsByOwner } from '../services/api';
+import { getAssetsByOwner, getAuditEvents, updateAlertStatus } from '../services/api';
 
 const API_BASE = '/api';
 
 export default function AdminDashboard() {
   const { signer, user } = useAuth();
   const [users, setUsers] = useState([]);
+  const [resetRequests, setResetRequests] = useState([]);
+  const [criticalIncidents, setCriticalIncidents] = useState([]);
+  const [adminF3Code, setAdminF3Code] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -23,6 +26,7 @@ export default function AdminDashboard() {
   });
 
   const [generatedWallet, setGeneratedWallet] = useState(null);
+  const [pinDisplayData, setPinDisplayData] = useState(null);
 
   // Deletion Modal state
   const [deleteModalUser, setDeleteModalUser] = useState(null);
@@ -70,9 +74,38 @@ export default function AdminDashboard() {
     }
   };
 
+  const fetchResetRequests = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/auth/reset-requests`);
+      setResetRequests(res.data);
+    } catch (err) {
+      console.error('Failed to load reset requests:', err);
+    }
+  };
+
+  const fetchCriticalIncidents = async () => {
+    try {
+      const resp = await getAuditEvents({ alert_status: 'ESCALATED_TO_ADMIN' });
+      setCriticalIncidents(resp);
+    } catch (err) {
+      console.error('Failed to load critical incidents:', err);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
+    fetchResetRequests();
+    fetchCriticalIncidents();
   }, []);
+
+  const handleAlertAction = async (eventId, status) => {
+    try {
+      await updateAlertStatus(eventId, status);
+      fetchCriticalIncidents();
+    } catch (err) {
+      console.error('Failed to update alert status:', err);
+    }
+  };
 
   const handleGenerateWallet = () => {
     const randomWallet = ethers.Wallet.createRandom();
@@ -98,8 +131,21 @@ export default function AdminDashboard() {
     try {
       setError('');
       setSuccess('');
-      await axios.post(`${API_BASE}/users`, formData);
+      const res = await axios.post(`${API_BASE}/users`, formData);
+      console.log('User creation response:', res.data); // Debugging
       setSuccess(`User successfully registered / updated as ${formData.role}.`);
+
+      // If the backend generated a new PIN, display it for the admin
+      if (res.data?.one_time_pin) {
+        setPinDisplayData({
+          title: "New User Provisioned - Displayed ONCE",
+          message: "Securely hand over this One-Time PIN to the new user. It will expire in 3 hours.",
+          wallet_address: res.data.wallet_address,
+          one_time_pin: res.data.one_time_pin,
+          expires_at: res.data.pin_expires_at
+        });
+      }
+
       setFormData({ wallet_address: '', name: '', contact_number: '', department: '', role: 'USER' });
       fetchUsers();
     } catch (err) {
@@ -179,6 +225,38 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleApproveReset = async (userId) => {
+    if (!adminF3Code || adminF3Code.length !== 6) {
+      setError('Please provide your 6-digit Admin Factor 3 code to approve MFA resets.');
+      return;
+    }
+    try {
+      setError('');
+      setSuccess('');
+      const res = await axios.post(`${API_BASE}/auth/reset-approve/${userId}`, {
+        totp_code: adminF3Code
+      });
+      setSuccess(res.data?.message || 'User MFA reset successfully.');
+
+      // If the backend generated a new PIN, display it for the admin
+      if (res.data?.one_time_pin) {
+        setPinDisplayData({
+          title: "MFA Reset Approved - Displayed ONCE",
+          message: "Securely hand over this One-Time PIN to the user. It will expire in 3 hours and CANNOT be viewed again.",
+          wallet_address: res.data.wallet_address,
+          one_time_pin: res.data.one_time_pin,
+          expires_at: res.data.pin_expires_at
+        });
+      }
+
+      setAdminF3Code('');
+      fetchUsers();
+      fetchResetRequests();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to approve MFA reset.');
+    }
+  };
+
   const inputStyle = {
     padding: '10px 12px',
     border: '1px solid #cbd5e1',
@@ -219,6 +297,154 @@ export default function AdminDashboard() {
       {success && (
         <div style={{ color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', padding: '12px', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '13px' }}>
           {success}
+        </div>
+      )}
+
+      {/* CRITICAL SECURITY INCIDENTS */}
+      {criticalIncidents.length > 0 && (
+        <div style={{ marginBottom: '2rem', border: '2px solid #dc2626', borderRadius: '12px', padding: '16px', background: '#fef2f2' }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold', color: '#991b1b' }}>
+            Critical Security Incidents (Escalated)
+          </h3>
+          <p style={{ fontSize: '13px', color: '#7f1d1d', margin: '0 0 1rem 0' }}>
+            The following high-risk incidents have been escalated by management. Action is required.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {criticalIncidents.map(inc => {
+              const matchedUser = users.find(u => u.wallet_address.toLowerCase() === inc.actor_did.toLowerCase() || u.did === inc.actor_did);
+              return (
+                <div key={inc.id} style={{ background: '#fff', border: '1px solid #fca5a5', padding: '12px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontWeight: '600', color: '#991b1b', marginBottom: '4px' }}>Event: {inc.event_type}</div>
+                    <div style={{ fontSize: '12px', color: '#475569' }}>
+                      <strong>Actor:</strong> {inc.actor_did} {matchedUser ? `(${matchedUser.name} - ${matchedUser.role})` : ''}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#475569' }}>
+                      <strong>Date:</strong> {new Date(inc.created_at + 'Z').toLocaleString()} | <strong>Risk:</strong> {inc.risk_label}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
+                    <button
+                      onClick={() => matchedUser ? initiateDelete(matchedUser) : alert('User identity not found linking to this actor.')}
+                      style={{ padding: '6px 12px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      Deactivate / Revoke Identity
+                    </button>
+                    <button
+                      onClick={() => handleAlertAction(inc.id, 'DISMISSED')}
+                      style={{ padding: '6px 12px', background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      Dismiss Alert
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* PIN DISPLAY MODAL */}
+      {pinDisplayData && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(15, 23, 42, 0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+        }}>
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '12px',
+            padding: '2rem',
+            maxWidth: '500px',
+            width: '90%',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+            border: '2px solid #3b82f6',
+            textAlign: 'center'
+          }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '20px', fontWeight: '700', color: '#1e3a8a' }}>
+              {pinDisplayData.title}
+            </h3>
+            <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '1.5rem' }}>
+              {pinDisplayData.message}
+            </p>
+
+            <div style={{ background: '#f8fafc', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '1.5rem' }}>
+              <div style={{ fontSize: '12px', color: '#475569', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600' }}>
+                Wallet Address
+              </div>
+              <div style={{ fontFamily: 'monospace', fontSize: '14px', color: '#0f172a', marginBottom: '1.2rem', wordBreak: 'break-all' }}>
+                {pinDisplayData.wallet_address}
+              </div>
+
+              <div style={{ fontSize: '12px', color: '#475569', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600' }}>
+                One-Time PIN
+              </div>
+              <div style={{
+                fontFamily: 'monospace',
+                fontSize: '28px',
+                fontWeight: '700',
+                color: '#2563eb',
+                background: '#eff6ff',
+                padding: '10px',
+                borderRadius: '8px',
+                border: '1px dashed #93c5fd',
+                letterSpacing: '0.1em'
+              }}>
+                {pinDisplayData.one_time_pin}
+              </div>
+
+              <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '1rem', fontWeight: '600' }}>
+                Expires at: {new Date(pinDisplayData.expires_at).toLocaleString()}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(
+                    `Wallet Address: ${pinDisplayData.wallet_address}\nOne-Time PIN: ${pinDisplayData.one_time_pin}\nExpires: ${new Date(pinDisplayData.expires_at).toLocaleString()}`
+                  );
+                  alert('Copied to clipboard!');
+                }}
+                style={{
+                  background: '#f1f5f9',
+                  color: '#0f172a',
+                  border: '1px solid #cbd5e1',
+                  padding: '10px 20px',
+                  borderRadius: '6px',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  flex: 1
+                }}
+              >
+                Copy to Clipboard
+              </button>
+              <button
+                onClick={() => setPinDisplayData(null)}
+                style={{
+                  background: '#2563eb',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '10px 20px',
+                  borderRadius: '6px',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  flex: 1
+                }}
+              >
+                I have saved this PIN
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -359,6 +585,96 @@ export default function AdminDashboard() {
           </button>
         </form>
       </div>
+
+      {/* PENDING MFA RESET REQUESTS */}
+      {user?.role === 'ADMIN' && (
+        <div style={{ background: '#f8fafc', padding: '1.5rem', border: '1px solid #e2e8f0', borderRadius: '10px', marginBottom: '2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <div>
+              <h3 style={{ fontSize: '15px', fontWeight: '600', color: '#0f172a', margin: '0 0 4px 0' }}>
+                Pending MFA Reset Requests ({resetRequests.length})
+              </h3>
+              <p style={{ fontSize: '12px', color: '#64748b', margin: 0 }}>
+                Authorize single-use 3-hour import PIN issuance using your Admin Factor 3 authorization.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <input
+                type="password"
+                maxLength={6}
+                placeholder="Admin Factor 3 Code"
+                value={adminF3Code}
+                onChange={e => setAdminF3Code(e.target.value)}
+                style={{ padding: '6px 10px', fontSize: '12px', borderRadius: '6px', border: '1px solid #cbd5e1', width: '150px' }}
+              />
+            </div>
+          </div>
+
+          {resetRequests.length > 0 ? (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                <thead style={{ background: '#ffffff', borderBottom: '2px solid #e2e8f0', textAlign: 'left' }}>
+                  <tr>
+                    <th style={{ padding: '8px 12px', fontWeight: '600', color: '#475569' }}>User</th>
+                    <th style={{ padding: '8px 12px', fontWeight: '600', color: '#475569' }}>Department</th>
+                    <th style={{ padding: '8px 12px', fontWeight: '600', color: '#475569' }}>Wallet Address</th>
+                    <th style={{ padding: '8px 12px', fontWeight: '600', color: '#475569' }}>Role</th>
+                    <th style={{ padding: '8px 12px', fontWeight: '600', color: '#475569' }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resetRequests.map(req => (
+                    <tr key={req.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                      <td style={{ padding: '8px 12px', fontWeight: '600', color: '#0f172a' }}>
+                        {req.name || 'Unnamed'}
+                      </td>
+                      <td style={{ padding: '8px 12px', color: '#475569' }}>
+                        {req.department || 'N/A'}
+                      </td>
+                      <td style={{ padding: '8px 12px', fontFamily: 'monospace', color: '#334155' }}>
+                        {req.wallet_address}
+                      </td>
+                      <td style={{ padding: '8px 12px' }}>
+                        <span style={{
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          background: req.role === 'ADMIN' ? '#fee2e2' : req.role === 'MANAGER' ? '#dbeafe' : '#f1f5f9',
+                          color: req.role === 'ADMIN' ? '#991b1b' : req.role === 'MANAGER' ? '#1e40af' : '#475569',
+                          fontWeight: '700',
+                          fontSize: '11px'
+                        }}>
+                          {req.role}
+                        </span>
+                      </td>
+                      <td style={{ padding: '8px 12px' }}>
+                        <button
+                          onClick={() => handleApproveReset(req.id)}
+                          style={{
+                            background: '#16a34a',
+                            color: '#fff',
+                            border: 'none',
+                            padding: '6px 12px',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            fontWeight: '600',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Approve Reset &amp; Issue PIN
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ fontSize: '12px', color: '#94a3b8', padding: '0.5rem 0' }}>
+              No pending MFA reset requests.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* USER LIST TABLE */}
       <h3 style={{ fontSize: '15px', fontWeight: '600', color: '#0f172a', marginBottom: '1rem' }}>

@@ -35,6 +35,7 @@ async def test_revise_document_success(client, db_session):
                 "serial_number": serial1,
                 "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
                 "offchain_uri": "secure-vault://documents/doc_v1.txt",
+        "recipient_address": "0x123abc",
                 "department": "Avionics"
             }
         )
@@ -115,46 +116,37 @@ async def test_revise_document_different_department(client, db_session):
     """Users cannot revise documents belonging to other departments."""
     user_token = get_token(USER_WALLET, "USER", 1)  # Avionics
 
-    with patch("app.services.contract.contract_service.prepare_mint_digital_calldata", return_value={"to": "0x123", "data": "0xabc"}):
-        # Create doc in Cyber dept (simulated)
-        serial1 = f"BEL-DOC-CYBER-{uuid.uuid4().hex[:6].upper()}"
-        admin_token = get_token(ADMIN_WALLET, "ADMIN", 5)
+    # Create doc in Cyber dept directly in DB
+    res = await db_session.execute(select(User).where(User.wallet_address == ADMIN_WALLET))
+    admin_user = res.scalar_one()
 
-        await client.post(
-            "/api/assets/document/propose",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "Cyber Doc",
-                "serial_number": serial1,
-                "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "offchain_uri": "secure-vault://documents/cyber.txt",
-                "department": "Cyber"
-            }
-        )
+    serial1 = f"BEL-DOC-CYBER-{uuid.uuid4().hex[:6].upper()}"
+    cyber_asset = Asset(
+        token_id=uuid.uuid4().int % 100000000,
+        serial_number=serial1,
+        name="Cyber Doc",
+        asset_type="DIGITAL",
+        department="Cyber",
+        lifecycle_status="ACTIVE",
+        owner_id=admin_user.id
+    )
+    db_session.add(cyber_asset)
+    await db_session.commit()
 
-        # Approve original
-        res = await db_session.execute(select(DocumentAction).where(DocumentAction.asset_serial == serial1))
-        creation_action = res.scalar_one()
-        await client.post(
-            f"/api/assets/document/approval/{creation_action.action_id}",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"decision": "APPROVE"}
-        )
+    # 2. USER (Avionics) tries to revise CYBER doc
+    serial2 = f"BEL-DOC-{uuid.uuid4().hex[:6].upper()}"
+    revise_res = await client.post(
+        "/api/assets/document/revise",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "parent_asset_serial": serial1,
+            "name": "Revised Cyber Doc",
+            "new_serial_number": serial2,
+            "new_file_hash": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
+            "new_offchain_uri": "secure-vault://documents/cyber_v2.txt",
+            "purpose": "Sneaky update"
+        }
+    )
 
-        # 2. USER (Avionics) tries to revise CYBER doc
-        serial2 = f"BEL-DOC-{uuid.uuid4().hex[:6].upper()}"
-        revise_res = await client.post(
-            "/api/assets/document/revise",
-            headers={"Authorization": f"Bearer {user_token}"},
-            json={
-                "parent_asset_serial": serial1,
-                "name": "Revised Cyber Doc",
-                "new_serial_number": serial2,
-                "new_file_hash": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
-                "new_offchain_uri": "secure-vault://documents/cyber_v2.txt",
-                "purpose": "Sneaky update"
-            }
-        )
-
-        assert revise_res.status_code == 403
-        assert "Users can only revise documents in their own department" in revise_res.text
+    assert revise_res.status_code == 403
+    assert "Users can only revise documents in their own department" in revise_res.text

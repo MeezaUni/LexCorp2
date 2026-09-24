@@ -285,4 +285,30 @@ class ContractService:
             "value": "0x0"
         }
 
+    def prepare_grant_access_calldata(
+        self,
+        token_id: int,
+        target_did: str,
+        level: int = 1
+    ) -> dict:
+        """Prepare unsigned grantAssetAccess transaction."""
+        tx_data = self.contract.functions.grantAssetAccess(
+            token_id,
+            target_did,
+            level
+        ).build_transaction({
+            "from": "0x0000000000000000000000000000000000000000",
+            "gas": 150000,
+            "gasPrice": self._get_gas_price(),
+            "nonce": 0,
+            "chainId": settings.CHAIN_ID,
+        })
+        return {
+            "to": self.contract_address,
+            "data": tx_data["data"],
+            "value": "0x0",
+            "gas": hex(tx_data["gas"]),
+            "gasPrice": hex(tx_data["gasPrice"]),
+        }
+
 contract_service = ContractService()

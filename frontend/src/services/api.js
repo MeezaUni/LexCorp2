@@ -26,6 +26,21 @@ export async function proposePhysicalAsset(data) {
   return response.data;
 }
 
+export async function prepareMintDigital(data) {
+  const response = await axios.post(`${API_BASE}/assets/mint-digital/prepare`, data);
+  return response.data;
+}
+
+export async function prepareMintPhysical(data) {
+  const response = await axios.post(`${API_BASE}/assets/mint/prepare`, data);
+  return response.data;
+}
+
+export async function proposeDocumentShare(data) {
+  const response = await axios.post(`${API_BASE}/assets/document/share/propose`, data);
+  return response.data;
+}
+
 export async function getPendingDocuments() {
   const response = await axios.get(`${API_BASE}/assets/document/pending`);
   return response.data;
@@ -80,6 +95,49 @@ export async function getPasskeyOptions(factor) {
 export async function verifyPasskey(factor, data) {
   const response = await axios.post(`${API_BASE}/auth/webauthn/${factor}/verify`, data);
   return response.data;
+}
+
+// WebAuthn Helper
+export async function authenticateWithPasskey(factor) {
+  const { options } = await getPasskeyOptions(factor);
+
+  // Convert challenge and allowCredential IDs from base64url strings for navigator.credentials
+  const bufferDecode = (value) => {
+    return Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+  };
+
+  const bufferEncode = (value) => {
+    return btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  };
+
+  const publicKey = {
+    ...options,
+    challenge: bufferDecode(options.challenge),
+    allowCredentials: options.allowCredentials.map(cred => ({
+      ...cred,
+      id: bufferDecode(cred.id)
+    }))
+  };
+
+  const assertion = await navigator.credentials.get({ publicKey });
+
+  const response = {
+    id: assertion.id,
+    rawId: bufferEncode(new Uint8Array(assertion.rawId)),
+    type: assertion.type,
+    authenticatorAttachment: assertion.authenticatorAttachment,
+    response: {
+      authenticatorData: bufferEncode(new Uint8Array(assertion.response.authenticatorData)),
+      clientDataJSON: bufferEncode(new Uint8Array(assertion.response.clientDataJSON)),
+      signature: bufferEncode(new Uint8Array(assertion.response.signature)),
+      userHandle: assertion.response.userHandle ? bufferEncode(new Uint8Array(assertion.response.userHandle)) : null
+    }
+  };
+
+  return await verifyPasskey(factor, {
+    credential_id: assertion.id,
+    response
+  });
 }
 
 
@@ -163,6 +221,16 @@ export async function uploadDocument(formData) {
       'Content-Type': 'multipart/form-data',
     },
   });
+  return response.data;
+}
+
+export async function proposeDocumentRevision(data) {
+  const response = await axios.post(`${API_BASE}/assets/document/revise/propose`, data);
+  return response.data;
+}
+
+export async function updateAlertStatus(eventId, status) {
+  const response = await axios.patch(`${API_BASE}/audit/alerts/${eventId}/status`, { alert_status: status });
   return response.data;
 }
 

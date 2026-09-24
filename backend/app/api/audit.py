@@ -1,15 +1,18 @@
-"""Audit trail API — read-only access to on-chain events that the indexer has recorded."""
+"""Audit trail API — read-only access to on-chain events that the indexer has recorded, plus alert workflow triage."""
 
 import logging
+import uuid
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.domain import AuditEvent
-from app.schemas.domain import AuditEventRead
+from app.models.domain import AuditEvent, User
+from app.schemas.domain import AuditEventRead, AlertStatusUpdateRequest
+from app.api.dependencies import get_current_active_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -34,29 +37,95 @@ async def get_audit_stats(db: AsyncSession = Depends(get_db)):
 @router.get("/events", response_model=List[AuditEventRead])
 async def list_events(
     event_type: Optional[str] = Query(None, description="Filter by event type (AssetMinted, etc.)"),
-    actor_did: Optional[str] = Query(None, description="Filter by actor DID"),
+    actor_did: Optional[str] = Query(None, description="Filter by actor DID or wallet address"),
     asset_serial: Optional[str] = Query(None, description="Filter by asset serial"),
+    risk_label: Optional[str] = Query(None, description="Filter by risk label (LOW, MEDIUM, HIGH, CRITICAL)"),
+    alert_status: Optional[str] = Query(None, description="Filter by alert status (OPEN, FORWARDED_TO_MANAGER, ESCALATED_TO_ADMIN, etc.)"),
+    role: Optional[str] = Query(None, description="Filter by actor role (USER, MANAGER, ADMIN, AUDITOR)"),
+    from_date: Optional[str] = Query(None, description="Filter events created on or after ISO datetime/date"),
+    to_date: Optional[str] = Query(None, description="Filter events created on or before ISO datetime/date"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    """List audit events with optional filters.
+    """List audit events with extensive filters for wallet, role, risk label, alert status, and time/date range.
 
     These rows are written exclusively by the on-chain event indexer, never
     by API call handlers. They are the canonical, immutable audit trail.
     """
-    query = select(AuditEvent).order_by(AuditEvent.block_number.desc())
+    query = select(AuditEvent).order_by(desc(AuditEvent.created_at))
+
+    if role:
+        query = query.join(User, AuditEvent.actor_did == User.did, isouter=True).filter(
+            func.upper(User.role) == role.strip().upper()
+        )
 
     if event_type:
-        query = query.filter(AuditEvent.event_type == event_type)
+        query = query.filter(AuditEvent.event_type == event_type.strip())
     if actor_did:
-        query = query.filter(AuditEvent.actor_did == actor_did)
+        clean_actor = actor_did.strip()
+        query = query.filter(
+            or_(
+                AuditEvent.actor_did.ilike(f"%{clean_actor}%"),
+                AuditEvent.target_did.ilike(f"%{clean_actor}%"),
+            )
+        )
     if asset_serial:
-        query = query.filter(AuditEvent.asset_serial == asset_serial)
+        query = query.filter(AuditEvent.asset_serial == asset_serial.strip())
+    if risk_label:
+        query = query.filter(func.upper(AuditEvent.risk_label) == risk_label.strip().upper())
+    if alert_status:
+        query = query.filter(func.upper(AuditEvent.alert_status) == alert_status.strip().upper())
+
+    if from_date:
+        try:
+            dt_from = datetime.fromisoformat(from_date.strip().replace("Z", "+00:00"))
+            query = query.filter(AuditEvent.created_at >= dt_from)
+        except Exception as e:
+            logger.warning(f"Invalid from_date '{from_date}': {e}")
+
+    if to_date:
+        try:
+            dt_to = datetime.fromisoformat(to_date.strip().replace("Z", "+00:00"))
+            query = query.filter(AuditEvent.created_at <= dt_to)
+        except Exception as e:
+            logger.warning(f"Invalid to_date '{to_date}': {e}")
 
     query = query.offset(offset).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@router.patch("/alerts/{event_id}/status", response_model=AuditEventRead)
+async def update_alert_status(
+    event_id: str,
+    payload: AlertStatusUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the triage status of a security alert (Forward to Manager, Escalate to Admin, Dismiss, Resolve)."""
+    try:
+        uid = uuid.UUID(event_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid event UUID")
+
+    result = await db.execute(select(AuditEvent).filter(AuditEvent.id == uid))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Audit event not found")
+
+    allowed_statuses = ["OPEN", "FORWARDED_TO_MANAGER", "ESCALATED_TO_ADMIN", "DISMISSED", "RESOLVED"]
+    status_upper = payload.alert_status.strip().upper()
+    if status_upper not in allowed_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid alert status '{payload.alert_status}'. Allowed: {allowed_statuses}"
+        )
+
+    event.alert_status = status_upper
+    await db.commit()
+    await db.refresh(event)
+    return event
 
 
 @router.get("/events/by-tx/{tx_hash}", response_model=AuditEventRead)
@@ -80,14 +149,11 @@ async def get_user_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve all active on-chain permission grant events for or by a specific user wallet."""
-    from sqlalchemy import or_, desc
     from web3 import Web3
     try:
         clean_address = Web3.to_checksum_address(wallet_address).lower()
     except Exception:
         clean_address = wallet_address.lower()
-
-    user_did_prefix = f":{clean_address}"
 
     # Query grants and revokes involving this user (either actor or target)
     query = (

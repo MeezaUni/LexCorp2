@@ -7,14 +7,24 @@ from app.core.database import get_db
 from app.services.auth import verify_jwt
 from app.models.domain import User
 
-__all__ = ["get_db", "get_current_user", "get_current_active_user", "get_admin_user", "get_manager_user"]
+__all__ = ["get_db", "get_current_user", "get_current_active_user", "get_admin_user", "get_manager_user", "get_onboarded_user", "get_request_client_ip"]
 
 def get_request_client_ip(request: Request) -> str:
-    """Extract client IP from request headers or host."""
+    """Extract client IP from request headers or host, normalized to IPv4."""
     forwarded = request.headers.get("x-forwarded-for")
+    ip = ""
     if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "127.0.0.1"
+        ip = forwarded.split(",")[0].strip()
+    elif request.client:
+        ip = request.client.host
+    else:
+        ip = "127.0.0.1"
+
+    if ip in ("::1", "localhost", "testclient"):
+        return "127.0.0.1"
+    if ip.startswith("::ffff:"):
+        return ip.replace("::ffff:", "")
+    return ip
 
 async def get_current_user(
     request: Request,
@@ -68,12 +78,20 @@ async def get_current_active_user(user: User = Depends(get_current_user)) -> Use
         raise HTTPException(status_code=403, detail="Account is disabled")
     return user
 
-async def get_admin_user(user: User = Depends(get_current_active_user)) -> User:
+async def get_onboarded_user(user: User = Depends(get_current_active_user)) -> User:
+    if user.onboarding_pending:
+        raise HTTPException(
+            status_code=403,
+            detail="Onboarding incomplete: You must configure Login Authenticator and Login Passkey before accessing platform features."
+        )
+    return user
+
+async def get_admin_user(user: User = Depends(get_onboarded_user)) -> User:
     if user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Requires ADMIN role")
     return user
 
-async def get_manager_user(user: User = Depends(get_current_active_user)) -> User:
+async def get_manager_user(user: User = Depends(get_onboarded_user)) -> User:
     if user.role not in ("ADMIN", "MANAGER"):
         raise HTTPException(status_code=403, detail="Requires MANAGER role")
     return user

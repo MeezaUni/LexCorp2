@@ -4,6 +4,7 @@ from typing import List, Optional
 import uuid
 import subprocess
 import os
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select, func
@@ -14,6 +15,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.api.dependencies import get_current_active_user, get_manager_user, get_admin_user
 from app.models.domain import User, Asset, VerifiableCredential
+from app.services.security import generate_one_time_pin
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -59,6 +61,10 @@ class UserResponse(BaseModel):
     did: Optional[str] = None
     role: str
     is_active: bool
+    onboarding_pending: Optional[bool] = None
+    one_time_pin: Optional[str] = None
+    pin_expires_at: Optional[datetime] = None
+    reset_requested: Optional[bool] = None
 
     class Config:
         from_attributes = True
@@ -102,6 +108,8 @@ async def list_users(
             did=u.did,
             role=u.role,
             is_active=u.is_active,
+            onboarding_pending=u.onboarding_pending,
+            reset_requested=u.reset_requested,
         )
         for u in users
     ]
@@ -196,6 +204,9 @@ async def create_or_register_user(
 
     # Issue DID and create new record
     did = f"did:ethr:{settings.CHAIN_ID}:{checksummed.lower()}"
+    pin = generate_one_time_pin(12)
+    pin_expires_at = datetime.utcnow() + timedelta(hours=3)
+
     new_user = User(
         wallet_address=checksummed.lower(),
         name=request.name,
@@ -204,6 +215,10 @@ async def create_or_register_user(
         did=did,
         role=role_clean,
         is_active=True,
+        onboarding_pending=True,
+        one_time_pin=pin,
+        pin_expires_at=pin_expires_at,
+        pin_used=False
     )
     db.add(new_user)
     await db.commit()
@@ -221,6 +236,10 @@ async def create_or_register_user(
         did=new_user.did,
         role=new_user.role,
         is_active=new_user.is_active,
+        onboarding_pending=new_user.onboarding_pending,
+        one_time_pin=new_user.one_time_pin,
+        pin_expires_at=new_user.pin_expires_at,
+        reset_requested=new_user.reset_requested,
     )
 
 

@@ -1,6 +1,7 @@
 """Authentication endpoints: nonce generation + SIWE verification + JWT session + 2FA WebAuthn/TOTP."""
 
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Body, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,7 @@ import uuid
 import hashlib
 import time
 
-from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_request_client_ip
+from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_request_client_ip, get_admin_user
 from app.services import auth, vc, security
 from app.models.domain import User, WebAuthnCredential, AuditEvent
 from app.core.config import settings
@@ -23,9 +24,32 @@ class NonceResponse(BaseModel):
     nonce: str
     message: str  # Pre-built SIWE message for frontend to sign
 
+# --- Reset Request Schemas ---
+class ResetRequestPayload(BaseModel):
+    wallet_address: str
+    reason: Optional[str] = "User requested admin reset assistance"
+
+class AdminResetApproveRequest(BaseModel):
+    totp_code: Optional[str] = None
+
+class ResetRequestResponse(BaseModel):
+    id: str
+    wallet_address: str
+    name: Optional[str] = None
+    department: Optional[str] = None
+    role: str
+    reset_requested: bool
+    pin_expires_at: Optional[datetime] = None
+
+# --- Import OTP Schema ---
+class VerifyImportOTPRequest(BaseModel):
+    wallet_address: str
+    pin: str
+
 # --- WebAuthn Schemas ---
 class WebAuthnRegistrationRequest(BaseModel):
     device_name: Optional[str] = "Biometric Authenticator"
+    factor_scope: str = "login" # 'login', 'factor2', 'factor3'
 
 class WebAuthnRegistrationResponse(BaseModel):
     options: dict
@@ -34,6 +58,7 @@ class WebAuthnVerifyRequest(BaseModel):
     credential_id: str
     response: dict
     device_name: str
+    factor_scope: str = "login"
 
 
 class LoginRequest(BaseModel):
@@ -62,6 +87,11 @@ class PasskeyLoginVerifyRequest(BaseModel):
     response: dict
 
 
+def _check_onboarding_completion(user: User):
+    """Mark onboarding as complete if all 3 TOTP factors are enabled."""
+    if user.is_totp_enabled and user.is_totp_factor2_enabled and user.is_totp_factor3_enabled:
+        user.onboarding_pending = False
+
 def _login_response(user: User, token: str) -> LoginResponse:
     return LoginResponse(
         token=token,
@@ -70,6 +100,7 @@ def _login_response(user: User, token: str) -> LoginResponse:
             "did": user.did,
             "role": user.role,
             "is_active": user.is_active,
+            "onboarding_pending": user.onboarding_pending,
             "is_totp_enabled": user.is_totp_enabled,
             "is_totp_factor2_enabled": user.is_totp_factor2_enabled,
             "is_totp_factor3_enabled": user.is_totp_factor3_enabled,
@@ -77,7 +108,7 @@ def _login_response(user: User, token: str) -> LoginResponse:
     )
 
 
-async def _record_login_event(db: AsyncSession, user: User, method: str) -> None:
+async def _record_login_event(db: AsyncSession, user: User, method: str, client_ip: str) -> None:
     """Record successful authentication, including session replacement logins."""
     tx_hash = "0x" + hashlib.sha256(f"auth:{user.wallet_address}:{method}:{time.time_ns()}".encode()).hexdigest()
     db.add(AuditEvent(
@@ -87,6 +118,7 @@ async def _record_login_event(db: AsyncSession, user: User, method: str) -> None
         actor_did=user.did,
         target_did=user.did,
         asset_serial=method,
+        client_ip=client_ip,
     ))
     await db.commit()
 
@@ -113,6 +145,42 @@ async def get_nonce(address: str, request: Request):
     )
 
     return NonceResponse(nonce=nonce, message=message)
+
+
+from datetime import datetime
+from sqlalchemy import select
+
+@router.post("/otp/verify-import")
+@limiter.limit("5/minute")
+async def verify_import_otp(
+    req: VerifyImportOTPRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify a strict 3-hour single-use OTP for wallet import."""
+    result = await db.execute(select(User).filter_by(wallet_address=req.wallet_address.lower()))
+    user = result.scalars().first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.one_time_pin or not user.pin_expires_at:
+        raise HTTPException(status_code=400, detail="No active import PIN for this user")
+
+    if user.pin_used:
+        raise HTTPException(status_code=400, detail="Import PIN has already been used")
+
+    if datetime.utcnow() > user.pin_expires_at:
+        raise HTTPException(status_code=400, detail="Import PIN has expired")
+
+    if user.one_time_pin != req.pin:
+        raise HTTPException(status_code=401, detail="Invalid import PIN")
+
+    # Mark used
+    user.pin_used = True
+    await db.commit()
+
+    return {"status": "success", "message": "PIN verified successfully. Wallet import approved."}
 
 
 @router.post("/vc/issue")
@@ -151,7 +219,7 @@ async def login(login_req: LoginRequest, response: Response, request: Request, d
 
     user.session_version = (user.session_version or 0) + 1
     await db.commit()
-    await _record_login_event(db, user, "PASSWORD")
+    await _record_login_event(db, user, "PASSWORD", get_request_client_ip(request))
     token = auth.create_jwt(
         user.wallet_address,
         user.did,
@@ -186,7 +254,7 @@ async def login_with_totp(totp_req: TotpLoginRequest, response: Response, reques
 
     user.session_version = (user.session_version or 0) + 1
     await db.commit()
-    await _record_login_event(db, user, "MOBILE_AUTHENTICATOR")
+    await _record_login_event(db, user, "MOBILE_AUTHENTICATOR", get_request_client_ip(request))
     token = auth.create_jwt(
         user.wallet_address,
         user.did,
@@ -277,7 +345,7 @@ async def login_with_passkey(passkey_req: PasskeyLoginVerifyRequest, request: Re
     await db.commit()
     user.session_version = (user.session_version or 0) + 1
     await db.commit()
-    await _record_login_event(db, user, "PASSKEY")
+    await _record_login_event(db, user, "PASSKEY", get_request_client_ip(request))
     token = auth.create_jwt(
         user.wallet_address,
         user.did,
@@ -301,9 +369,11 @@ async def get_current_user_profile(user: User = Depends(get_current_active_user)
         "organization": user.organization,
         "role": user.role,
         "is_active": user.is_active,
+        "onboarding_pending": user.onboarding_pending,
         "is_totp_enabled": user.is_totp_enabled,
         "is_totp_factor2_enabled": user.is_totp_factor2_enabled,
-        "is_totp_factor3_enabled": user.is_totp_factor3_enabled
+        "is_totp_factor3_enabled": user.is_totp_factor3_enabled,
+        "reset_requested": user.reset_requested or False
     }
 
 
@@ -339,9 +409,25 @@ async def verify_totp_setup(request: Request, token: str = Body(..., embed=True)
 
     if security.verify_totp(user.totp_secret, token):
         user.is_totp_enabled = True
+
+        # Check if user has an active login passkey
+        from sqlalchemy import select
+        res = await db.execute(
+            select(WebAuthnCredential).filter(
+                WebAuthnCredential.user_id == user.id,
+                WebAuthnCredential.is_active.is_(True),
+                WebAuthnCredential.factor_scope == "login"
+            )
+        )
+        has_login_passkey = res.scalars().first() is not None
+
+        _check_onboarding_completion(user)
+        if has_login_passkey:
+            user.onboarding_pending = False
+
         await db.commit()
         logger.info(f"TOTP successfully enabled for user {user.wallet_address}")
-        return {"message": "TOTP successfully enabled."}
+        return {"message": "TOTP successfully enabled.", "onboarding_pending": user.onboarding_pending}
 
     raise HTTPException(status_code=401, detail="Invalid or expired TOTP code. Please ensure your device clock is synchronized and try with a fresh code.")
 
@@ -418,8 +504,9 @@ async def verify_totp_factor2_setup(
 
     if security.verify_totp(user.totp_factor2_secret, token):
         user.is_totp_factor2_enabled = True
+        _check_onboarding_completion(user)
         await db.commit()
-        return {"message": "Factor 2 (View/Submission) TOTP successfully enabled.", "is_totp_factor2_enabled": True}
+        return {"message": "Factor 2 (View/Submission) TOTP successfully enabled.", "is_totp_factor2_enabled": True, "onboarding_pending": user.onboarding_pending}
 
     raise HTTPException(status_code=401, detail="Invalid or expired Factor 2 TOTP code. Please verify your device clock.")
 
@@ -495,8 +582,9 @@ async def verify_totp_factor3_setup(
 
     if security.verify_totp(user.totp_factor3_secret, token):
         user.is_totp_factor3_enabled = True
+        _check_onboarding_completion(user)
         await db.commit()
-        return {"message": "Factor 3 (Mint/Approval/Revision) TOTP successfully enabled.", "is_totp_factor3_enabled": True}
+        return {"message": "Factor 3 (Mint/Approval/Revision) TOTP successfully enabled.", "is_totp_factor3_enabled": True, "onboarding_pending": user.onboarding_pending}
 
     raise HTTPException(status_code=401, detail="Invalid or expired Factor 3 TOTP code. Please verify your device clock.")
 
@@ -833,8 +921,8 @@ async def verify_webauthn_factor3(
 @router.post("/webauthn/register/verify")
 @limiter.limit("5/minute")
 async def verify_webauthn_registration(
-    request: WebAuthnVerifyRequest,
-    req: Request,
+    request: Request,
+    payload: WebAuthnVerifyRequest = Body(...),
     user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -850,7 +938,7 @@ async def verify_webauthn_registration(
         logger.warning(f"WebAuthn registration challenge not found for user {user.id}")
         raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry registration.")
 
-    origin = req.headers.get("origin")
+    origin = request.headers.get("origin")
     if not origin or origin not in settings.WEBAUTHN_ORIGINS:
         raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
 
@@ -860,28 +948,39 @@ async def verify_webauthn_registration(
 
     try:
         verification = webauthn.verify_registration_response(
-            credential=request.response,
+            credential=payload.response,
             expected_challenge=base64url_to_bytes(challenge) if isinstance(challenge, str) else challenge,
             expected_origin=origin,
             expected_rp_id=rp_id,
             require_user_verification=False, # Relaxed for some environments
         )
+        logger.info("WebAuthn verification succeeded.")
 
         # Save new credential
+        logger.info(f"Credential ID: {verification.credential_id}")
+        logger.info(f"Public Key: {verification.credential_public_key}")
+
         new_cred = WebAuthnCredential(
             user_id=user.id,
             credential_id=verification.credential_id.hex(),
             public_key=verification.credential_public_key.hex() if isinstance(verification.credential_public_key, bytes) else str(verification.credential_public_key),
             sign_count=verification.sign_count,
-            device_name=request.device_name
+            device_name=payload.device_name,
+            factor_scope=payload.factor_scope
         )
         db.add(new_cred)
+        logger.info("Credential added to DB.")
+
+        if user.is_totp_enabled and payload.factor_scope == "login":
+            user.onboarding_pending = False
+
         await db.commit()
+        logger.info("Credential committed to DB.")
 
         logger.info(f"WebAuthn credential registered successfully for user {user.id}")
         return {"message": "WebAuthn credential registered successfully"}
     except Exception as e:
-        logger.error(f"WebAuthn registration verification failed: {e}")
+        logger.error(f"WebAuthn registration verification failed: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"WebAuthn verification failed: {str(e)}")
 
 
@@ -902,6 +1001,7 @@ async def list_webauthn_credentials(
     return [{
         "credential_id": credential.credential_id,
         "device_name": credential.device_name,
+        "factor_scope": credential.factor_scope or "login",
         "created_at": credential.created_at.isoformat(),
     } for credential in result.scalars().all()]
 
@@ -943,4 +1043,118 @@ async def reset_webauthn_credentials(
     )
     await db.commit()
     return {"message": "All passkeys reset.", "credentials": []}
+
+
+# --- Admin Assistance Login Factor Reset Workflow ---
+
+@router.post("/reset-request")
+@limiter.limit("5/minute")
+async def request_admin_reset(
+    request: Request,
+    payload: ResetRequestPayload,
+    db: AsyncSession = Depends(get_db)
+):
+    """Request admin assistance to reset Login Authenticator and Login Passkey."""
+    from sqlalchemy import select, func
+    res = await db.execute(select(User).where(func.lower(User.wallet_address) == payload.wallet_address.lower()))
+    target_user = res.scalar_one_or_none()
+
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User with this wallet address not found")
+
+    target_user.reset_requested = True
+    await db.commit()
+    return {"message": "Admin assistance requested. Your administrator will review and issue a new single-use 3-hour import PIN."}
+
+
+@router.get("/reset-requests", response_model=List[ResetRequestResponse])
+async def list_reset_requests(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_admin_user)
+):
+    """List all users who have requested admin assistance for login factor resets."""
+    from sqlalchemy import select
+    res = await db.execute(
+        select(User).where(User.reset_requested.is_(True), User.is_active.is_(True)).order_by(User.created_at.desc())
+    )
+    users = res.scalars().all()
+    return [
+        ResetRequestResponse(
+            id=str(u.id),
+            wallet_address=u.wallet_address,
+            name=u.name,
+            department=u.department,
+            role=u.role,
+            reset_requested=u.reset_requested or False,
+            pin_expires_at=u.pin_expires_at
+        )
+        for u in users
+    ]
+
+
+@router.post("/reset-approve/{user_id}")
+async def approve_user_reset(
+    user_id: str,
+    body: AdminResetApproveRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_admin_user)
+):
+    """Approve user login reset using Admin's Factor 3 authentication."""
+    from sqlalchemy import select, update
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    res = await db.execute(select(User).where(User.id == uid))
+    target_user = res.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Verify Admin's Factor 3: either WebAuthn Factor 3 or TOTP Factor 3
+    is_passkey_valid = auth.is_assertion_valid(str(admin.id), "factor3")
+    is_totp_valid = bool(body.totp_code and admin.totp_factor3_secret and security.verify_totp(admin.totp_factor3_secret, body.totp_code))
+
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(
+            status_code=401,
+            detail="Admin Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation required to approve reset"
+        )
+
+    # Invalidate target user's login factors
+    target_user.is_totp_enabled = False
+    target_user.totp_secret = None
+    target_user.is_totp_factor2_enabled = False
+    target_user.totp_factor2_secret = None
+    target_user.is_totp_factor3_enabled = False
+    target_user.totp_factor3_secret = None
+
+    # Invalidate ALL passkeys for this user
+    await db.execute(
+        update(WebAuthnCredential)
+        .where(WebAuthnCredential.user_id == target_user.id)
+        .values(is_active=False)
+    )
+
+    # Generate new random 3-hour single-use OTP
+    new_pin = security.generate_one_time_pin(12)
+    new_expiry = datetime.utcnow() + timedelta(hours=3)
+
+    target_user.one_time_pin = new_pin
+    target_user.pin_expires_at = new_expiry
+    target_user.pin_used = False
+    target_user.onboarding_pending = True
+    target_user.reset_requested = False
+
+    await db.commit()
+    await db.refresh(target_user)
+
+    return {
+        "message": f"Successfully reset login factors for {target_user.wallet_address}.",
+        "user_id": str(target_user.id),
+        "wallet_address": target_user.wallet_address,
+        "one_time_pin": new_pin,
+        "pin_expires_at": new_expiry.isoformat() + "Z"
+    }
+
 

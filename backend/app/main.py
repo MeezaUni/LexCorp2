@@ -97,8 +97,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/api/auth/test")
+async def test_auth():
+    return {"message": "auth router test"}
+
 # API Routers
 app.include_router(auth.router, prefix="/api")
+
 app.include_router(assets.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(audit_router, prefix="/api")

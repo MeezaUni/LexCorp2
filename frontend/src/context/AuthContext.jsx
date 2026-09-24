@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { getRpcProvider, checkManagerRole } from '../services/web3';
 import { getNonce, login } from '../services/api';
-import { hasEncryptedWallet } from '../services/walletCore';
+import { hasEncryptedWallet, unlockWallet } from '../services/walletCore';
 import WalletModal from '../components/WalletModal';
 
 const AuthContext = createContext(null);
@@ -95,16 +95,46 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  const authenticateWithSession = useCallback((result) => {
+  const authenticateWithSession = useCallback(async (result) => {
     const walletData = { address: result.user.wallet_address };
     localStorage.setItem('lexcorp_wallet', JSON.stringify(walletData));
     localStorage.setItem('lexcorp_user', JSON.stringify(result.user));
     localStorage.setItem('lexcorp_token', result.token);
+
+    let connectedSigner = null;
+    try {
+      if (hasEncryptedWallet()) {
+        const unlocked = await unlockWallet();
+        const provider = getRpcProvider();
+        connectedSigner = unlocked.connect(provider);
+      }
+    } catch (err) {
+      console.warn('Could not auto-bind local wallet signer on session login:', err);
+    }
+
     setWallet(walletData);
     setUser(result.user);
-    setSigner(null);
+    setSigner(connectedSigner);
     setIsManager(result.user.role === 'ADMIN' || result.user.role === 'MANAGER');
     setReauthRequired(false);
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('lexcorp_token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await fetch('/api/auth/me', { headers });
+      if (res.ok) {
+        const userData = await res.json();
+        setUser(userData);
+        localStorage.setItem('lexcorp_user', JSON.stringify(userData));
+        setIsManager(userData.role === 'ADMIN' || userData.role === 'MANAGER');
+        return userData;
+      }
+    } catch (err) {
+      console.error('Failed to refresh user profile:', err);
+    }
+    return null;
   }, []);
 
   const connect = useCallback(() => {
@@ -130,6 +160,7 @@ export function AuthProvider({ children }) {
       loading,
       connect,
       disconnect,
+      refreshUser,
       openWalletModal: () => setIsModalOpen(true),
     }}>
       {children}

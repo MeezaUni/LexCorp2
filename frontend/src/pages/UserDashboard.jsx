@@ -7,8 +7,14 @@ import {
   getAssetCertificateUrl,
   uploadDocument,
   proposeDocument,
+  proposePhysicalAsset,
+  proposeDocumentShare,
+  prepareMintDigital,
+  prepareMintPhysical,
   getViewDocumentUrl,
-  requestDocumentDownload
+  requestDocumentDownload,
+  authenticateWithPasskey,
+  proposeDocumentRevision
 } from '../services/api';
 import {
   checkAssetAccess,
@@ -33,7 +39,7 @@ export default function UserDashboard() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeSubTab, setActiveSubTab] = useState('portfolio'); // 'portfolio' | 'mint' | 'share' | 'verify'
+  const [activeSubTab, setActiveSubTab] = useState('portfolio'); // 'portfolio' | 'mint' | 'mint_phys' | 'share' | 'verify'
 
   // Sharing Modal
   const [showSharesModal, setShowSharesModal] = useState(false);
@@ -43,6 +49,7 @@ export default function UserDashboard() {
   const [docName, setDocName] = useState('');
   const [digitalSerial, setDigitalSerial] = useState('');
   const [docPurpose, setDocPurpose] = useState('');
+  const [docRecipientAddress, setDocRecipientAddress] = useState('');
   const [docTotpCode, setDocTotpCode] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileHash, setFileHash] = useState('');
@@ -51,10 +58,26 @@ export default function UserDashboard() {
   const [proposing, setProposing] = useState(false);
   const [proposalResult, setProposalResult] = useState(null);
 
+  // Physical Propose State (Phase 14)
+  const [physName, setPhysName] = useState('');
+  const [physSerial, setPhysSerial] = useState('');
+  const [physType, setPhysType] = useState('EQUIPMENT');
+  const [hasMac, setHasMac] = useState(false);
+  const [physMac, setPhysMac] = useState('');
+  const [physDevAddr, setPhysDevAddr] = useState('');
+  const [physLocation, setPhysLocation] = useState('');
+  const [physPurpose, setPhysPurpose] = useState('');
+  const [physRecipientAddress, setPhysRecipientAddress] = useState('');
+  const [physTotpCode, setPhysTotpCode] = useState('');
+  const [proposingPhys, setProposingPhys] = useState(false);
+  const [physProposalResult, setPhysProposalResult] = useState(null);
+
   // Grant Access State
   const [shareTokenId, setShareTokenId] = useState('');
   const [shareTargetAddress, setShareTargetAddress] = useState('');
   const [shareLevel, setShareLevel] = useState(1); // 1 = READ, 2 = READ_WRITE
+  const [sharePurpose, setSharePurpose] = useState('');
+  const [shareTotpCode, setShareTotpCode] = useState('');
   const [sharing, setSharing] = useState(false);
   const [shareSuccessMsg, setShareSuccessMsg] = useState('');
 
@@ -66,6 +89,7 @@ export default function UserDashboard() {
   // Document Revision / Update State (for READ_WRITE holders)
   const [editingAsset, setEditingAsset] = useState(null);
   const [revisionFile, setRevisionFile] = useState(null);
+  const [revisionTotpCode, setRevisionTotpCode] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
   const [actionSuccessMsg, setActionSuccessMsg] = useState('');
 
@@ -138,9 +162,9 @@ export default function UserDashboard() {
     }
   };
 
-  // Handle Proposing Digital Document (Phase 4 / Phase 14)
-  const handleDocumentPropose = async (e) => {
-    e.preventDefault();
+  // Handle Proposing / Minting Digital Document
+  const handleDocumentPropose = async (e, usePasskey = false) => {
+    if (e) e.preventDefault();
     setError(null);
     setProposing(true);
     setProposalResult(null);
@@ -155,40 +179,172 @@ export default function UserDashboard() {
       if (!digitalSerial.trim()) {
         throw new Error('Please enter a document serial number.');
       }
+      if (!docRecipientAddress.trim()) {
+        throw new Error('Recipient Address is mandatory.');
+      }
 
-      const payload = {
-        name: docName,
-        serial_number: digitalSerial,
-        file_hash: fileHash,
-        offchain_uri: offchainURI,
-        purpose: docPurpose || 'Defense Technical Documentation',
-        totp_code: docTotpCode || null,
-      };
+      let currentTotp = docTotpCode;
 
-      const result = await proposeDocument(payload);
+      // Handle Passkey vs TOTP Factor Check
+      if (usePasskey) {
+        try {
+          const factor = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'factor3' : 'factor2';
+          await authenticateWithPasskey(factor);
+          currentTotp = '';
+        } catch (pkErr) {
+          throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
+        }
+      } else {
+        if (!currentTotp || currentTotp.trim() === '') {
+          const factorName = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'Factor 3' : 'Factor 2';
+          throw new Error(`${factorName} TOTP code is required if passkey is not used.`);
+        }
+      }
 
-      setProposalResult(result);
-      setActionSuccessMsg(`Document proposal ${result.action_id} submitted! Pending Manager/Admin Factor 3 approval.`);
+      if (user?.role === 'ADMIN' || user?.role === 'MANAGER') {
+        // Direct Minting for Admin/Manager
+        const tokenId = Math.floor(Math.random() * 1000000) + 1000;
+        const preparePayload = {
+          to_address: docRecipientAddress,
+          token_id: tokenId,
+          serial_number: digitalSerial,
+          owner_did: `did:ethr:13371:${docRecipientAddress.toLowerCase()}`,
+          file_hash: fileHash,
+          offchain_uri: offchainURI
+        };
+
+        const pre = await prepareMintDigital(preparePayload);
+        const tx = await signer.sendTransaction({
+          to: pre.calldata.to,
+          data: pre.calldata.data,
+          gasLimit: pre.calldata.gas,
+        });
+        await tx.wait();
+        setActionSuccessMsg(`Document mint transaction ${tx.hash.slice(0, 10)}... executed on-chain successfully!`);
+      } else {
+        // User/Auditor Proposal Submission
+        const payload = {
+          name: docName,
+          serial_number: digitalSerial,
+          file_hash: fileHash,
+          offchain_uri: offchainURI,
+          recipient_address: docRecipientAddress,
+          purpose: docPurpose || 'Defense Technical Documentation',
+          totp_code: currentTotp || null,
+        };
+
+        const result = await proposeDocument(payload);
+        setProposalResult(result);
+        setActionSuccessMsg(`Document proposal ${result.action_id} submitted! Pending Manager/Admin Factor 3 approval.`);
+      }
+
       setDocName('');
       setDigitalSerial('');
       setDocPurpose('');
+      setDocRecipientAddress('');
       setDocTotpCode('');
       setSelectedFile(null);
       setFileHash('');
       setOffchainURI('');
 
-      await fetchDashboardData();
+      setTimeout(() => fetchDashboardData(), 1500);
     } catch (err) {
-      console.error('Document proposal error:', err);
-      setError(err.response?.data?.detail || err.message || 'Document proposal failed');
+      console.error('Document action error:', err);
+      setError(err.response?.data?.detail || err.message || 'Document operation failed');
     } finally {
       setProposing(false);
     }
   };
 
-  // Handle Granting Access Permission
-  const handleGrantAccess = async (e) => {
-    e.preventDefault();
+  // Handle Proposing / Minting Physical Hardware
+  const handlePhysicalPropose = async (e, usePasskey = false) => {
+    if (e) e.preventDefault();
+    setError(null);
+    setProposingPhys(true);
+    setPhysProposalResult(null);
+
+    try {
+      if (!physName.trim()) throw new Error('Please enter a hardware name.');
+      if (!physSerial.trim()) throw new Error('Please enter a hardware serial number.');
+      if (hasMac && !physMac.trim()) throw new Error('Please enter the MAC Address.');
+      if (!hasMac && !physDevAddr.trim()) throw new Error('Please enter the Unique Hardware Address.');
+      if (!physRecipientAddress.trim()) throw new Error('Recipient Address is mandatory.');
+
+      let currentTotp = physTotpCode;
+
+      if (usePasskey) {
+        try {
+          const factor = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'factor3' : 'factor2';
+          await authenticateWithPasskey(factor);
+          currentTotp = '';
+        } catch (pkErr) {
+          throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
+        }
+      } else {
+        if (!currentTotp || currentTotp.trim() === '') {
+          const factorName = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'Factor 3' : 'Factor 2';
+          throw new Error(`${factorName} TOTP code is required if passkey is not used.`);
+        }
+      }
+
+      if (user?.role === 'ADMIN' || user?.role === 'MANAGER') {
+        const tokenId = Math.floor(Math.random() * 1000000) + 1000;
+        const preparePayload = {
+          to_address: physRecipientAddress,
+          token_id: tokenId,
+          serial_number: physSerial,
+          owner_did: `did:ethr:13371:${physRecipientAddress.toLowerCase()}`
+        };
+
+        const pre = await prepareMintPhysical(preparePayload);
+        const tx = await signer.sendTransaction({
+          to: pre.calldata.to,
+          data: pre.calldata.data,
+          gasLimit: pre.calldata.gas,
+        });
+        await tx.wait();
+        setActionSuccessMsg(`Physical Hardware mint transaction ${tx.hash.slice(0, 10)}... executed on-chain successfully!`);
+      } else {
+        const payload = {
+          name: physName,
+          serial_number: physSerial,
+          asset_type: physType,
+          mac_address: hasMac ? physMac : null,
+          device_unique_address: !hasMac ? physDevAddr : null,
+          location: physLocation || 'HQ Security Vault',
+          purpose: physPurpose || 'Authorized Asset Allocation',
+          recipient_address: physRecipientAddress,
+          totp_code: currentTotp || null,
+        };
+
+        const result = await proposePhysicalAsset(payload);
+        setPhysProposalResult(result);
+        setActionSuccessMsg(`Physical Hardware proposal ${result.action_id} submitted! Pending Manager/Admin Factor 3 approval.`);
+      }
+
+      setPhysName('');
+      setPhysSerial('');
+      setPhysType('EQUIPMENT');
+      setHasMac(false);
+      setPhysMac('');
+      setPhysDevAddr('');
+      setPhysLocation('');
+      setPhysPurpose('');
+      setPhysRecipientAddress('');
+      setPhysTotpCode('');
+
+      setTimeout(() => fetchDashboardData(), 1500);
+    } catch (err) {
+      console.error('Physical proposal error:', err);
+      setError(err.response?.data?.detail || err.message || 'Physical hardware operation failed');
+    } finally {
+      setProposingPhys(false);
+    }
+  };
+
+  // Handle Proposing Access Share (Factor 2 protected)
+  const handleGrantAccess = async (e, usePasskey = false) => {
+    if (e) e.preventDefault();
     setError(null);
     setSharing(true);
     setShareSuccessMsg('');
@@ -204,14 +360,41 @@ export default function UserDashboard() {
       const tId = parseInt(shareTokenId);
       if (!tId) throw new Error('Please enter a valid Token ID');
 
-      const tx = await grantAssetAccess(signer, tId, targetDID, parseInt(shareLevel));
-      setShareSuccessMsg(`Access permission successfully granted to ${targetDID.slice(0, 24)}... (Tx: ${tx.txHash.slice(0, 10)}...)`);
+      const assetObj = assets.find(a => a.token_id === tId);
+      if (!assetObj) throw new Error('Asset not found');
+
+      let currentTotp = shareTotpCode;
+      if (usePasskey) {
+        try {
+          await authenticateWithPasskey('factor2');
+          currentTotp = '';
+        } catch (pkErr) {
+          throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
+        }
+      } else if (!currentTotp || currentTotp.trim() === '') {
+        throw new Error('Factor 2 TOTP code is required if passkey is not used.');
+      }
+
+      const payload = {
+        asset_serial: assetObj.serial_number,
+        target_did: targetDID,
+        access_level: parseInt(shareLevel),
+        purpose: sharePurpose || 'Share access permission',
+        totp_code: currentTotp || null
+      };
+
+      const result = await proposeDocumentShare(payload);
+
+      setShareSuccessMsg(`Share proposal ${result.action_id} submitted! Pending Manager/Admin Factor 3 approval.`);
       setShareTokenId('');
       setShareTargetAddress('');
-      await fetchDashboardData();
+      setShareTotpCode('');
+      setSharePurpose('');
+
+      setTimeout(() => fetchDashboardData(), 1500);
     } catch (err) {
       console.error('Grant access error:', err);
-      setError(err.message || 'Failed to grant access on blockchain');
+      setError(err.response?.data?.detail || err.message || 'Failed to submit share proposal');
     } finally {
       setSharing(false);
     }
@@ -269,8 +452,8 @@ export default function UserDashboard() {
   };
 
   // Handle Document Revision Update
-  const handleUploadRevision = async (e) => {
-    e.preventDefault();
+  const handleUploadRevision = async (e, usePasskey = false) => {
+    if (e) e.preventDefault();
     if (!editingAsset || !revisionFile) return;
 
     setIsUpdating(true);
@@ -278,26 +461,40 @@ export default function UserDashboard() {
     setError(null);
 
     try {
+      let currentTotp = revisionTotpCode;
+
+      if (usePasskey) {
+        try {
+          await authenticateWithPasskey('factor2');
+          currentTotp = '';
+        } catch (pkErr) {
+          throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
+        }
+      } else if (!currentTotp || currentTotp.trim() === '') {
+        throw new Error('Factor 2 TOTP code is required if passkey is not used.');
+      }
+
       const formData = new FormData();
       formData.append('file', revisionFile);
 
       const uploadData = await uploadDocument(formData);
 
-      const tx = await updateDigitalAsset(
-        signer,
-        editingAsset.token_id,
-        userDID,
-        uploadData.file_hash,
-        uploadData.offchain_uri
-      );
+      await proposeDocumentRevision({
+        asset_serial: editingAsset.serial_number,
+        file_hash: uploadData.file_hash,
+        offchain_uri: uploadData.offchain_uri,
+        purpose: 'Updating document revision',
+        totp_code: currentTotp || null
+      });
 
-      setActionSuccessMsg(`Successfully updated Token #${editingAsset.token_id} on-chain. Tx: ${tx.txHash.slice(0, 10)}...`);
+      setActionSuccessMsg(`Revision proposed successfully for Token #${editingAsset.token_id}. Pending Manager Approval.`);
       setEditingAsset(null);
       setRevisionFile(null);
+      setRevisionTotpCode('');
       await fetchDashboardData();
     } catch (err) {
       console.error('Document update error:', err);
-      setError(err.message || 'Transaction rejected');
+      setError(err.response?.data?.detail || err.message || 'Transaction rejected');
     } finally {
       setIsUpdating(false);
     }
@@ -494,6 +691,22 @@ export default function UserDashboard() {
         </button>
 
         <button
+          onClick={() => setActiveSubTab('propose-phys')}
+          style={{
+            padding: '8px 16px',
+            borderRadius: '6px',
+            border: 'none',
+            background: activeSubTab === 'propose-phys' ? '#0f172a' : '#f1f5f9',
+            color: activeSubTab === 'propose-phys' ? '#ffffff' : '#475569',
+            fontWeight: '600',
+            fontSize: '13px',
+            cursor: 'pointer'
+          }}
+        >
+          + Propose Hardware
+        </button>
+
+        <button
           onClick={() => setActiveSubTab('share')}
           style={{
             padding: '8px 16px',
@@ -568,6 +781,20 @@ export default function UserDashboard() {
 
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
+                  Forward to Recipient Address *
+                </label>
+                <input
+                  type="text"
+                  value={docRecipientAddress}
+                  onChange={(e) => setDocRecipientAddress(e.target.value)}
+                  placeholder="e.g. 0x123... or DID"
+                  required
+                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
                   Purpose / Justification
                 </label>
                 <input
@@ -581,16 +808,25 @@ export default function UserDashboard() {
 
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
-                  Factor 2 TOTP Code (If Passkey not active)
+                  Factor {user?.role === 'ADMIN' || user?.role === 'MANAGER' ? '3' : '2'} TOTP Code *
                 </label>
-                <input
-                  type="text"
-                  value={docTotpCode}
-                  onChange={(e) => setDocTotpCode(e.target.value)}
-                  placeholder="6-digit TOTP (e.g. 123456)"
-                  maxLength={6}
-                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
-                />
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={docTotpCode}
+                    onChange={(e) => setDocTotpCode(e.target.value)}
+                    placeholder="6-digit TOTP"
+                    maxLength={6}
+                    style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleDocumentPropose(null, true)}
+                    style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}
+                  >
+                    🔑 Use Passkey
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -627,7 +863,74 @@ export default function UserDashboard() {
                 opacity: proposing || uploading || !fileHash ? 0.6 : 1
               }}
             >
-              {proposing ? 'Submitting Proposal with Factor 2...' : 'Submit Document Proposal (CRT-)'}
+              {proposing
+                ? 'Processing...'
+                : (user?.role === 'ADMIN' || user?.role === 'MANAGER'
+                  ? 'Mint Document Asset on-Chain'
+                  : 'Submit Document Proposal (CRT-)')
+              }
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* 1b. PROPOSE PHYSICAL HARDWARE TAB */}
+      {activeSubTab === 'propose-phys' && (
+        <div style={panelStyle}>
+          <h3 style={{ margin: '0 0 6px', fontSize: '18px', color: '#0f172a' }}>
+            Propose Physical Hardware Asset (Factor 2 Protected)
+          </h3>
+          <p style={{ margin: '0 0 1.5rem', fontSize: '13px', color: '#64748b' }}>
+            Submit a classified hardware tracking proposal. Proposals require Manager or Administrator Factor 3 approval before anchoring to the registry.
+          </p>
+
+          <form onSubmit={handlePhysicalPropose}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem', marginBottom: '1.2rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>Hardware Name *</label>
+                <input type="text" value={physName} onChange={(e) => setPhysName(e.target.value)} placeholder="e.g. GPU Node Alpha" required style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>Serial Number *</label>
+                <input type="text" value={physSerial} onChange={(e) => setPhysSerial(e.target.value)} placeholder="e.g. SN-9988-XYZ" required style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>Does device have a MAC Address? *</label>
+                <select value={hasMac} onChange={(e) => setHasMac(e.target.value === 'true')} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
+                  <option value={false}>No</option>
+                  <option value={true}>Yes</option>
+                </select>
+              </div>
+
+              {hasMac ? (
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>MAC Address *</label>
+                  <input type="text" value={physMac} onChange={(e) => setPhysMac(e.target.value)} placeholder="e.g. 00:1A:2B:3C:4D:5E" required style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+                </div>
+              ) : (
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>Unique Hardware Address *</label>
+                  <input type="text" value={physDevAddr} onChange={(e) => setPhysDevAddr(e.target.value)} placeholder="e.g. HASH-123456" required style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+                </div>
+              )}
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>Recipient Address (DID or Wallet) *</label>
+                <input type="text" value={physRecipientAddress} onChange={(e) => setPhysRecipientAddress(e.target.value)} placeholder="Recipient DID or Wallet" required style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>Factor {user?.role === 'ADMIN' || user?.role === 'MANAGER' ? '3' : '2'} TOTP Code *</label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input type="text" value={physTotpCode} onChange={(e) => setPhysTotpCode(e.target.value)} placeholder="6-digit TOTP" maxLength={6} required style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }} />
+                  <button type="button" onClick={() => handlePhysicalPropose(null, true)} style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>🔑 Use Passkey</button>
+                </div>
+              </div>
+            </div>
+
+            <button type="submit" disabled={proposingPhys} style={{ padding: '12px 24px', background: '#0f172a', color: '#fff', borderRadius: '6px', fontWeight: 'bold', cursor: proposingPhys ? 'not-allowed' : 'pointer' }}>
+              {proposingPhys ? 'Processing...' : (user?.role === 'ADMIN' || user?.role === 'MANAGER' ? 'Mint Hardware Asset on-Chain' : 'Submit Hardware Proposal (CRT-PHY-)')}
             </button>
           </form>
         </div>
@@ -697,6 +1000,44 @@ export default function UserDashboard() {
                   <option value={2}>READ_WRITE (Download + Upload Revisions)</option>
                 </select>
               </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
+                  Forwarding Purpose / Justification *
+                </label>
+                <input
+                  type="text"
+                  value={sharePurpose}
+                  onChange={(e) => setSharePurpose(e.target.value)}
+                  placeholder="e.g. Authorized Access for Audit"
+                  required
+                  style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
+                  Factor 2 TOTP Code *
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={shareTotpCode}
+                    onChange={(e) => setShareTotpCode(e.target.value)}
+                    placeholder="6-digit TOTP"
+                    maxLength={6}
+                    required
+                    style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleGrantAccess(null, true)}
+                    style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}
+                  >
+                    🔑 Use Passkey
+                  </button>
+                </div>
+              </div>
             </div>
 
             <button
@@ -713,7 +1054,7 @@ export default function UserDashboard() {
                 cursor: sharing ? 'not-allowed' : 'pointer'
               }}
             >
-              {sharing ? 'Registering on Blockchain...' : 'Grant Access Permission on-Chain'}
+              {sharing ? 'Submitting Share Proposal...' : 'Submit Share Proposal (SHR-)'}
             </button>
           </form>
 
@@ -1083,6 +1424,29 @@ export default function UserDashboard() {
                 />
               </div>
 
+              <div style={{ marginBottom: '1.2rem' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
+                  Factor 2 TOTP Code *
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={revisionTotpCode}
+                    onChange={(e) => setRevisionTotpCode(e.target.value)}
+                    placeholder="6-digit TOTP"
+                    maxLength={6}
+                    style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontFamily: 'monospace' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleUploadRevision(null, true)}
+                    style={{ padding: '8px 12px', background: '#e2e8f0', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}
+                  >
+                    🔑 Use Passkey
+                  </button>
+                </div>
+              </div>
+
               <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
                 <button
                   type="button"
@@ -1097,7 +1461,7 @@ export default function UserDashboard() {
                   disabled={isUpdating || !revisionFile}
                   style={{ padding: '8px 16px', background: isUpdating ? '#94a3b8' : '#d97706', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
                 >
-                  {isUpdating ? 'Committing to Blockchain...' : 'Sign & Update On-Chain'}
+                  {isUpdating ? 'Submitting Proposal...' : 'Propose Revision'}
                 </button>
               </div>
             </form>

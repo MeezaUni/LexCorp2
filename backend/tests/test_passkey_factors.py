@@ -92,6 +92,7 @@ async def test_passkey_factor2_and_factor3_workflow(client, db_session, seed_tes
             "serial_number": doc_serial,
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "offchain_uri": "secure-vault://documents/test_f2.pdf",
+        "recipient_address": "0x123abc",
             "purpose": "Factor 2 Test",
             "totp_code": ""
         }
@@ -111,6 +112,7 @@ async def test_passkey_factor2_and_factor3_workflow(client, db_session, seed_tes
             "serial_number": doc_serial,
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "offchain_uri": "secure-vault://documents/test_f2.pdf",
+        "recipient_address": "0x123abc",
             "purpose": "Factor 2 Test",
             "totp_code": ""
         }

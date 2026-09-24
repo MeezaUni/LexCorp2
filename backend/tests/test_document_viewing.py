@@ -32,6 +32,7 @@ async def test_view_digital_document_success(client, db_session):
             "serial_number": serial,
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "offchain_uri": "secure-vault://documents/view_test.png",
+        "recipient_address": "0x123abc",
             "purpose": "Viewing Test"
         }
     )
@@ -81,7 +82,8 @@ async def test_view_digital_document_unauthorized(client):
             "name": "Classified Doc",
             "serial_number": serial,
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "offchain_uri": "secure-vault://documents/view_test_2.png"
+            "offchain_uri": "secure-vault://documents/view_test_2.png",
+        "recipient_address": "0x123abc",
         }
     )
     assert prop_res.status_code == 200
@@ -110,7 +112,8 @@ async def test_view_audit_logs(client, db_session):
             "name": "Log Tracking Doc",
             "serial_number": serial,
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "offchain_uri": "secure-vault://documents/view_test_3.png"
+            "offchain_uri": "secure-vault://documents/view_test_3.png",
+        "recipient_address": "0x123abc",
         }
     )
     assert prop_res.status_code == 200

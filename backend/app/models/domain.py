@@ -22,7 +22,12 @@ class User(Base, TimestampMixin):
     did: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, nullable=True)
     role: Mapped[str] = mapped_column(String(20), default="USER")  # ADMIN, MANAGER, AUDITOR, USER
     is_active: Mapped[bool] = mapped_column(default=True)
+    onboarding_pending: Mapped[bool] = mapped_column(Boolean, default=True)
     session_version: Mapped[int] = mapped_column(Integer, default=0)
+    one_time_pin: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    pin_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    pin_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    reset_requested: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Factor 1: Login TOTP (existing — backward-compatible rename)
     totp_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -59,6 +64,7 @@ class WebAuthnCredential(Base, TimestampMixin):
     device_name: Mapped[Optional[str]] = mapped_column(String(255), default="Biometric Authenticator")
     transports: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    factor_scope: Mapped[str] = mapped_column(String(20), default="login")
 
     user: Mapped[User] = relationship(back_populates="webauthn_credentials")
 
@@ -159,6 +165,21 @@ class AccessRequest(Base, TimestampMixin):
     signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
+
+class AssetAccessGrant(Base, TimestampMixin):
+    __tablename__ = "asset_access_grants"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid.uuid4
+    )
+    asset_serial: Mapped[str] = mapped_column(String, index=True)
+    grantee_did: Mapped[str] = mapped_column(String, index=True)
+    granted_by_did: Mapped[str] = mapped_column(String)
+    access_level: Mapped[int] = mapped_column(Integer, default=1)
+    max_views: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    views_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
 class AuditEvent(Base, TimestampMixin):
     __tablename__ = "audit_events"
 
@@ -171,11 +192,15 @@ class AuditEvent(Base, TimestampMixin):
     actor_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     target_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     asset_serial: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    client_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # AI Risk Engine outputs
     risk_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     risk_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # LOW, MEDIUM, HIGH, CRITICAL
     risk_factors: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    
+    # Workflow integration for Security Incidents
+    alert_status: Mapped[str] = mapped_column(String, default="OPEN") # OPEN, FORWARDED_TO_MANAGER, ESCALATED_TO_ADMIN, DISMISSED, RESOLVED
 
 
 class VerifiableCredential(Base, TimestampMixin):

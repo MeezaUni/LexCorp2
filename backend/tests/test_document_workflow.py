@@ -28,6 +28,7 @@ async def test_propose_document_success(client, db_session):
         "serial_number": serial,
         "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "offchain_uri": "secure-vault://documents/guidance.pdf",
+        "recipient_address": "0x123abc",
         "purpose": "Avionics System Architecture Verification"
     }
 
@@ -54,6 +55,7 @@ async def test_propose_document_department_violation(client):
         "serial_number": f"BEL-DOC-CYBER-{uuid.uuid4().hex[:6].upper()}",
         "file_hash": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
         "offchain_uri": "secure-vault://documents/cyber_doc.pdf",
+        "recipient_address": "0x123abc",
         "department": "Cyber Warfare"  # User is in Avionics
     }
 
@@ -77,7 +79,8 @@ async def test_propose_document_duplicate_serial(client):
         "name": "Original Tracker Spec",
         "serial_number": serial,
         "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offchain_uri": "secure-vault://documents/guidance.pdf"
+        "offchain_uri": "secure-vault://documents/guidance.pdf",
+        "recipient_address": "0x123abc",
     }
     res1 = await client.post(
         "/api/assets/document/propose",
@@ -91,7 +94,8 @@ async def test_propose_document_duplicate_serial(client):
         "name": "Duplicate Tracker Spec",
         "serial_number": serial,
         "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offchain_uri": "secure-vault://documents/guidance2.pdf"
+        "offchain_uri": "secure-vault://documents/guidance2.pdf",
+        "recipient_address": "0x123abc",
     }
 
     response = await client.post(
@@ -116,7 +120,8 @@ async def test_pending_queue_department_scoping(client, db_session):
             "name": "Pending Queue Scope Test Doc",
             "serial_number": f"BEL-DOC-AVIONICS-{uuid.uuid4().hex[:6].upper()}",
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "offchain_uri": "secure-vault://documents/guidance.pdf"
+            "offchain_uri": "secure-vault://documents/guidance.pdf",
+        "recipient_address": "0x123abc",
         }
     )
 
@@ -155,7 +160,8 @@ async def test_user_cannot_approve_document(client):
             "name": "Approval scope fail doc",
             "serial_number": f"BEL-DOC-AVIONICS-{uuid.uuid4().hex[:6].upper()}",
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "offchain_uri": "secure-vault://documents/guidance.pdf"
+            "offchain_uri": "secure-vault://documents/guidance.pdf",
+        "recipient_address": "0x123abc",
         }
     )
 
@@ -186,7 +192,8 @@ async def test_approval_factor3_totp_enforcement(client, db_session):
             "name": "MFA Test Document",
             "serial_number": f"BEL-DOC-MFA-{uuid.uuid4().hex[:6].upper()}",
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "offchain_uri": "secure-vault://documents/guidance.pdf"
+            "offchain_uri": "secure-vault://documents/guidance.pdf",
+        "recipient_address": "0x123abc",
         }
     )
 
@@ -248,6 +255,7 @@ async def test_rejection_workflow(client, db_session):
             "serial_number": f"BEL-DOC-REJECT-{uuid.uuid4().hex[:6].upper()}",
             "file_hash": "1111111111111111111111111111111111111111111111111111111111111111",
             "offchain_uri": "secure-vault://documents/defective.pdf",
+        "recipient_address": "0x123abc",
             "purpose": "Needs review"
         }
     )

@@ -30,9 +30,11 @@ async def test_propose_physical_asset_success(client, db_session):
         "name": "Radar Transmitter Unit Mk-IV",
         "serial_number": serial,
         "asset_type": "EQUIPMENT",
+        "recipient_address": "0x123abc",
         "mac_address": mac,
         "device_unique_address": dev_addr,
         "location": "Hangar 4, Bay C",
+        "recipient_address": "0x123abc",
         "purpose": "Avionics Hardware Deployment"
     }
 
@@ -57,7 +59,9 @@ async def test_user_cannot_propose_physical_asset(client):
         "name": "Unauthorized Hardware Propose",
         "serial_number": f"BEL-HW-{uuid.uuid4().hex[:6].upper()}",
         "asset_type": "EQUIPMENT",
-        "location": "Bay 1"
+        "recipient_address": "0x123abc",
+        "location": "Bay 1",
+        "recipient_address": "0x123abc",
     }
     response = await client.post(
         "/api/assets/physical/propose",
@@ -75,7 +79,8 @@ async def test_auditor_cannot_propose_physical_asset(client):
     payload = {
         "name": "Auditor Hardware Propose",
         "serial_number": f"BEL-HW-{uuid.uuid4().hex[:6].upper()}",
-        "asset_type": "EQUIPMENT"
+        "asset_type": "EQUIPMENT",
+        "recipient_address": "0x123abc"
     }
     response = await client.post(
         "/api/assets/physical/propose",
@@ -94,6 +99,7 @@ async def test_manager_cross_department_physical_proposal_rejected(client):
         "name": "Cross Department Hardware",
         "serial_number": f"BEL-HW-CYBER-{uuid.uuid4().hex[:6].upper()}",
         "asset_type": "EQUIPMENT",
+        "recipient_address": "0x123abc",
         "department": "Cyber Warfare"
     }
     response = await client.post(
@@ -134,8 +140,10 @@ async def test_duplicate_mac_address_attempt_audited(client, db_session):
         "name": "Cloned MAC Asset",
         "serial_number": serial_attempt,
         "asset_type": "EQUIPMENT",
+        "recipient_address": "0x123abc",
         "mac_address": dup_mac,
-        "location": "Unknown"
+        "location": "Unknown",
+        "recipient_address": "0x123abc",
     }
 
     response = await client.post(
@@ -188,8 +196,10 @@ async def test_duplicate_device_unique_address_attempt_audited(client, db_sessio
         "name": "Cloned Device Unique Address Asset",
         "serial_number": serial_attempt,
         "asset_type": "EQUIPMENT",
+        "recipient_address": "0x123abc",
         "device_unique_address": dup_dev,
-        "location": "Unknown"
+        "location": "Unknown",
+        "recipient_address": "0x123abc",
     }
 
     response = await client.post(
@@ -225,7 +235,8 @@ async def test_physical_pending_queue_scoping(client, db_session):
         json={
             "name": "Pending Hardware Test",
             "serial_number": serial,
-            "asset_type": "EQUIPMENT"
+            "asset_type": "EQUIPMENT",
+        "recipient_address": "0x123abc"
         }
     )
 
@@ -255,7 +266,9 @@ async def test_physical_asset_approval_calldata(client, db_session):
             "name": "Flight Computer Alpha",
             "serial_number": serial,
             "asset_type": "EQUIPMENT",
-            "location": "Avionics Lab"
+        "recipient_address": "0x123abc",
+            "location": "Avionics Lab",
+        "recipient_address": "0x123abc",
         }
     )
     assert prop_res.status_code == 200
@@ -302,7 +315,9 @@ async def test_duplicate_serial_number_attempt_audited(client, db_session):
         "name": "Cloned Serial Asset",
         "serial_number": dup_serial,
         "asset_type": "EQUIPMENT",
-        "location": "Unknown"
+        "recipient_address": "0x123abc",
+        "location": "Unknown",
+        "recipient_address": "0x123abc",
     }
 
     response = await client.post(

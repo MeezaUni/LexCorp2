@@ -9,12 +9,23 @@ Security principles:
 import pyotp
 import base64
 import os
+import secrets
+import string
 from typing import Optional, Tuple
 from webauthn import generate_registration_options, verify_registration_response
 from webauthn.helpers import generate_challenge
 from webauthn.helpers.structs import PublicKeyCredentialCreationOptions, AuthenticatorSelectionCriteria, AuthenticatorAttachment, ResidentKeyRequirement, UserVerificationRequirement
 
 from app.core.config import settings
+
+# --- One-Time Encryption/Import PIN Generation ---
+
+def generate_one_time_pin(length: int = 12) -> str:
+    """Generate a cryptographically random, high-entropy PIN for wallet import.
+    Uses alphanumeric characters (excluding confusing ones like 0/O, 1/l/I).
+    """
+    alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 # --- TOTP (Google Authenticator) ---
 
