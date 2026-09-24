@@ -11,6 +11,8 @@
 
 LexCorp is an air-gapped, zero-trust enterprise security platform combining **W3C Decentralized Identifiers (DID)**, **W3C Verifiable Credentials (VC 2.0)**, **ERC-721 On-Chain Digital Asset Twins**, and **Embedded Local AI Anomaly Detection** to secure defense assets, supply chain provenance, and mission-critical access control.
 
+The platform now features an integrated security governance workflow including biometric-backed **Passkey authentication**, a tiered **security incident escalation system**, secure **asset sharing with view quotas**, and a **document-revision-and-approval lifecycle**.
+
 ---
 
 ##  Enterprise Architecture & Design Principles
@@ -48,26 +50,20 @@ LexCorp is an air-gapped, zero-trust enterprise security platform combining **W3
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Non-Custodial Zero-Trust Security
-- **The backend never custodies a private key.** All state-changing operations (minting, transfers, revocations, and role delegations) are signed client-side via hardware cryptographic signers.
-- **Enterprise Transition Note:** While the interactive hackathon demo utilizes browser-based Web3 signers (MetaMask), an enterprise defense deployment replaces this with **FIPS 140-2 Level 3 Hardware Security Modules (HSMs)**, **PIV/CAC Smart Cards via WebHID**, or **WebAuthn/Passkeys backed by device TPMs**.
+### 1. Multi-Factor Authentication (MFA) Hierarchy
+- **Factor 1 (SIWE)**: Cryptographic wallet signature for session initiation.
+- **Factor 2**: WebAuthn/Passkey or 6-digit TOTP for asset proposals, sharing requests, and document revisions.
+- **Factor 3 (Critical)**: WebAuthn/Passkey or 6-digit TOTP required for Manager/Admin approvals, direct asset minting, and security revocation actions.
+- **Passkey Support**: Integrated WebAuthn support across all forms as an alternative to TOTP for improved UX and security.
 
-### 2. Zero-Gas Enterprise Consortium Blockchain
-- Runs on private enterprise EVM networks (**Hyperledger Besu / ConsenSys Quorum / Polygon Edge**) using **QBFT/IBFT 2.0** consensus.
-- Gas price is configured to `0 wei` with zero monetary tokens, eliminating financial speculation, regulatory hurdles, and network congestion.
-
-### 3. W3C DID & Verifiable Credentials (VC 2.0)
-- Identity is mapped to standard **W3C DIDs** (`did:ethr:<chainId>:<address>`).
-- Personnel credentials (e.g., clearance level, operator authorization) are issued as cryptographically signed **JWT-VCs** conforming to W3C VC 2.0 standards.
-
-### 4. Cryptographic Asset Tagging (QR Verification)
-- High-security physical assets are tagged with dynamic, tamper-evident cryptographic QR codes.
-- Anyone can scan the QR tag to trigger the `/verify/:serial` public registry check directly against the smart contract.
-
-### 5. Embedded Air-Gapped AI Risk Engine
-- Anomaly detection is performed entirely **locally** via an embedded `IsolationForest` machine learning model.
-- **Zero Cloud AI Dependencies:** No data is transmitted to third-party cloud APIs (OpenAI, AWS, etc.), adhering strictly to defense air-gap protocols.
-- Evaluates real-time event frequency, velocity, and parameter anomalies, tagging each indexed event as **LOW**, **MEDIUM**, or **HIGH** risk.
+### 2. Governance & Security Workflows
+- **Tiered Security Incident Escalation**: 
+    - Alerts are triaged by Auditors.
+    - **Forward to Manager**: Auditor -> Manager.
+    - **Escalate to Admin**: Manager -> Admin.
+    - **Revoke Identity**: Admin can trigger identity revocation for critical threats.
+- **Share View Quotas**: When sharing assets, managers can optionally enforce `max_views`. The backend enforces these limits via `AssetAccessGrant` tracking.
+- **Document Revision lifecycle**: Proposed modifications (`MODIFICATION` action types) are stored as pending proposals requiring Factor-3 approval before on-chain asset updates.
 
 ---
 
@@ -98,7 +94,6 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --port 8000
 ```
 - API Documentation: `http://localhost:8000/docs`
-- Health check: `http://localhost:8000/health`
 
 ### 4. Start React Frontend (Terminal 4)
 ```bash
@@ -110,38 +105,21 @@ npm run dev
 
 ---
 
-##  Verification & Feature Walkthrough
-
-### 1. Asset Minting & QR Generation (Manager View)
-1. Navigate to `http://localhost:5173` and connect wallet.
-2. Under the **Manager Dashboard**, enter an Asset Serial (e.g., `BEL-RADAR-2026-001`).
-3. Click **Mint Digital Twin on Blockchain** and approve the transaction.
-4. The cryptographic QR code is generated dynamically.
-
-### 2. Public On-Chain Verification
-1. Scan the QR code or navigate to `http://localhost:5173/verify/BEL-RADAR-2026-001`.
-2. Inspect on-chain metadata, owner DID, and real-time validity status.
-
-### 3. AI-Powered Auditor Trail (Auditor View)
-1. Switch to the **Auditor Dashboard** tab.
-2. Observe real-time block indexing of the `AssetMinted` event.
-3. Check the **AI Risk Assessment** badge (`LOW`, `MEDIUM`, or `HIGH`) evaluated by the local `IsolationForest` model.
-
----
-
 ##  Security Compliance Matrix
 
 | Requirement | LexCorp Implementation |
 |---|---|
 | **Identity Standard** | W3C DID v1.1 (`did:ethr`) |
-| **Credential Standard** | W3C VC 2.0 (JWT-VC) |
+| **Authentication** | SIWE + WebAuthn/Passkey + TOTP |
+| **RBAC** | `USER`, `MANAGER`, `ADMIN`, `AUDITOR` |
 | **Key Custody** | Strict Client-Side Non-Custodial |
 | **Blockchain** | Zero-Gas Permissioned Consortium EVM |
-| **Audit Trail** | Immutable Event-Sourced Indexer |
+| **Security Alerts** | State-Machine (OPEN -> FORWARDED -> ESCALATED -> RESOLVED) |
+| **Access Control** | Deterministic View Quotas + On-Chain RBAC |
 | **AI Anomaly Detection** | Air-Gapped Local Scikit-Learn Model |
 
 ---
 
 ## 👥 Team LexCorp
 Built with ❤️ for **Smart India Hackathon 2026**.
-V2 Initialized
+V2.1 - Enhanced Security Governance Implementation.
