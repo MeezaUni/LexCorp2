@@ -15,7 +15,7 @@ The platform provides a sovereign infrastructure for identity, authorization, an
 
 ---
 
-## 🏗️ Detailed Enterprise Architecture
+## Detailed Enterprise Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
