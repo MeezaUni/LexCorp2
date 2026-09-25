@@ -3,7 +3,7 @@
   "chainId": 13371,
   "contractVersion": 3,
   "admin": "0x76799054c237Ea4B5AF457DcDC9B7bEB74F894E3",
-  "registrar": "0x46312c1A1e1681E95b915234E811Cf43dD18830F",
+  "registrar": "0x27D9A8A3657F5B34A0924C5278D51C4BA76f7eE0",
   "deployTxHash": "0x4fa7fad29d4fa7314e5dee0321dd360431009fd94c94a80cb222e81fed0dcfde",
   "deployBlock": 13,
   "runtimeBytecodeKeccak": "0x78faa5411e1877e2064f6ac1a7c33cc2641f314ad0b941a6a858fe3b1703b8ef",
@@ -1243,5 +1243,6 @@
       ],
       "outputs": []
     }
-  ]
+  ],
+  "registrarRotatedAt": "2026-09-25T22:17:45.051Z"
 }

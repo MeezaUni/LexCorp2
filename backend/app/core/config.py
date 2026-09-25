@@ -153,6 +153,8 @@ class Settings(BaseSettings):
         "env_file": [str(BASE_DIR / ".env")],
         "case_sensitive": True,
         "extra": "ignore",
+        # Validation errors must never echo configuration values (they include secrets).
+        "hide_input_in_errors": True,
     }
 
 

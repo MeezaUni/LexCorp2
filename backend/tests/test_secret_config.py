@@ -143,3 +143,13 @@ async def test_encrypted_records_survive_key_migration(db_session):
     assert decrypt_secret(fresh.totp_factor3_secret, only_new) == "PLAINTEXTLEGACY"
     assert decrypt_secret(fresh.wallet_wrap_secret, only_new) == "wrap-secret-value"
     assert decrypt_secret(fresh.totp_secret, legacy_ring) is None  # old key no longer needed
+
+
+def test_configuration_errors_never_echo_secret_values():
+    secret = secrets.token_urlsafe(48)
+    key = fkey()
+    with pytest.raises(ValueError) as e:
+        Settings(_env_file=None, **{**prod(JWT_SECRET=secret, DATA_ENCRYPTION_KEYS=key, DEBUG=True), "CHAIN_OPERATOR_PRIVATE_KEY": ""})
+    text = str(e.value) + repr(e.value)
+    assert secret not in text and key not in text
+    assert "input_value" not in text
