@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import AlertQueue from '../components/AlertQueue';
 import axios from 'axios';
 import { ethers } from 'ethers';
 import { useAuth } from '../context/AuthContext';
@@ -14,7 +15,6 @@ import {
   approveDownloadRequest,
   getDownloadDocumentUrl,
   getAuditEvents,
-  updateAlertStatus,
   authenticateWithPasskey,
   confirmChainEffect
 } from '../services/api';
@@ -123,16 +123,6 @@ export default function ManagerDashboard() {
     }
   };
 
-  const handleAlertAction = async (eventId, newStatus) => {
-    try {
-      await updateAlertStatus(eventId, newStatus);
-      setSuccessMsg(`Incident updated to ${newStatus}`);
-      fetchPendingQueues();
-    } catch (err) {
-      console.error('Failed to update incident:', err);
-      setError(err.response?.data?.detail || 'Failed to update alert');
-    }
-  };
 
   const handlePasskeyF2Doc = async () => {
     try {
@@ -768,39 +758,7 @@ export default function ManagerDashboard() {
           {/* Sub-tab 4: Escalated Incidents */}
           {pendingSubTab === 'incidents' && (
             <div>
-              {forwardedIncidents.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '3rem 1rem', color: '#94a3b8' }}>
-                  No escalated security incidents awaiting management review.
-                </div>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr>
-                        <th style={tableHeaderStyle}>Event ID</th>
-                        <th style={tableHeaderStyle}>Event</th>
-                        <th style={tableHeaderStyle}>Actor</th>
-                        <th style={tableHeaderStyle}>Risk</th>
-                        <th style={tableHeaderStyle}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {forwardedIncidents.map((e) => (
-                        <tr key={e.id}>
-                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontSize: '11px' }}>{e.id.slice(0, 8)}...</td>
-                          <td style={tableCellStyle}>{e.event_type}</td>
-                          <td style={{ ...tableCellStyle, fontFamily: 'monospace', fontSize: '11px' }}>{e.actor_did ? `${e.actor_did.slice(0, 16)}...` : '—'}</td>
-                          <td style={{...tableCellStyle, fontWeight: 'bold', color: '#dc2626'}}>{e.risk_label}</td>
-                          <td style={tableCellStyle}>
-                            <button onClick={() => handleAlertAction(e.id, 'ESCALATED_TO_ADMIN')} style={{ padding: '4px 8px', marginRight: '4px', background: '#dc2626', color: 'white', borderRadius: '4px', border: 'none', cursor: 'pointer', fontSize: '11px' }}>Escalate to Admin</button>
-                            <button onClick={() => handleAlertAction(e.id, 'DISMISSED')} style={{ padding: '4px 8px', background: '#e2e8f0', color: 'black', borderRadius: '4px', border: 'none', cursor: 'pointer', fontSize: '11px' }}>Dismiss</button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+              <AlertQueue role="MANAGER" currentDid={user?.did} />
             </div>
           )}
         </div>

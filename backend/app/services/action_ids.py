@@ -2,6 +2,7 @@
 
   CRT  creation      VW   view      DL   download      MOD  modification
   ACR  delegated access request
+  ALT  security alert
 
 The counter is advanced with a single INSERT ... ON CONFLICT ... RETURNING, so
 concurrent requests can never receive the same number. XXXX is the per-day
@@ -13,7 +14,7 @@ from datetime import datetime, UTC
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-PREFIXES = ("CRT", "VW", "DL", "MOD", "ACR")
+PREFIXES = ("CRT", "VW", "DL", "MOD", "ACR", "ALT")
 
 
 async def next_action_id(db: AsyncSession, prefix: str) -> str:

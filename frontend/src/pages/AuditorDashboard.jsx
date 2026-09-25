@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
+import AlertQueue from '../components/AlertQueue';
 import axios from 'axios';
 import { getAuditEvents, getAuditStats } from '../services/api';
 
 export default function AuditorDashboard() {
+  const { user } = useAuth();
   const [events, setEvents] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -44,16 +47,6 @@ export default function AuditorDashboard() {
   useEffect(() => {
     fetchAuditData();
   }, [filters]);
-
-  // Alert Actions
-  const updateAlertStatus = async (eventId, status) => {
-    try {
-      await axios.patch(`/api/audit/alerts/${eventId}/status`, { alert_status: status });
-      fetchAuditData();
-    } catch (err) {
-      console.error('Failed to update alert status:', err);
-    }
-  };
 
   const getNormalizedScore = (rawScore) => {
     if (rawScore == null || isNaN(rawScore)) return 0;
@@ -124,19 +117,8 @@ export default function AuditorDashboard() {
         <input type="datetime-local" onChange={(e) => setFilters({...filters, to_date: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
       </div>
 
-      {/* HIGH RISK ALERTS */}
-      <div style={{ marginBottom: '2rem' }}>
-        <h3 style={{ fontSize: '16px', fontWeight: 'bold', color: '#dc2626' }}>High-Risk Alerts (OPEN)</h3>
-        {events.filter(e => e.risk_label === 'HIGH' && e.alert_status === 'OPEN').map(e => (
-            <div key={e.id} style={{ background: '#fef2f2', border: '1px solid #fecaca', padding: '1rem', borderRadius: '8px', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between' }}>
-                <div><strong>Event:</strong> {e.event_type} | <strong>Actor:</strong> {e.actor_did} | <strong>Block:</strong> #{e.block_number}</div>
-                <div>
-                    <button onClick={() => updateAlertStatus(e.id, 'FORWARDED_TO_MANAGER')} style={{ marginRight: '0.5rem', cursor: 'pointer' }}>Forward to Manager</button>
-                    <button onClick={() => updateAlertStatus(e.id, 'DISMISSED')} style={{ cursor: 'pointer' }}>Dismiss</button>
-                </div>
-            </div>
-        ))}
-      </div>
+      {/* HIGH RISK ALERTS: dedicated escalation queue (Auditor stage) */}
+      <AlertQueue role="AUDITOR" currentDid={user?.did} />
 
       {/* AUDIT TABLE */}
       {loading ? (

@@ -115,38 +115,11 @@ async def list_events(
     return result.scalars().all()
 
 
-@router.patch("/alerts/{event_id}/status", response_model=AuditEventRead)
-async def update_alert_status(
-    event_id: str,
-    payload: AlertStatusUpdateRequest,
-    current_user: User = Depends(get_onboarded_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Update the triage status of a security alert (Forward to Manager, Escalate to Admin, Dismiss, Resolve)."""
-    if current_user.role == "USER":
-        raise HTTPException(status_code=403, detail="Not authorized to triage security alerts.")
-    try:
-        uid = uuid.UUID(event_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid event UUID")
-
-    result = await db.execute(select(AuditEvent).filter(AuditEvent.id == uid))
-    event = result.scalar_one_or_none()
-    if not event:
-        raise HTTPException(status_code=404, detail="Audit event not found")
-
-    allowed_statuses = ["OPEN", "FORWARDED_TO_MANAGER", "ESCALATED_TO_ADMIN", "DISMISSED", "RESOLVED"]
-    status_upper = payload.alert_status.strip().upper()
-    if status_upper not in allowed_statuses:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid alert status '{payload.alert_status}'. Allowed: {allowed_statuses}"
-        )
-
-    event.alert_status = status_upper
-    await db.commit()
-    await db.refresh(event)
-    return event
+@router.patch("/alerts/{event_id}/status")
+async def update_alert_status(event_id: str, current_user: User = Depends(get_onboarded_user)):
+    """Retired: statuses could be set to any value by any security role, skipping the
+    Auditor -> Manager -> Admin chain. Use /api/alerts/{alert_id}/forward|dismiss|revoke-identity."""
+    raise HTTPException(status_code=410, detail="Use the security alert workflow at /api/alerts.")
 
 
 @router.get("/events/by-tx/{tx_hash}", response_model=AuditEventRead)

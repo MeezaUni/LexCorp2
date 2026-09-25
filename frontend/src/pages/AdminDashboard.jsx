@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
+import AlertQueue from '../components/AlertQueue';
 import axios from 'axios';
 import { ethers } from 'ethers';
 import { useAuth } from '../context/AuthContext';
 import { authenticateWithPasskey } from '../services/api';
 import { revokeAsset } from '../services/web3';
-import { getAssetsByOwner, getAuditEvents, updateAlertStatus } from '../services/api';
+import { getAssetsByOwner, getAuditEvents } from '../services/api';
 
 const API_BASE = '/api';
 
@@ -106,14 +107,6 @@ export default function AdminDashboard() {
     fetchCriticalIncidents();
   }, []);
 
-  const handleAlertAction = async (eventId, status) => {
-    try {
-      await updateAlertStatus(eventId, status);
-      fetchCriticalIncidents();
-    } catch (err) {
-      console.error('Failed to update alert status:', err);
-    }
-  };
 
   const handleGenerateWallet = () => {
     const randomWallet = ethers.Wallet.createRandom();
@@ -311,49 +304,8 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* CRITICAL SECURITY INCIDENTS */}
-      {criticalIncidents.length > 0 && (
-        <div style={{ marginBottom: '2rem', border: '2px solid #dc2626', borderRadius: '12px', padding: '16px', background: '#fef2f2' }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold', color: '#991b1b' }}>
-            Critical Security Incidents (Escalated)
-          </h3>
-          <p style={{ fontSize: '13px', color: '#7f1d1d', margin: '0 0 1rem 0' }}>
-            The following high-risk incidents have been escalated by management. Action is required.
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {criticalIncidents.map(inc => {
-              const matchedUser = users.find(u => u.wallet_address.toLowerCase() === inc.actor_did.toLowerCase() || u.did === inc.actor_did);
-              return (
-                <div key={inc.id} style={{ background: '#fff', border: '1px solid #fca5a5', padding: '12px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <div style={{ fontWeight: '600', color: '#991b1b', marginBottom: '4px' }}>Event: {inc.event_type}</div>
-                    <div style={{ fontSize: '12px', color: '#475569' }}>
-                      <strong>Actor:</strong> {inc.actor_did} {matchedUser ? `(${matchedUser.name} - ${matchedUser.role})` : ''}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#475569' }}>
-                      <strong>Date:</strong> {new Date(inc.created_at + 'Z').toLocaleString()} | <strong>Risk:</strong> {inc.risk_label}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
-                    <button
-                      onClick={() => matchedUser ? initiateDelete(matchedUser) : alert('User identity not found linking to this actor.')}
-                      style={{ padding: '6px 12px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' }}
-                    >
-                      Deactivate / Revoke Identity
-                    </button>
-                    <button
-                      onClick={() => handleAlertAction(inc.id, 'DISMISSED')}
-                      style={{ padding: '6px 12px', background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' }}
-                    >
-                      Dismiss Alert
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {/* HIGH-RISK ALERTS escalated to Admin: dismiss or revoke identity (Factor 3) */}
+      <AlertQueue role="ADMIN" currentDid={user?.did} />
 
       {/* PIN DISPLAY MODAL */}
       {pinDisplayData && (

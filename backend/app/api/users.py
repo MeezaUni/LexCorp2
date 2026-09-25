@@ -356,25 +356,8 @@ async def delete_user(
             detail=f"Managers can only revoke users in their own department ({current_user.department}).",
         )
 
-    acting_role_level = ROLE_HIERARCHY.get(current_user.role, 0)
-    target_role_level = ROLE_HIERARCHY.get(user.role, 0)
-
-    if target_role_level >= acting_role_level and current_user.role != "ADMIN":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions to revoke this user",
-        )
-
-    owned_assets = await db.execute(select(Asset).where(Asset.owner_id == user.id))
-    if owned_assets.scalars().first() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="User still owns assets. Revoke or transfer every asset before deactivating this user.",
-        )
-
-    # Soft delete: deactivate the user instead of deleting
-    # This preserves audit trail and historical blockchain references
-    user.is_active = False
+    from app.services.identity import revoke_identity
+    await revoke_identity(db, current_user, user, "Revoked by administrator", require_no_owned_assets=True)
     await db.commit()
 
     return None

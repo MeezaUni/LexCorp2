@@ -293,6 +293,9 @@ class EventIndexer:
         )
         try:
             session.add(audit_event)
+            if (risk_label or "").upper() in ("HIGH", "CRITICAL"):
+                from app.services.alerts import raise_alert
+                await raise_alert(session, audit_event, source="AI")
             await session.commit()
             logger.info(
                 f"[{event_name}] tx={tx_hash} block={block_number} "

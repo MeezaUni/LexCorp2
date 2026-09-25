@@ -305,3 +305,43 @@ class VerifiableCredential(Base, TimestampMixin):
     type: Mapped[str] = mapped_column(String)  # e.g., "BELSecurityClearanceCredential"
 
     user: Mapped[User] = relationship(back_populates="credentials")
+
+
+class SecurityAlert(Base, TimestampMixin):
+    """A dedicated high-risk alert. State machine:
+    AUDITOR_REVIEW -> (DISMISSED | MANAGER_REVIEW) -> (DISMISSED | ADMIN_REVIEW)
+    -> (DISMISSED | IDENTITY_REVOKED). History lives in security_alert_actions."""
+    __tablename__ = "security_alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    alert_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(10))  # AI | RULE | LEGACY
+    source_event_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("audit_events.id"), unique=True, index=True, nullable=True)
+    subject_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    subject_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    subject_role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    subject_wallet: Mapped[Optional[str]] = mapped_column(String(42), nullable=True)
+    department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    risk_level: Mapped[str] = mapped_column(String(10))
+    risk_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    event_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    asset_serial: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    related_action_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    client_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    state: Mapped[str] = mapped_column(String(20), index=True)
+
+
+class SecurityAlertAction(Base, TimestampMixin):
+    __tablename__ = "security_alert_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    alert_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("security_alerts.id"), index=True)
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    actor_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    actor_role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    action: Mapped[str] = mapped_column(String(30))  # RAISED IMPORTED FORWARDED_TO_MANAGER FORWARDED_TO_ADMIN DISMISSED IDENTITY_REVOKED
+    from_state: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    to_state: Mapped[str] = mapped_column(String(20))
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+

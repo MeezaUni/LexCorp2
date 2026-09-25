@@ -354,10 +354,6 @@ export async function proposeDocumentRevision(data) {
   return response.data;
 }
 
-export async function updateAlertStatus(eventId, status) {
-  const response = await axios.patch(`${API_BASE}/audit/alerts/${eventId}/status`, { alert_status: status });
-  return response.data;
-}
 
 export async function deleteAsset(tokenId) {
   const response = await axios.delete(`${API_BASE}/assets/${tokenId}`);

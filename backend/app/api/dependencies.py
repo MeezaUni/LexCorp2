@@ -109,6 +109,9 @@ async def record_audit(
         risk_factors=details,
     )
     db.add(event)
+    if (risk_label or "").upper() in ("HIGH", "CRITICAL"):
+        from app.services.alerts import raise_alert
+        await raise_alert(db, event, source="AI" if (details or {}).get("ai") else "RULE")
     return event
 
 
