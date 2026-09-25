@@ -77,6 +77,7 @@ async def lifespan(app: FastAPI):
 from app.api import auth, assets, users
 from app.api.audit import router as audit_router
 from app.api.indexer import router as indexer_router
+from app.api.verify import router as verify_router
 
 app = FastAPI(
     title="LexCorp SIH 2026 - Blockchain Identity & Asset Platform",
@@ -108,6 +109,7 @@ app.include_router(assets.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 app.include_router(indexer_router, prefix="/api")
+app.include_router(verify_router, prefix="/api")
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check():

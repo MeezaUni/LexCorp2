@@ -85,8 +85,14 @@ def _asset_row(asset: Asset, viewer: User) -> dict:
 
 
 def _verify_url(action_id: str) -> str:
-    """QR payload: a verification reference only (no sensitive data in the QR itself)."""
-    return f"{settings.PUBLIC_BASE_URL.rstrip('/')}/verify/action/{action_id}"
+    """QR payload: a verification reference only (no sensitive data in the QR itself).
+    With the default localhost base, the host's LAN IP is used so phones can scan it;
+    set PUBLIC_BASE_URL explicitly in real deployments."""
+    base = settings.PUBLIC_BASE_URL.rstrip("/")
+    if "localhost" in base or "127.0.0.1" in base:
+        lan = get_lan_ip()
+        base = base.replace("localhost", lan).replace("127.0.0.1", lan)
+    return f"{base}/verify/action/{action_id}"
 
 
 def _original_filename(asset: Asset) -> str:
