@@ -34,3 +34,6 @@ postgres_data/
 network/besu/data/
 network/besu/data_corrupted/
 .pids.json
+
+# Local DB backups (contain secrets)
+db_backups/
