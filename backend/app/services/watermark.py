@@ -17,10 +17,11 @@ carries only a verification reference):
         control section with the full block and history.
   PPTX  every slide: rotated semi-transparent text box + QR; an appended control
         slide. Existing slides and shapes are left in place.
-  XLSX  every sheet: header/footer carries the watermark (visible in Page Layout /
-        print); an appended "LexCorp Control" sheet holds the block, history and QR.
-        Cells are not overlaid so the workbook stays usable. openpyxl does not
-        round-trip charts, pivot tables or embedded images; those are not preserved.
+  XLSX  edited at the OOXML package level, so charts, pivot tables, images and every
+        other part are preserved byte-for-byte: each sheet's header/footer carries
+        the watermark (visible in Page Layout / print) and an appended
+        "LexCorp Control" sheet holds the block, history and QR. Cells are not
+        overlaid so the workbook stays usable.
   Image diagonal tiled semi-transparent text over the image; the block and QR go in
         an added footer band so the image content itself is not covered.
   Text  rendered to a PDF ("protected rendered representation") and watermarked.
@@ -457,36 +458,142 @@ def watermark_pptx(data: bytes, ctx: WatermarkContext) -> bytes:
 
 # ------------------------------------------------------------------ XLSX
 
+_NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_NS_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+_NS_CT = "http://schemas.openxmlformats.org/package/2006/content-types"
+_NS_XDR = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_REL_WS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+_REL_DRAWING = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing"
+_REL_IMAGE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+# CT_Worksheet / CT_Chartsheet children that must come AFTER <headerFooter>.
+_AFTER_HF = {"rowBreaks", "colBreaks", "customProperties", "cellWatches", "ignoredErrors", "smartTags", "drawing",
+             "legacyDrawing", "legacyDrawingHF", "drawingHF", "picture", "oleObjects", "controls",
+             "webPublishItems", "tableParts", "extLst"}
+
+
+def _hf_escape(text: str) -> str:
+    return text.replace("&", "&&")
+
+
+def _xlsx_set_header_footer(xml: bytes, header: str, footer: str) -> bytes:
+    from lxml import etree
+    root = etree.fromstring(xml)
+    for old in root.findall(f"{{{_NS_MAIN}}}headerFooter"):
+        root.remove(old)
+    hf = etree.Element(f"{{{_NS_MAIN}}}headerFooter")
+    etree.SubElement(hf, f"{{{_NS_MAIN}}}oddHeader").text = header
+    etree.SubElement(hf, f"{{{_NS_MAIN}}}oddFooter").text = footer
+    anchor = next((c for c in root if isinstance(c.tag, str) and etree.QName(c).localname in _AFTER_HF), None)
+    if anchor is not None:
+        anchor.addprevious(hf)
+    else:
+        root.append(hf)
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
 def watermark_xlsx(data: bytes, ctx: WatermarkContext) -> bytes:
-    import openpyxl
-    from openpyxl.drawing.image import Image as XLImage
-    from openpyxl.styles import Font
+    """Package-level XLSX watermark. Every part of the workbook (cells, formulas,
+    styles, charts, pivot tables, images, defined names, VBA-free extensions) is
+    copied byte-for-byte; only these changes are made:
+      * each worksheet/chartsheet gets a header (identity + action ID, in red) and a
+        footer (CONFIDENTIAL + action ID + page numbers), visible in Page Layout/print;
+      * a "LexCorp Control" worksheet is appended with the full watermark block, the
+        cumulative modification history and the verification QR image.
+    Cells are never overlaid, so the workbook stays usable."""
+    from lxml import etree
 
-    wb = openpyxl.load_workbook(io.BytesIO(data))
-    header = ctx.compact().replace("&", "&&")
-    for ws in wb.worksheets:
-        for hf in (ws.oddHeader, ws.evenHeader, ws.firstHeader):
-            hf.center.text = header
-            hf.center.size = 8
-            hf.center.color = "C00000"
-        for hf in (ws.oddFooter, ws.evenFooter, ws.firstFooter):
-            hf.center.text = f"CONFIDENTIAL - {ctx.action_id} - &P/&N"
-            hf.center.size = 8
+    zin = zipfile.ZipFile(io.BytesIO(data))
+    names = zin.namelist()
+    parts = {n: zin.read(n) for n in names}
 
-    name = "LexCorp Control"
-    while name in wb.sheetnames:
-        name += "_"
-    cs = wb.create_sheet(name)
-    cs["A1"] = CONTROL_TITLE
-    cs["A1"].font = Font(bold=True, size=14, color="C00000")
-    for i, line in enumerate(ctx.all_lines(), start=3):
-        cs.cell(row=i, column=1, value=line)
-    cs.column_dimensions["A"].width = 60
-    img = XLImage(io.BytesIO(ctx.qr_png()))
-    img.width = img.height = 160
-    cs.add_image(img, "C3")
+    # Excel limits a header/footer to 255 characters.
+    header = ("&C&8&KC00000" + _hf_escape(ctx.compact()))[:250]
+    footer = f"&C&8CONFIDENTIAL - {_hf_escape(ctx.action_id)} - Page &P of &N"
+    for n in names:
+        if (n.startswith("xl/worksheets/sheet") or n.startswith("xl/chartsheets/sheet")) and n.endswith(".xml"):
+            parts[n] = _xlsx_set_header_footer(parts[n], header, footer)
+
+    # ---- workbook: register the control sheet
+    wb = etree.fromstring(parts["xl/workbook.xml"])
+    sheets = wb.find(f"{{{_NS_MAIN}}}sheets")
+    existing = {sh.get("name") for sh in sheets}
+    title = "LexCorp Control"
+    while title in existing:
+        title += "_"
+    sheet_id = max([int(sh.get("sheetId")) for sh in sheets] + [0]) + 1
+    rels_path = "xl/_rels/workbook.xml.rels"
+    rels = etree.fromstring(parts[rels_path])
+    rid = "rIdLexCorpControl"
+    while any(r.get("Id") == rid for r in rels):
+        rid += "x"
+    n = 1
+    while f"xl/worksheets/lexcorpControl{n}.xml" in parts:
+        n += 1
+    ws_part = f"xl/worksheets/lexcorpControl{n}.xml"
+    etree.SubElement(sheets, f"{{{_NS_MAIN}}}sheet", {"name": title, "sheetId": str(sheet_id), f"{{{_NS_REL}}}id": rid})
+    etree.SubElement(rels, f"{{{_NS_PKG_REL}}}Relationship",
+                     {"Id": rid, "Type": _REL_WS, "Target": f"worksheets/lexcorpControl{n}.xml"})
+    parts["xl/workbook.xml"] = etree.tostring(wb, xml_declaration=True, encoding="UTF-8", standalone=True)
+    parts[rels_path] = etree.tostring(rels, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+    # ---- the control worksheet (inline strings: sharedStrings is left untouched)
+    ws = etree.Element(f"{{{_NS_MAIN}}}worksheet", nsmap={None: _NS_MAIN, "r": _NS_REL})
+    cols = etree.SubElement(ws, f"{{{_NS_MAIN}}}cols")
+    etree.SubElement(cols, f"{{{_NS_MAIN}}}col", {"min": "1", "max": "1", "width": "70", "customWidth": "1"})
+    data_el = etree.SubElement(ws, f"{{{_NS_MAIN}}}sheetData")
+    lines = [CONTROL_TITLE, ""] + ctx.all_lines()
+    for i, line in enumerate(lines, start=1):
+        row = etree.SubElement(data_el, f"{{{_NS_MAIN}}}row", {"r": str(i)})
+        if line:
+            c = etree.SubElement(row, f"{{{_NS_MAIN}}}c", {"r": f"A{i}", "t": "inlineStr"})
+            is_ = etree.SubElement(c, f"{{{_NS_MAIN}}}is")
+            etree.SubElement(is_, f"{{{_NS_MAIN}}}t").text = line
+    _xlsx_hf_root = etree.SubElement(ws, f"{{{_NS_MAIN}}}headerFooter")
+    etree.SubElement(_xlsx_hf_root, f"{{{_NS_MAIN}}}oddHeader").text = header
+    drawing_rid = "rIdLexCorpQr"
+    etree.SubElement(ws, f"{{{_NS_MAIN}}}drawing", {f"{{{_NS_REL}}}id": drawing_rid})
+    parts[ws_part] = etree.tostring(ws, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+    # ---- QR image via a drawing part
+    media = f"xl/media/lexcorpQr{n}.png"
+    drawing = f"xl/drawings/lexcorpControl{n}.xml"
+    parts[media] = ctx.qr_png()
+    parts[f"xl/worksheets/_rels/lexcorpControl{n}.xml.rels"] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{_NS_PKG_REL}"><Relationship Id="{drawing_rid}" Type="{_REL_DRAWING}" '
+        f'Target="../drawings/lexcorpControl{n}.xml"/></Relationships>').encode()
+    parts[f"xl/drawings/_rels/lexcorpControl{n}.xml.rels"] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{_NS_PKG_REL}"><Relationship Id="rIdQr" Type="{_REL_IMAGE}" '
+        f'Target="../media/lexcorpQr{n}.png"/></Relationships>').encode()
+    emu = 1_524_000  # 160 px
+    parts[drawing] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<xdr:wsDr xmlns:xdr="{_NS_XDR}" xmlns:a="{_NS_A}" xmlns:r="{_NS_REL}">'
+        '<xdr:oneCellAnchor><xdr:from><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'
+        f'<xdr:ext cx="{emu}" cy="{emu}"/>'
+        '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="LexCorp verification QR"/><xdr:cNvPicPr/></xdr:nvPicPr>'
+        '<xdr:blipFill><a:blip r:embed="rIdQr"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
+        f'<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{emu}" cy="{emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
+        '</xdr:pic><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>').encode()
+
+    ct = etree.fromstring(parts["[Content_Types].xml"])
+    if not any(d.get("Extension", "").lower() == "png" for d in ct.findall(f"{{{_NS_CT}}}Default")):
+        etree.SubElement(ct, f"{{{_NS_CT}}}Default", {"Extension": "png", "ContentType": "image/png"})
+    etree.SubElement(ct, f"{{{_NS_CT}}}Override", {"PartName": "/" + ws_part,
+                     "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"})
+    etree.SubElement(ct, f"{{{_NS_CT}}}Override", {"PartName": "/" + drawing,
+                     "ContentType": "application/vnd.openxmlformats-officedocument.drawing+xml"})
+    parts["[Content_Types].xml"] = etree.tostring(ct, xml_declaration=True, encoding="UTF-8", standalone=True)
+
     out = io.BytesIO()
-    wb.save(out)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+        order = ["[Content_Types].xml"] + [x for x in names if x != "[Content_Types].xml"] + \
+                [x for x in parts if x not in names and x != "[Content_Types].xml"]
+        for x in order:
+            zout.writestr(x, parts[x])
     return out.getvalue()
 
 

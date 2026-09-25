@@ -54,3 +54,7 @@ backend/tests/.test_storage/
 contracts/audit_evidence/
 audit_evidence/
 _scratch_archive/
+
+# local document vault and VPN key material (never commit)
+backend/offchain_storage/
+network/vpn/wireguard_data/

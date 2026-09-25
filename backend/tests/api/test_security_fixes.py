@@ -260,3 +260,32 @@ async def test_upload_file_size_limit_enforced(async_client: AsyncClient, auth_t
     )
     assert res.status_code == 413
     assert "exceeds" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,content,expected", [
+    ("tool.exe", b"MZ\x90\x00binary", 415),
+    ("archive.zip", b"PK\x03\x04" + b"\x00" * 40, 415),       # corrupt / non-OOXML zip
+    ("fake.pdf", b"MZ\x90\x00 not really a pdf", 415),         # extension lies about the bytes
+    ("notes.txt", "Päivää UTF-8 text".encode(), 200),
+    ("spec.pdf", b"%PDF-1.4\n%%EOF\n", 200),
+])
+async def test_upload_accepts_only_watermarkable_types(async_client: AsyncClient, auth_tokens, name, content, expected):
+    mock_user = User(wallet_address="0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+                     did="did:ethr:13371:0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc", role="USER", is_active=True, session_version=0)
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+    res = await async_client.post("/api/assets/upload-document", files={"file": (name, content, "application/octet-stream")},
+                                  headers={"Authorization": f"Bearer {auth_tokens['user']}"})
+    assert res.status_code == expected, res.text
+    if expected == 200:
+        assert "download_url" not in res.json()  # no path to an unwatermarked original
+
+
+@pytest.mark.asyncio
+async def test_security_headers_on_api_responses(async_client: AsyncClient):
+    res = await async_client.get("/health")
+    for header, value in (("x-content-type-options", "nosniff"), ("x-frame-options", "DENY"), ("referrer-policy", "no-referrer")):
+        assert res.headers.get(header) == value
+    assert "frame-ancestors 'none'" in res.headers.get("content-security-policy", "")
+    res = await async_client.get("/api/auth/me")
+    assert res.headers.get("cache-control") == "no-store"

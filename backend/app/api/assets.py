@@ -47,6 +47,9 @@ def _get_cache(key: str):
 def _set_cache(key: str, value):
     _CACHE[key] = (time.time(), value)
 
+import logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/assets", tags=["assets"])
 
 
@@ -494,39 +497,48 @@ async def upload_document(
 
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
     try:
-        content = await file.read()
-        if len(content) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="File size exceeds maximum permitted limit (50MB)."
-            )
+        # Stream with a hard cap instead of reading an unbounded body into memory.
+        chunks, size = [], 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_FILE_SIZE:
+                raise HTTPException(status_code=413, detail="File size exceeds maximum permitted limit (50MB).")
+            chunks.append(chunk)
+        content = b"".join(chunks)
+        if not content:
+            raise HTTPException(status_code=400, detail="The file is empty.")
 
-        # Compute SHA-256 hash
+        # Only formats that can be served as a watermarked derivative are accepted; the
+        # type is detected from the bytes (magic numbers / OOXML structure), not the name.
+        from app.services.watermark import UnsupportedDocumentType, detect_type
+        safe_original_name = os.path.basename((file.filename or "unnamed_document").replace("\\", "/"))[:200] or "unnamed_document"
+        try:
+            kind = detect_type(content, safe_original_name)
+        except UnsupportedDocumentType as e:
+            raise HTTPException(status_code=415, detail=f"Unsupported document type: {e}. Supported: PDF, DOCX, PPTX, XLSX, PNG/JPEG images, UTF-8 text.")
+
         sha256_hash = hashlib.sha256(content).hexdigest()
-
-        # Sanitize original filename to prevent path traversal issues
-        safe_original_name = os.path.basename(file.filename or "unnamed_document")
         filename = f"{sha256_hash}_{safe_original_name}"
         filepath = os.path.join(OFFCHAIN_STORAGE_DIR, filename)
-
         with open(filepath, "wb") as f:
             f.write(content)
-
-        # Off-chain URI reference
-        offchain_uri = f"secure-vault://documents/{filename}"
 
         return {
             "filename": safe_original_name,
             "file_hash": sha256_hash,
-            "offchain_uri": offchain_uri,
-            "download_url": f"/api/assets/document/download/{filename}",
+            "offchain_uri": f"secure-vault://documents/{filename}",
             "file_size": len(content),
-            "status": "SECURELY_STORED_OFFCHAIN"
+            "document_type": kind,
+            "status": "SECURELY_STORED_OFFCHAIN",
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
+    except Exception:
+        logger.exception("Document upload failed")
+        raise HTTPException(status_code=500, detail="File processing failed.")
 
 
 @router.post("/check-access")

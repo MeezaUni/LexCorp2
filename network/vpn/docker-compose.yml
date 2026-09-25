@@ -4,8 +4,8 @@ services:
       # Public IP Address for remote access over the Internet
       - WG_HOST=182.71.109.122
 
-      # Web Portal Password Hash (bcrypt for "lexcorp_admin")
-      - PASSWORD_HASH=$$2b$$12$$syuJ2yzGLfe6.Tu3xdzvw.xPWujDB9rf7qRWSjGbzc09ss08P4SDG
+      # Web portal password hash (bcrypt) - supplied via network/vpn/.env, never committed
+      - PASSWORD_HASH=${WG_PASSWORD_HASH:?set WG_PASSWORD_HASH in network/vpn/.env}
 
       # WireGuard Port
       - WG_PORT=52000

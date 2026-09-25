@@ -69,8 +69,7 @@ class ProvisionRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    token: str
-    user: dict
+    user: dict  # the session itself is set as an httpOnly cookie, never returned in the body
 
 
 class TotpLoginRequest(BaseModel):
@@ -190,11 +189,13 @@ async def _issue_session(
         user.wallet_address, user.did, user.role, user.session_version,
         client_ip=client_ip, scope=scope,
     )
+    # The session lives ONLY in an httpOnly, SameSite=Strict cookie (Secure in production):
+    # page scripts can never read it, so an injected script cannot exfiltrate it.
     response.set_cookie(
-        key="session", value=token, httponly=True, samesite="strict",
-        max_age=settings.JWT_EXPIRE_MINUTES * 60,
+        key="session", value=token, httponly=True, samesite="strict", secure=settings.is_production,
+        max_age=settings.JWT_EXPIRE_MINUTES * 60, path="/",
     )
-    return LoginResponse(token=token, user=_user_payload(user, scope))
+    return LoginResponse(user=_user_payload(user, scope))
 
 
 async def _audit_failure(db: AsyncSession, event: str, request: Request, wallet: Optional[str], reason: str) -> None:
@@ -300,7 +301,7 @@ async def provision_wallet(
     await record_audit(db, "WALLET_PROVISIONED", actor_did=user.did, target_did=user.did,
                        client_ip=get_request_client_ip(request))
     session = await _issue_session(db, user, request, response, "WALLET_PROVISIONING")
-    return {"token": session.token, "user": session.user, "wallet_key": wallet_key}
+    return {"user": session.user, "wallet_key": wallet_key}
 
 
 @router.post("/otp/verify-import", include_in_schema=False)
@@ -354,7 +355,7 @@ async def logout(response: Response, request: Request, user: User = Depends(get_
     user.session_version = (user.session_version or 0) + 1
     await record_audit(db, "LOGOUT", actor_did=user.did, client_ip=get_request_client_ip(request))
     await db.commit()
-    response.delete_cookie("session")
+    response.delete_cookie("session", path="/", httponly=True, samesite="strict", secure=settings.is_production)
     return {"message": "Signed out. Session revoked."}
 
 
@@ -435,7 +436,7 @@ async def _totp_verify(user: User, purpose: str, code: str, request: Request, re
     result = {"message": f"{mfa.PURPOSE_LABELS[purpose]} TOTP enabled.", "onboarding_pending": user.onboarding_pending}
     if purpose == "login" and user.onboarding_pending and await mfa.login_setup_complete(db, user):
         session = await _issue_session(db, user, request, response, "SETUP_COMPLETE")
-        result.update({"onboarding_pending": False, "setup_complete": True, "token": session.token, "user": session.user})
+        result.update({"onboarding_pending": False, "setup_complete": True, "user": session.user})
     return result
 
 
@@ -615,7 +616,7 @@ async def verify_webauthn_registration(
     result = {"message": f"{mfa.PURPOSE_LABELS[scope]} passkey registered.", "factor_scope": scope}
     if scope == "login" and user.onboarding_pending and await mfa.login_setup_complete(db, user):
         session = await _issue_session(db, user, request, response, "SETUP_COMPLETE")
-        result.update({"setup_complete": True, "token": session.token, "user": session.user})
+        result.update({"setup_complete": True, "user": session.user})
     return result
 
 

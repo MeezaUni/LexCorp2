@@ -278,3 +278,46 @@ def test_unsupported_types_refused_not_passed_through():
         z.writestr("a.txt", "x")
     with pytest.raises(UnsupportedDocumentType):
         render_protected_copy(buf.getvalue(), "bundle.zip", ctx())
+
+
+
+def test_xlsx_charts_images_and_parts_preserved_byte_for_byte():
+    """The XLSX watermark no longer round-trips through openpyxl: charts, images and
+    every original part survive unchanged; only sheet XML gains header/footer."""
+    import openpyxl
+    from openpyxl.chart import BarChart, Reference
+    from openpyxl.drawing.image import Image as XLImage
+    from PIL import Image
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    for i in range(1, 6):
+        ws.append([f"Item {i}", i * 10])
+    chart = BarChart()
+    chart.add_data(Reference(ws, min_col=2, min_row=1, max_row=5))
+    ws.add_chart(chart, "D2")
+    pic = io.BytesIO()
+    Image.new("RGB", (40, 40), (10, 60, 120)).save(pic, format="PNG")
+    ws.add_image(XLImage(io.BytesIO(pic.getvalue())), "D20")
+    src_buf = io.BytesIO()
+    wb.save(src_buf)
+    src = src_buf.getvalue()
+    before = sha(src)
+    c = ctx()
+    out, mime, _ = render_protected_copy(src, "report.xlsx", c)
+    assert sha(src) == before
+    zs, zo = zipfile.ZipFile(io.BytesIO(src)), zipfile.ZipFile(io.BytesIO(out))
+    for name in zs.namelist():
+        assert name in zo.namelist(), name
+        if name.startswith(("xl/charts/", "xl/media/", "xl/drawings/", "xl/styles", "xl/sharedStrings", "xl/theme/")):
+            assert zs.read(name) == zo.read(name), f"{name} changed"
+    sheet_xml = zo.read("xl/worksheets/sheet1.xml").decode()
+    assert c.action_id in sheet_xml and "<headerFooter>" in sheet_xml.replace(' xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"', "")
+    # headerFooter sits before <drawing> (schema order) and the workbook still opens with its chart
+    assert sheet_xml.index("headerFooter") < sheet_xml.index("<drawing")
+    wb2 = openpyxl.load_workbook(io.BytesIO(out))
+    assert wb2.sheetnames == ["Data", "LexCorp Control"]
+    assert wb2["Data"]["B5"].value == 50
+    assert len(wb2["Data"]._charts) == 1
+    control = "\n".join(str(r[0].value) for r in wb2["LexCorp Control"].iter_rows() if r[0].value)
+    assert_identity(control, c)

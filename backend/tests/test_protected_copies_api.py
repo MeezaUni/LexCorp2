@@ -37,12 +37,19 @@ def pdf_bytes(marker):
     return buf.getvalue()
 
 
-async def upload_and_approve(client, db, data, filename):
+async def upload_and_approve(client, db, data, filename, *, legacy_vault_file=False):
     owner_t = tok(OWNER, "USER", 1)
-    up = await client.post("/api/assets/upload-document", headers={"Authorization": f"Bearer {owner_t}"},
-                           files={"file": (filename, data, "application/octet-stream")})
-    assert up.status_code == 200, up.text
-    info = up.json()
+    if legacy_vault_file:
+        # A file that reached the vault before upload-time type checks existed.
+        digest = hashlib.sha256(data).hexdigest()
+        with open(os.path.join(OFFCHAIN_STORAGE_DIR, f"{digest}_{filename}"), "wb") as f:
+            f.write(data)
+        info = {"file_hash": digest, "offchain_uri": f"secure-vault://documents/{digest}_{filename}"}
+    else:
+        up = await client.post("/api/assets/upload-document", headers={"Authorization": f"Bearer {owner_t}"},
+                               files={"file": (filename, data, "application/octet-stream")})
+        assert up.status_code == 200, up.text
+        info = up.json()
     assert info["file_hash"] == hashlib.sha256(data).hexdigest()
     serial = f"PC-{uuid.uuid4().hex[:8]}"
     prop = await client.post("/api/assets/document/propose", headers=await mfa_headers(db, owner_t, OWNER, "document.submit"),
@@ -113,7 +120,12 @@ async def test_view_watermark_names_viewer_not_owner_and_original_unchanged(clie
 
 @pytest.mark.asyncio
 async def test_unsupported_type_refused_without_consuming_view(client, db_session):
-    serial, stored = await upload_and_approve(client, db_session, b"MZ\x90\x00 not a document", "tool.exe")
+    # New uploads of unsupported types are refused at upload time ...
+    r = await client.post("/api/assets/upload-document", headers={"Authorization": f"Bearer {tok(OWNER, 'USER', 1)}"},
+                          files={"file": ("tool.exe", b"MZ\x90\x00 not a document", "application/octet-stream")})
+    assert r.status_code == 415
+    # ... and a legacy vault file of that type is still never served unwatermarked.
+    serial, stored = await upload_and_approve(client, db_session, b"MZ\x90\x00 not a document", "tool.exe", legacy_vault_file=True)
     grantee = await make_grantee(db_session, "Limited Viewer")
     grantee_did, grantee_wallet = grantee.did, grantee.wallet_address
     from app.models.domain import Asset

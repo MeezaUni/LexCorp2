@@ -223,7 +223,7 @@ async def test_admin_can_reassign_custody(client, db_session):
 async def test_document_upload_and_sha256_hashing(client):
     """Authenticated users can securely upload documents and receive SHA-256 hash."""
     token = get_token(ACTIVE_USER_WALLET, "USER", ACTIVE_USER_VERSION)
-    test_content = b"DEFENSE-SPEC-CLASSIFIED-DOCUMENT-CONTENT-2026"
+    test_content = b"%PDF-1.4\n% DEFENSE-SPEC-CLASSIFIED-DOCUMENT-CONTENT-2026\n%%EOF\n"  # real PDF signature
     files = {"file": ("classified_spec.pdf", io.BytesIO(test_content), "application/pdf")}
 
     response = await client.post(
@@ -236,6 +236,8 @@ async def test_document_upload_and_sha256_hashing(client):
     assert "file_hash" in data
     assert "offchain_uri" in data
     assert len(data["file_hash"]) == 64  # Valid SHA-256 length
+    import hashlib
+    assert data["file_hash"] == hashlib.sha256(test_content).hexdigest()  # server-computed
 
 
 # ==============================================================================

@@ -9,6 +9,7 @@ import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
+import time
 import pyotp
 import pytest
 from eth_account import Account
@@ -75,6 +76,7 @@ async def register_passkey(client, token: str, scope: str, headers_extra: dict |
     })
     assert ver.status_code == 200, ver.text
     key.last_result = ver.json()
+    key.last_session = ver.cookies.get("session")
     return key
 
 
@@ -93,12 +95,12 @@ async def onboard(client, db_session, role: str = "USER") -> dict:
     acct, pin = await new_identity(client, role)
     res = await provision(client, acct, pin)
     assert res.status_code == 200, res.text
-    setup_token = res.json()["token"]
+    setup_token = res.cookies.get("session")
     totp1, _ = await enable_totp(client, setup_token, "")
     pk1 = await register_passkey(client, setup_token, "login")
     assert pk1.last_result.get("setup_complete") is True
     return {"acct": acct, "wallet": acct.address.lower(), "totp1": totp1, "pk1": pk1,
-            "token": pk1.last_result["token"]}
+            "token": pk1.last_session}
 
 
 async def step_up_via_passkey(client, token: str, key: SoftPasskey, factor: str, action: str, *, as_factor: str | None = None):
@@ -121,7 +123,7 @@ async def test_wallet_import_success_gives_setup_only_session(client, db_session
     body = res.json()
     assert body["user"]["session_scope"] == "setup"
     assert body["user"]["onboarding_pending"] is True
-    token = body["token"]
+    token = res.cookies.get("session")
 
     # Setup endpoints reachable, application endpoints (and dashboard data) are not.
     assert (await client.get("/api/auth/me", headers=bearer(token))).status_code == 200
@@ -205,21 +207,21 @@ async def test_nonce_replay_rejected(client, db_session):
 @pytest.mark.asyncio
 async def test_setup_requires_both_totp1_and_passkey1(client, db_session):
     acct, pin = await new_identity(client)
-    setup = (await provision(client, acct, pin)).json()["token"]
+    setup = (await provision(client, acct, pin)).cookies.get("session")
     _, totp_result = await enable_totp(client, setup, "")
     assert totp_result.get("setup_complete") is None  # passkey still missing
     # Still setup-only: dashboard data blocked, and TOTP 1 login yields setup scope.
     assert (await client.get("/api/assets/document/pending", headers=bearer(setup))).status_code == 403
     pk = await register_passkey(client, setup, "login")
     assert pk.last_result["setup_complete"] is True
-    full = pk.last_result["token"]
+    full = pk.last_session
     assert (await client.get("/api/assets/document/pending", headers=bearer(full))).status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_factor2_and_factor3_cannot_be_enrolled_during_setup(client, db_session):
     acct, pin = await new_identity(client)
-    setup = (await provision(client, acct, pin)).json()["token"]
+    setup = (await provision(client, acct, pin)).cookies.get("session")
     assert (await client.post("/api/auth/2fa/factor2/setup", headers=bearer(setup))).status_code == 403
     r = await client.post("/api/auth/webauthn/register/options", headers=bearer(setup, Origin=ORIGIN), json={"factor_scope": "factor3"})
     assert r.status_code == 403
@@ -513,7 +515,7 @@ async def test_admin_reset_flow_invalidates_login_factors_and_forces_setup(clien
     prov = await provision(client, ident["acct"], new_pin)
     assert prov.status_code == 200
     assert prov.json()["user"]["session_scope"] == "setup"
-    setup = prov.json()["token"]
+    setup = prov.cookies.get("session")
     assert (await client.get("/api/assets/document/pending", headers=bearer(setup))).status_code == 403
     await enable_totp(client, setup, "")
     pk = await register_passkey(client, setup, "login")
@@ -589,7 +591,7 @@ async def test_single_active_session_and_logout(client, db_session):
     ident = await onboard(client, db_session)
     first = ident["token"]
     code = pyotp.TOTP(ident["totp1"]).at(pyotp.TOTP(ident["totp1"]).timecode(mfa.utcnow()) * 30 + 30)
-    second = (await client.post("/api/auth/login/totp", json={"wallet_address": ident["wallet"], "token": code})).json()["token"]
+    second = (await client.post("/api/auth/login/totp", json={"wallet_address": ident["wallet"], "token": code})).cookies.get("session")
     assert (await client.get("/api/auth/me", headers=bearer(first))).status_code == 401
     assert (await client.post("/api/auth/logout", headers=bearer(second))).status_code == 200
     assert (await client.get("/api/auth/me", headers=bearer(second))).status_code == 401
@@ -630,7 +632,7 @@ async def test_wallet_key_released_only_to_session_and_rotated_on_reset(client, 
     prov = await provision(client, acct, pin)
     key1 = prov.json()["wallet_key"]
     assert key1 and len(key1) >= 32
-    setup = prov.json()["token"]
+    setup = prov.cookies.get("session")
     client.cookies.clear()  # provisioning set the httpOnly session cookie
     assert (await client.get("/api/auth/wallet-key")).status_code == 401
     assert (await client.get("/api/auth/wallet-key", headers=bearer(setup))).json()["wallet_key"] == key1
@@ -641,7 +643,7 @@ async def test_wallet_key_released_only_to_session_and_rotated_on_reset(client, 
     # Admin reset clears it; re-provisioning issues a different one
     await enable_totp(client, setup, "")
     pk = await register_passkey(client, setup, "login")
-    full = pk.last_result["token"]
+    full = pk.last_session
     await client.post("/api/auth/reset-request", headers=bearer(full), json={})
     ok = await client.post(f"/api/auth/reset-approve/{user.id}", headers=bearer(admin_token()),
                            json={"totp_code": totp_code(ADMIN_WALLET, "factor3")})
@@ -649,13 +651,29 @@ async def test_wallet_key_released_only_to_session_and_rotated_on_reset(client, 
     prov2 = await provision(client, acct, ok.json()["one_time_pin"])
     key2 = prov2.json()["wallet_key"]
     assert key2 != key1
-    assert (await client.get("/api/auth/wallet-key", headers=bearer(prov2.json()["token"]))).json()["wallet_key"] == key2
+    assert (await client.get("/api/auth/wallet-key", headers=bearer(prov2.cookies.get("session")))).json()["wallet_key"] == key2
 
 
 @pytest.mark.asyncio
 async def test_totp_qr_rendered_locally(client, db_session):
     acct, pin = await new_identity(client)
-    setup = (await provision(client, acct, pin)).json()["token"]
+    setup = (await provision(client, acct, pin)).cookies.get("session")
     res = await client.post("/api/auth/2fa/setup", headers=bearer(setup))
     assert res.status_code == 200
     assert res.json()["qr_data_uri"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_session_is_httponly_cookie_only(client, db_session):
+    """No response body carries the session token; the cookie is HttpOnly + SameSite=Strict."""
+    acct, pin = await new_identity(client)
+    res = await provision(client, acct, pin)
+    assert res.status_code == 200
+    assert "token" not in res.json()
+    raw = res.headers.get("set-cookie", "")
+    assert "session=" in raw and "HttpOnly" in raw and "samesite=strict" in raw.lower()
+    ident = await onboard(client, db_session)
+    login = await client.post("/api/auth/login/totp", json={"wallet_address": ident["wallet"],
+                                                           "token": pyotp.TOTP(ident["totp1"]).at(int(time.time()) + 30)})
+    assert login.status_code == 200, login.text
+    assert "token" not in login.json() and login.cookies.get("session")
