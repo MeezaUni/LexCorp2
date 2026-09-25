@@ -24,7 +24,7 @@ from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, Au
 from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead
 from app.services.security import verify_totp
 from app.services import auth
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func, or_
 
 # Simple in-memory TTL cache (60 seconds) for registry queries
 _CACHE = {}
@@ -447,10 +447,35 @@ async def get_all_assets(db: AsyncSession = Depends(get_db)):
     # Map ORM objects to Pydantic schemas, filling in owner/custodian fields for AssetRead
     asset_schemas = []
     for asset in assets:
-        asset_dict = asset.__dict__
-        asset_dict["owner_wallet"] = asset.owner.wallet_address if asset.owner else None
-        asset_dict["owner_name"] = asset.owner.name if asset.owner else None
-        asset_dict["custodian_name"] = asset.custodian.name if asset.custodian else None
+        asset_dict = {
+            "id": asset.id,
+            "token_id": asset.token_id,
+            "serial_number": asset.serial_number,
+            "name": asset.name,
+            "asset_type": asset.asset_type,
+            "metadata_cid": asset.metadata_cid,
+            "file_hash": asset.file_hash,
+            "owner_id": asset.owner_id,
+            "custodian_id": asset.custodian_id,
+            "custodian_did": asset.custodian_did,
+            "custodian_department": asset.custodian_department,
+            "lifecycle_status": asset.lifecycle_status,
+            "parent_asset_id": asset.parent_asset_id,
+            "action_id": asset.action_id,
+            "action_type": asset.action_type,
+            "approval_status": asset.approval_status,
+            "watermark_metadata": asset.watermark_metadata,
+            "is_physical": asset.is_physical,
+            "mac_address": asset.mac_address,
+            "device_unique_address": asset.device_unique_address,
+            "location": asset.location,
+            "department": asset.department,
+            "owner_wallet": asset.owner.wallet_address if asset.owner else None,
+            "owner_name": asset.owner.name if asset.owner else None,
+            "custodian_name": asset.custodian.name if asset.custodian else None,
+            "created_at": asset.created_at,
+            "updated_at": asset.updated_at,
+        }
         asset_schemas.append(AssetRead.model_validate(asset_dict))
 
     return asset_schemas
@@ -460,28 +485,72 @@ async def get_assets_by_owner(owner_address: str, db: AsyncSession = Depends(get
     """Fetch all assets owned by OR explicitly granted to a specific wallet address/DID."""
     from web3 import Web3
     from sqlalchemy.orm import selectinload
-    from app.models.domain import Asset, User
+    from app.models.domain import Asset, User, AssetAccessGrant
 
     try:
         clean_address = Web3.to_checksum_address(owner_address).lower()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid wallet address")
 
-    query = (
-        select(Asset)
-        .join(User, Asset.owner_id == User.id)
-        .filter(func.lower(User.wallet_address) == clean_address)
-        .options(selectinload(Asset.owner), selectinload(Asset.custodian))
-    )
+    # 1. Find user by address to get ID and DID
+    user_res = await db.execute(select(User).filter(func.lower(User.wallet_address) == clean_address))
+    user = user_res.scalars().first()
+
+    # 2. Get assets where user is owner or custodian, or has active access grant
+    query = select(Asset).options(selectinload(Asset.owner), selectinload(Asset.custodian))
+
+    if user:
+        # Get active access grants serially first
+        grant_res = await db.execute(select(AssetAccessGrant.asset_serial).filter(AssetAccessGrant.grantee_did == user.did, AssetAccessGrant.is_active == True))
+        granted_serials = grant_res.scalars().all()
+
+        query = query.filter(
+            or_(
+                Asset.owner_id == user.id,
+                Asset.custodian_id == user.id,
+                Asset.serial_number.in_(granted_serials)
+            )
+        )
+    else:
+        # Fallback to direct owner join if user not found in DB
+        query = query.join(User, Asset.owner_id == User.id).filter(func.lower(User.wallet_address) == clean_address)
+
     result = await db.execute(query)
-    assets = result.scalars().all()
+    assets = result.scalars().unique().all()
 
     asset_schemas = []
+
+    # 3. Helper to safe-map assets to schema
     for asset in assets:
-        asset_dict = asset.__dict__
-        asset_dict["owner_wallet"] = asset.owner.wallet_address if asset.owner else None
-        asset_dict["owner_name"] = asset.owner.name if asset.owner else None
-        asset_dict["custodian_name"] = asset.custodian.name if asset.custodian else None
+        asset_dict = {
+            "id": asset.id,
+            "token_id": asset.token_id,
+            "serial_number": asset.serial_number,
+            "name": asset.name,
+            "asset_type": asset.asset_type,
+            "metadata_cid": asset.metadata_cid,
+            "file_hash": asset.file_hash,
+            "owner_id": asset.owner_id,
+            "custodian_id": asset.custodian_id,
+            "custodian_did": asset.custodian_did,
+            "custodian_department": asset.custodian_department,
+            "lifecycle_status": asset.lifecycle_status,
+            "parent_asset_id": asset.parent_asset_id,
+            "action_id": asset.action_id,
+            "action_type": asset.action_type,
+            "approval_status": asset.approval_status,
+            "watermark_metadata": asset.watermark_metadata,
+            "is_physical": asset.is_physical,
+            "mac_address": asset.mac_address,
+            "device_unique_address": asset.device_unique_address,
+            "location": asset.location,
+            "department": asset.department,
+            "owner_wallet": asset.owner.wallet_address if asset.owner else None,
+            "owner_name": asset.owner.name if asset.owner else None,
+            "custodian_name": asset.custodian.name if asset.custodian else None,
+            "created_at": asset.created_at,
+            "updated_at": asset.updated_at,
+        }
         asset_schemas.append(AssetRead.model_validate(asset_dict))
 
     return asset_schemas

@@ -276,3 +276,12 @@ async def test_rejection_workflow(client, db_session):
     data = reject_res.json()
     assert data["decision"] == "REJECT"
     assert data["status"] == "REJECTED"
+
+
+@pytest.mark.asyncio
+async def test_get_assets_by_owner_endpoint(client, db_session):
+    """Ensure GET /api/assets/by-owner/{owner_address} retrieves assets without 500 errors."""
+    res = await client.get(f"/api/assets/by-owner/{USER_WALLET}")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
