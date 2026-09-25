@@ -254,7 +254,7 @@ async def test_rejection_workflow(client, db_session):
         json={
             "name": "Defective Spec Document",
             "serial_number": f"BEL-DOC-REJECT-{uuid.uuid4().hex[:6].upper()}",
-            "file_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "offchain_uri": "secure-vault://documents/defective.pdf",
         "recipient_address": "0x123abc",
             "purpose": "Needs review"

@@ -18,6 +18,8 @@ const STEP_UP_ROUTES = [
   [/\/assets\/document\/view\//, 'document.view'],
   [/\/assets\/document\/download\/request$/, 'download.request'],
   [/\/auth\/reset-approve\//, 'admin.reset'],
+  [/\/assets\/document\/download\/[^/]+\/fetch$/, 'document.download'],
+  [/\/assets\/document\/download\/[^/]+\/owner-approval$/, 'asset.approve'],
 ];
 const pendingStepUp = {};
 
@@ -360,4 +362,58 @@ export async function updateAlertStatus(eventId, status) {
 export async function deleteAsset(tokenId) {
   const response = await axios.delete(`${API_BASE}/assets/${tokenId}`);
   return response.data;
+}
+
+// ---------------------------------------------------------------- Controlled downloads & revisions
+
+/** Step-up for one action: a TOTP code of that purpose, or (no code) that purpose's passkey. */
+export async function stepUp(factor, action, code) {
+  if (code) return stepUpWithTotp(action, code);
+  return authenticateWithPasskey(factor, action);
+}
+
+export async function requestControlledDownload(serial, mode = 'STANDARD', purpose = '', code = null) {
+  await stepUp('factor2', 'download.request', code);
+  const response = await axios.post(`${API_BASE}/assets/document/download/request`, { asset_serial: serial, mode, purpose });
+  return response.data;
+}
+
+export async function getMyDownloads() {
+  const response = await axios.get(`${API_BASE}/assets/document/downloads/mine`);
+  return response.data;
+}
+
+export async function ownerDownloadDecision(actionId, decision, code = null, rejectionReason = null) {
+  await stepUp('factor3', 'asset.approve', code);
+  const response = await axios.post(`${API_BASE}/assets/document/download/${actionId}/owner-approval`, { decision, rejection_reason: rejectionReason });
+  return response.data;
+}
+
+/** Requester-only, single-use, Factor 3. Returns { blob, filename }. */
+export async function fetchControlledDownload(actionId, code = null) {
+  await stepUp('factor3', 'document.download', code);
+  const response = await axios.post(`${API_BASE}/assets/document/download/${actionId}/fetch`, {}, { responseType: 'blob' });
+  const disposition = response.headers['content-disposition'] || '';
+  const match = disposition.match(/filename="([^"]+)"/);
+  return { blob: response.data, filename: match ? match[1] : `${actionId}.bin` };
+}
+
+/** Upload an externally modified file as a pending revision (Factor 3), bound to a modification download. */
+export async function uploadRevisionFile(parentSerial, modificationDownloadId, file, code = null, purpose = 'Revision') {
+  await stepUp('factor3', 'document.modify', code);
+  const form = new FormData();
+  form.append('file', file);
+  form.append('parent_asset_serial', parentSerial);
+  form.append('modification_download_id', modificationDownloadId);
+  form.append('purpose', purpose);
+  const response = await axios.post(`${API_BASE}/assets/document/revise/upload`, form, { headers: { 'Content-Type': 'multipart/form-data' } });
+  return response.data;
+}
+
+export async function readBlobError(err, fallback) {
+  let detail = err?.response?.data?.detail;
+  if (!detail && err?.response?.data instanceof Blob) {
+    try { detail = JSON.parse(await err.response.data.text()).detail; } catch (e) { detail = null; }
+  }
+  return detail || err?.message || fallback;
 }

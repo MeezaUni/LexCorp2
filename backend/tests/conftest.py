@@ -54,6 +54,26 @@ async def step_up_token(db, wallet: str, action: str) -> str:
     await db.commit()
     return grant["step_up_token"]
 
+# Vault files referenced by test proposals. Their recorded hashes must be the real
+# SHA-256 of these bytes (the API recomputes it), so each file holds exactly the
+# content its test declares (empty = e3b0c442..., "Hello World" = a591a6d4...).
+_VAULT_FIXTURES = {
+    **{name: b"" for name in ("guidance.pdf", "guidance2.pdf", "auth.txt", "defective.pdf", "f2.pdf",
+                              "pending.txt", "pk.txt", "spec.pdf", "view_test.png", "view_test_2.png", "view_test_3.png")},
+    "cyber_doc.pdf": b"Hello World",
+}
+
+
+@pytest.fixture(autouse=True)
+def vault_fixture_files():
+    root = os.path.join(os.environ["OFFCHAIN_STORAGE_DIR"], "documents")
+    os.makedirs(root, exist_ok=True)
+    for name, content in _VAULT_FIXTURES.items():
+        with open(os.path.join(root, name), "wb") as f:
+            f.write(content)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def reset_rate_limits():
     """Rate limits stay active inside a test; counters just don't leak between tests."""

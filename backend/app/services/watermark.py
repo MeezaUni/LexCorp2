@@ -235,12 +235,11 @@ def watermark_pdf(data: bytes, ctx: WatermarkContext) -> bytes:
         except Exception:
             raise UnsupportedDocumentType("Encrypted PDF cannot be watermarked")
     qr_png = ctx.qr_png()
-    writer = PdfWriter()
-    for page in reader.pages:
+    writer = PdfWriter(clone_from=reader)  # pages attached to the writer before merging
+    for page in writer.pages:
         w, h = float(page.mediabox.width), float(page.mediabox.height)
         overlay = PdfReader(io.BytesIO(_pdf_overlay(w, h, ctx, qr_png))).pages[0]
         page.merge_page(overlay)
-        writer.add_page(page)
     first = reader.pages[0].mediabox if reader.pages else None
     cw, ch = (float(first.width), float(first.height)) if first else (595.0, 842.0)
     writer.add_page(PdfReader(io.BytesIO(_pdf_control_page(cw, ch, ctx, qr_png))).pages[0])

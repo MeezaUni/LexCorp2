@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     STEP_UP_TTL_SECONDS: int = 300
     WEBAUTHN_CHALLENGE_TTL_SECONDS: int = 300
 
+    # Controlled downloads: how long an approved download stays fetchable, and whether a
+    # requester who is not the owner also needs the owner's consent.
+    DOWNLOAD_APPROVAL_TTL_HOURS: int = 24
+    DOWNLOAD_REQUIRES_OWNER_APPROVAL: bool = True
+
     # Wallet provisioning PIN
     PROVISIONING_PIN_TTL_HOURS: int = 3
 

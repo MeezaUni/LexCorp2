@@ -231,13 +231,15 @@ async def test_document_upload_and_sha256_hashing(client):
 
 @pytest.mark.asyncio
 async def test_unauthorized_document_download_blocked(client):
-    """Unauthorized download attempts without smart-contract verification are rejected (403/404)."""
+    """Direct vault downloads (bypassing request/approval/Factor 3/watermark) are disabled."""
     token = get_token(ACTIVE_USER_WALLET, "USER", ACTIVE_USER_VERSION)
     response = await client.get(
         "/api/assets/document/download/test_doc.pdf?token_id=9999",
         headers={"Authorization": f"Bearer {token}"}
     )
-    assert response.status_code in (403, 404)
+    assert response.status_code == 410
+    anon = await client.get("/api/assets/document/download-token/dlt_anything")
+    assert anon.status_code == 410  # URL-token downloads without a session are disabled too
 
 
 # ==============================================================================

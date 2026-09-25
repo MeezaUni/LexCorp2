@@ -389,10 +389,17 @@ async def test_passkey3_approve_mint_modify_and_factor2_cannot_satisfy_factor3(c
     # Passkey 3 for modify (revision proposal)
     serial = prop.json()["asset_serial"]
     mod = await step_up_via_passkey(client, mgr["token"], pk3, "factor3", "document.modify")
+    import hashlib, os
+    from app.api.assets import OFFCHAIN_STORAGE_DIR
+    with open(os.path.join(OFFCHAIN_STORAGE_DIR, "documents", "r.txt"), "wb") as f:
+        f.write(b"revised by manager")
     r_mod = await client.post("/api/assets/document/revise", headers=bearer(mgr["token"], **{"X-Step-Up-Token": mod.json()["step_up_token"]}),
-                              json={"parent_asset_serial": serial, "name": "rev", "new_serial_number": f"AUTH-{uuid.uuid4().hex[:8]}",
-                                    "new_file_hash": "a" * 64, "new_offchain_uri": "secure-vault://documents/r.txt"})
-    assert r_mod.status_code == 200, r_mod.text
+                              json={"parent_asset_serial": serial, "name": "rev",
+                                    "new_file_hash": hashlib.sha256(b"revised by manager").hexdigest(),
+                                    "new_offchain_uri": "secure-vault://documents/r.txt"})
+    # Passkey 3 satisfied the modify factor; the request then stops at the workflow rule
+    # (a revision needs an approved modification download), not at authentication.
+    assert r_mod.status_code == 400 and "modification download" in r_mod.json()["detail"], r_mod.text
 
 
 @pytest.mark.asyncio

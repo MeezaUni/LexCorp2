@@ -58,8 +58,14 @@ async def test_token_ids_come_from_sequence(db_session):
 async def test_creation_view_download_modification_ids_and_versions(client, db_session):
     user_t, mgr_t = tok(USER, "USER", 1), tok(MANAGER, "MANAGER", 8)
     serial = f"AID-{uuid.uuid4().hex[:8]}"
+    import hashlib, os
+    from app.api.assets import OFFCHAIN_STORAGE_DIR
+    os.makedirs(os.path.join(OFFCHAIN_STORAGE_DIR, "documents"), exist_ok=True)
+    doc_bytes = b"action id test document"
+    with open(os.path.join(OFFCHAIN_STORAGE_DIR, "documents", "ids.txt"), "wb") as f:
+        f.write(doc_bytes)
     prop = await client.post("/api/assets/document/propose", headers=await mfa_headers(db_session, user_t, USER, "document.submit"),
-                             json={"name": "IDs", "serial_number": serial, "file_hash": "a" * 64,
+                             json={"name": "IDs", "serial_number": serial, "file_hash": hashlib.sha256(doc_bytes).hexdigest(),
                                    "offchain_uri": "secure-vault://documents/ids.txt", "recipient_address": USER})
     assert prop.status_code == 200, prop.text
     crt = prop.json()["action_id"]
@@ -73,12 +79,6 @@ async def test_creation_view_download_modification_ids_and_versions(client, db_s
     with patch("app.services.contract.contract_service.prepare_mint_digital_calldata", return_value={"to": "0x1", "data": "0x2"}):
         await client.post(f"/api/assets/document/approval/{crt}", headers=await mfa_headers(db_session, mgr_t, MANAGER, "asset.approve"),
                           json={"decision": "APPROVE"})
-
-    import os
-    from app.api.assets import OFFCHAIN_STORAGE_DIR
-    os.makedirs(os.path.join(OFFCHAIN_STORAGE_DIR, "documents"), exist_ok=True)
-    with open(os.path.join(OFFCHAIN_STORAGE_DIR, "documents", "ids.txt"), "w") as f:
-        f.write("action id test document")
 
     # VIEW via a trusted proxy hop: the recorded IP is the forwarded client IP, not a placeholder
     view_h = await mfa_headers(db_session, user_t, USER, "document.view")
@@ -95,27 +95,36 @@ async def test_creation_view_download_modification_ids_and_versions(client, db_s
     assert dl.status_code == 200, dl.text
     assert id_re("DL").match(dl.json()["action_id"])
 
-    # Revisions: v2 then v3, each a new row linked to its parent and the lineage root
-    serial2, serial3 = f"{serial}-r1", f"{serial}-r2"
-    r1 = await client.post("/api/assets/document/revise", headers=await mfa_headers(db_session, user_t, USER, "document.modify"),
-                           json={"parent_asset_serial": serial, "name": "r1", "new_serial_number": serial2,
-                                 "new_file_hash": "b" * 64, "new_offchain_uri": "secure-vault://documents/r1.txt"})
+    # Revisions: v2 then v3 through the controlled flow, each a new row linked to parent and root
+    from tests import flows
+    from app.api.assets import OFFCHAIN_STORAGE_DIR as _S
+    appr_dl = await flows.approve(client, db_session, dl.json()["action_id"])
+    assert appr_dl.status_code == 200
+    mdl1, _ = await flows.modification_download(client, db_session, serial)
+    r1 = await flows.upload_revision(client, db_session, serial, mdl1, b"revision one bytes", "ids.txt")
     assert r1.status_code == 200, r1.text
     assert id_re("MOD").match(r1.json()["action_id"])
+    serial2 = r1.json()["asset_serial"]
     v2 = (await db_session.execute(select(Asset).where(Asset.serial_number == serial2))).scalar_one()
     assert v2.version_number == 2 and v2.parent_asset_id == v1.id and v2.root_asset_id == v1.id
-    r2 = await client.post("/api/assets/document/revise", headers=await mfa_headers(db_session, user_t, USER, "document.modify"),
-                           json={"parent_asset_serial": serial2, "name": "r2", "new_serial_number": serial3,
-                                 "new_file_hash": "c" * 64, "new_offchain_uri": "secure-vault://documents/r2.txt"})
+    # v3 cannot start until v2 is approved (linear history)
+    early = await client.post("/api/assets/document/download/request", headers=await mfa_headers(db_session, user_t, USER, "download.request"),
+                              json={"asset_serial": serial2, "purpose": "x", "mode": "MODIFICATION"})
+    assert early.status_code == 409
+    assert (await flows.approve(client, db_session, r1.json()["action_id"])).status_code == 200
+    mdl2, _ = await flows.modification_download(client, db_session, serial2)
+    r2 = await flows.upload_revision(client, db_session, serial2, mdl2, b"revision two bytes", "ids.txt")
     assert r2.status_code == 200, r2.text
+    serial3 = r2.json()["asset_serial"]
     v3 = (await db_session.execute(select(Asset).where(Asset.serial_number == serial3))).scalar_one()
     assert v3.version_number == 3 and v3.parent_asset_id == v2.id and v3.root_asset_id == v1.id
     mod = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == r2.json()["action_id"]))).scalar_one()
     assert mod.details["parent_version"] == 2 and mod.details["version"] == 3 and mod.asset_version == 3
+    assert mod.details["download_id"] == mdl2
 
     # Original row untouched by revisions
     await db_session.refresh(v1)
-    assert v1.file_hash == "a" * 64 and v1.version_number == 1
+    assert v1.version_number == 1 and v1.action_id == crt
 
     lineage = (await client.get(f"/api/assets/document/lineage/{serial3}", headers={"Authorization": f"Bearer {user_t}"})).json()
     assert [n["version_number"] for n in lineage["lineage"]] == [1, 2, 3]

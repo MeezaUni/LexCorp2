@@ -97,13 +97,11 @@ async def test_idor_and_spoofing_prevented_on_download(async_client: AsyncClient
             headers=user_headers
         )
 
-        # Assert forbidden: Contract check was called with user's verified address, NOT the spoofed admin
-        assert res.status_code == 403
-        mock_check.assert_called_once_with(
-            token_id=1,
-            requester_did="did:ethr:13371:0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-            caller_address="0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
-        )
+        # The direct vault download path is disabled outright (it served unwatermarked
+        # originals on an on-chain check alone), so spoofed parameters reach nothing:
+        # no contract lookup happens and no bytes are served.
+        assert res.status_code == 410
+        mock_check.assert_not_called()
 
 
 @pytest.mark.asyncio

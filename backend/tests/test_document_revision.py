@@ -20,97 +20,40 @@ def get_token(wallet: str, role: str, session_version: int = 1) -> str:
 
 @pytest.mark.asyncio
 async def test_revise_document_success(client, db_session):
-    """Propose revision, approve, and verify lineage."""
-    user_token = get_token(USER_WALLET, "USER", 1)
+    """Modification: request -> approval -> Factor 3 controlled download -> upload revision
+    (server hash, MOD ID, pending v2) -> approval -> v2 approved, v1 kept and marked OBSOLETE."""
+    from tests import flows
+    import hashlib
+    serial1 = await flows.approved_document(client, db_session, b"version one text", "spec.txt")
 
-    with patch("app.services.contract.contract_service.prepare_mint_digital_calldata", return_value={"to": "0x123", "data": "0xabc"}), \
-         patch("app.services.contract.contract_service.prepare_update_digital_asset_calldata", return_value={"to": "0x124", "data": "0xdef"}):
+    # Upload without an approved modification download is refused
+    none = await flows.upload_revision(client, db_session, serial1, "DL-19990101-0001", b"v2", "spec.txt")
+    assert none.status_code == 403
 
-        # 1. Propose and approve original asset
-        serial1 = f"BEL-DOC-{uuid.uuid4().hex[:6].upper()}"
-        propose_res1 = await client.post(
-            "/api/assets/document/propose",
-            headers=await mfa_headers(db_session, user_token, USER_WALLET, "document.submit"),
-            json={
-                "name": "Original Doc v1",
-                "serial_number": serial1,
-                "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "offchain_uri": "secure-vault://documents/doc_v1.txt",
-        "recipient_address": "0x123abc",
-                "department": "Avionics"
-            }
-        )
-        assert propose_res1.status_code == 200
+    dl, got = await flows.modification_download(client, db_session, serial1)
+    rev = await flows.upload_revision(client, db_session, serial1, dl, b"version two text", "spec.txt")
+    assert rev.status_code == 200, rev.text
+    mod = rev.json()
+    assert mod["action_id"].startswith("MOD-") and mod["status"] == "PENDING"
+    assert mod["details"]["download_id"] == dl
+    assert mod["details"]["file_hash"] == hashlib.sha256(b"version two text").hexdigest()
 
-        # Approve original
-        mgr_token = get_token(MANAGER_WALLET, "MANAGER", 8)
-        res = await db_session.execute(select(DocumentAction).where(DocumentAction.asset_serial == serial1))
-        creation_action = res.scalar_one()
-        appr_res1 = await client.post(
-            f"/api/assets/document/approval/{creation_action.action_id}",
-            headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "asset.approve"),
-            json={"decision": "APPROVE"}
-        )
-        assert appr_res1.status_code == 200
+    # The same modification download cannot be reused
+    reuse = await flows.upload_revision(client, db_session, serial1, dl, b"version three", "spec.txt")
+    assert reuse.status_code == 409
 
-        # Modification requires Factor 3 (spec: TOTP 3 OR Passkey 3)
-        res = await db_session.execute(select(User).where(User.wallet_address == USER_WALLET))
-        user = res.scalar_one()
-        secret = pyotp.random_base32()
-        user.totp_factor3_secret = secret
-        user.is_totp_factor3_enabled = True
-        await db_session.commit()
+    asset1 = (await db_session.execute(select(Asset).where(Asset.serial_number == serial1))).scalar_one()
+    asset2 = (await db_session.execute(select(Asset).where(Asset.serial_number == mod["asset_serial"]))).scalar_one()
+    assert asset2.approval_status == "PENDING_APPROVAL" and asset2.version_number == 2 and asset2.parent_asset_id == asset1.id
 
-        totp = pyotp.TOTP(secret)
+    appr = await flows.approve(client, db_session, mod["action_id"])
+    assert appr.status_code == 200, appr.text
+    await db_session.refresh(asset1)
+    await db_session.refresh(asset2)
+    assert asset1.lifecycle_status == "OBSOLETE"
+    assert asset2.lifecycle_status == "CREATED" and asset2.approval_status == "APPROVED"
+    assert asset1.file_hash == hashlib.sha256(b"version one text").hexdigest()  # original never overwritten
 
-        # 2. Propose revision (MOD-)
-        serial2 = f"BEL-DOC-{uuid.uuid4().hex[:6].upper()}"
-        revise_res = await client.post(
-            "/api/assets/document/revise",
-            headers={"Authorization": f"Bearer {user_token}"},
-            json={
-                "parent_asset_serial": serial1,
-                "name": "Revised Doc v2",
-                "new_serial_number": serial2,
-                "new_file_hash": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
-                "new_offchain_uri": "secure-vault://documents/doc_v2.txt",
-                "purpose": "Updated specifications",
-                "totp_code": totp.now()
-            }
-        )
-        assert revise_res.status_code == 200, revise_res.text
-        action_id = revise_res.json()["action_id"]
-        assert action_id.startswith("MOD-")
-
-        # 3. Approve revision (Admin or Manager with Factor 3)
-        res = await db_session.execute(select(User).where(User.wallet_address == MANAGER_WALLET))
-        mgr_user = res.scalar_one()
-        secret_mgr = pyotp.random_base32()
-        mgr_user.totp_factor3_secret = secret_mgr
-        mgr_user.is_totp_factor3_enabled = True
-        await db_session.commit()
-
-        totp_mgr = pyotp.TOTP(secret_mgr)
-
-        appr_res2 = await client.post(
-            f"/api/assets/document/approval/{action_id}",
-            headers={"Authorization": f"Bearer {mgr_token}"},
-            json={"decision": "APPROVE", "totp_code": totp_mgr.now()}
-        )
-        assert appr_res2.status_code == 200, appr_res2.text
-        appr_data = appr_res2.json()
-        assert appr_data["status"] == "APPROVED"
-        assert "calldata" in appr_data
-
-        # Verify lineage tracking
-        res1 = await db_session.execute(select(Asset).where(Asset.serial_number == serial1))
-        asset1 = res1.scalar_one()
-        res2 = await db_session.execute(select(Asset).where(Asset.serial_number == serial2))
-        asset2 = res2.scalar_one()
-
-        assert asset1.lifecycle_status == "OBSOLETE"
-        assert asset2.lifecycle_status == "CREATED"
-        assert asset2.parent_asset_id == asset1.id
 
 @pytest.mark.asyncio
 async def test_revise_document_different_department(client, db_session):

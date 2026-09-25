@@ -125,9 +125,11 @@ class PhysicalProposalRequest(BaseSchema):
 class DocumentRevisionRequest(BaseSchema):
     parent_asset_serial: str
     name: str # New Document Title
-    new_serial_number: str
+    new_serial_number: Optional[str] = None  # server generates <root serial>-V<n> when omitted
     new_file_hash: str
     new_offchain_uri: str
+    # The approved + completed MODIFICATION download this revision comes from (required)
+    modification_download_id: Optional[str] = None
     purpose: Optional[str] = None
     totp_code: Optional[str] = None
 
@@ -152,6 +154,15 @@ class DocumentApprovalRequest(BaseSchema):
 class DownloadRequest(BaseSchema):
     asset_serial: str
     purpose: Optional[str] = None
+    totp_code: Optional[str] = None
+    mode: str = "STANDARD"  # STANDARD | MODIFICATION (controlled download for editing)
+
+class OwnerDecisionRequest(BaseSchema):
+    decision: str  # APPROVE | REJECT
+    totp_code: Optional[str] = None
+    rejection_reason: Optional[str] = None
+
+class FetchDownloadRequest(BaseSchema):
     totp_code: Optional[str] = None
 
 class DocumentActionRead(DocumentActionBase):

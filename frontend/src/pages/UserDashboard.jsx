@@ -12,10 +12,14 @@ import {
   prepareMintDigital,
   prepareMintPhysical,
   viewDocument,
+  requestControlledDownload,
+  getMyDownloads,
+  uploadRevisionFile,
   requestDocumentDownload,
   authenticateWithPasskey,
   proposeDocumentRevision
 } from '../services/api';
+import DocumentWorkflowPanel from '../components/DocumentWorkflowPanel';
 import {
   checkAssetAccess,
   recordAccessAttempt,
@@ -524,31 +528,17 @@ export default function UserDashboard() {
     setError(null);
 
     try {
-      let currentTotp = revisionTotpCode;
-
-      if (usePasskey) {
-        try {
-          await authenticateWithPasskey('factor3', 'document.modify');
-          currentTotp = '';
-        } catch (pkErr) {
-          throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
-        }
-      } else if (!currentTotp || currentTotp.trim() === '') {
+      if (!usePasskey && (!revisionTotpCode || revisionTotpCode.trim() === '')) {
         throw new Error('Factor 3 (Mint/Approve/Modify) TOTP code is required if passkey is not used.');
       }
-
-      const formData = new FormData();
-      formData.append('file', revisionFile);
-
-      const uploadData = await uploadDocument(formData);
-
-      await proposeDocumentRevision({
-        asset_serial: editingAsset.serial_number,
-        file_hash: uploadData.file_hash,
-        offchain_uri: uploadData.offchain_uri,
-        purpose: 'Updating document revision',
-        totp_code: currentTotp || null
-      });
+      // A revision must come from an approved, fetched MODIFICATION download of this version.
+      const mine = await getMyDownloads();
+      const modDl = mine.find((a) => a.asset_serial === editingAsset.serial_number && a.details?.mode === 'MODIFICATION'
+        && a.status === 'COMPLETED' && !a.details?.revision_mod_id);
+      if (!modDl) {
+        throw new Error('Request a modification, wait for approval and download it (Factor 3) before uploading a revision.');
+      }
+      await uploadRevisionFile(editingAsset.serial_number, modDl.action_id, revisionFile, usePasskey ? null : revisionTotpCode.trim(), 'Updating document revision');
 
       setActionSuccessMsg(`Revision proposed successfully for Token #${editingAsset.token_id}. Pending Manager Approval.`);
       setEditingAsset(null);
@@ -1253,17 +1243,8 @@ export default function UserDashboard() {
               </div>
 
               {accessResult.authorized && accessResult.doc?.offchain_uri && (
-                <div style={{ marginTop: '1rem' }}>
-                  <button
-                    onClick={() => {
-                      const filename = accessResult.doc.offchain_uri.split('/').pop();
-                      const url = `/api/assets/document/download/${filename}?token_id=${accessResult.tokenId}&wallet_address=${walletAddress}&did=${encodeURIComponent(userDID)}`;
-                      window.open(url, '_blank');
-                    }}
-                    style={{ padding: '8px 16px', background: '#059669', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
-                  >
-                    Download Authorized Document from Vault
-                  </button>
+                <div style={{ marginTop: '1rem', fontSize: '12px', color: '#475569' }}>
+                  Downloads are controlled: use “Request Download” on the document (approval + Factor 3 + Download ID).
                 </div>
               )}
             </div>
@@ -1272,6 +1253,7 @@ export default function UserDashboard() {
       )}
 
       {/* 4. MY ASSET PORTFOLIO GRID */}
+      {activeSubTab === 'portfolio' && <DocumentWorkflowPanel user={user} />}
       {activeSubTab === 'portfolio' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
@@ -1345,14 +1327,13 @@ export default function UserDashboard() {
                       <button
                         onClick={async () => {
                           try {
-                            await requestDocumentDownload({
-                              asset_serial: asset.serial_number,
-                              purpose: 'Forensic Download'
-                            });
-                            alert('Download request submitted, pending Manager Approval (Factor 3).');
+                            const code = window.prompt('Factor 2 (View/Submission) is required to request a download. Enter the TOTP code, or leave empty to use your Factor 2 passkey:');
+                            if (code === null) return;
+                            const purpose = window.prompt('Purpose of this download:') || 'Download';
+                            const r = await requestControlledDownload(asset.serial_number, 'STANDARD', purpose, code.trim() || null);
+                            alert(`${r.action_id} submitted. It needs approval before you can download it with Factor 3.`);
                           } catch (err) {
-                            console.error('Download request failed', err);
-                            alert(err.response?.data?.detail || 'Download request failed.');
+                            alert(err.response?.data?.detail || err.message || 'Download request failed.');
                           }
                         }}
                         style={{ flex: 1, padding: '8px', background: '#7c3aed', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
@@ -1370,7 +1351,25 @@ export default function UserDashboard() {
                       }}
                       style={{ flex: '1 1 100%', padding: '8px', background: '#f59e0b', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', marginTop: '4px' }}
                     >
-                      Upload Revised Version (READ_WRITE)
+                      Upload Revised Version (after approved modification download)
+                    </button>
+                  )}
+                  {asset.is_digital && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          const code = window.prompt('Factor 2 (View/Submission) is required to request a modification. Enter the TOTP code, or leave empty to use your Factor 2 passkey:');
+                          if (code === null) return;
+                          const purpose = window.prompt('What will you change?') || 'Modification';
+                          const r = await requestControlledDownload(asset.serial_number, 'MODIFICATION', purpose, code.trim() || null);
+                          alert(`${r.action_id} submitted. After approval, download it (Factor 3), edit it externally, then upload the revision.`);
+                        } catch (err) {
+                          alert(err.response?.data?.detail || err.message || 'Modification request failed.');
+                        }
+                      }}
+                      style={{ flex: '1 1 100%', padding: '8px', background: '#0f766e', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', marginTop: '4px' }}
+                    >
+                      Request Modification
                     </button>
                   )}
 
