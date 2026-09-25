@@ -1,11 +1,38 @@
 {
-  "address": "0x0165878A594ca255338adfa4d48449f69242Eb8F",
+  "address": "0x113904450c2E72A1E1602F733D9140eAB9Db35aD",
+  "chainId": 13371,
+  "contractVersion": 3,
+  "admin": "0x76799054c237Ea4B5AF457DcDC9B7bEB74F894E3",
+  "registrar": "0x46312c1A1e1681E95b915234E811Cf43dD18830F",
+  "deployTxHash": "0x4fa7fad29d4fa7314e5dee0321dd360431009fd94c94a80cb222e81fed0dcfde",
+  "deployBlock": 13,
+  "runtimeBytecodeKeccak": "0x78faa5411e1877e2064f6ac1a7c33cc2641f314ad0b941a6a858fe3b1703b8ef",
+  "deployedAt": "2026-09-25T21:45:53.310Z",
   "abi": [
     {
       "type": "constructor",
       "stateMutability": "undefined",
       "payable": false,
-      "inputs": []
+      "inputs": [
+        {
+          "type": "address",
+          "name": "admin"
+        },
+        {
+          "type": "address",
+          "name": "registrar"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "AccessControlUnauthorized",
+      "inputs": [
+        {
+          "type": "address",
+          "name": "account"
+        }
+      ]
     },
     {
       "type": "error",
@@ -29,13 +56,32 @@
     },
     {
       "type": "error",
-      "name": "NotAuthorized",
+      "name": "InvalidTokenId",
       "inputs": []
     },
     {
       "type": "error",
-      "name": "NotManager",
-      "inputs": []
+      "name": "NotDigitalAsset",
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "SeparationOfDuties",
+      "inputs": [
+        {
+          "type": "bytes32",
+          "name": "role"
+        },
+        {
+          "type": "address",
+          "name": "account"
+        }
+      ]
     },
     {
       "type": "error",
@@ -46,6 +92,11 @@
           "name": "tokenId"
         }
       ]
+    },
+    {
+      "type": "error",
+      "name": "TransfersRestricted",
+      "inputs": []
     },
     {
       "type": "error",
@@ -320,6 +371,18 @@
     {
       "type": "event",
       "anonymous": false,
+      "name": "Paused",
+      "inputs": [
+        {
+          "type": "address",
+          "name": "account",
+          "indexed": false
+        }
+      ]
+    },
+    {
+      "type": "event",
+      "anonymous": false,
       "name": "RoleAdminChanged",
       "inputs": [
         {
@@ -406,6 +469,32 @@
       ]
     },
     {
+      "type": "event",
+      "anonymous": false,
+      "name": "Unpaused",
+      "inputs": [
+        {
+          "type": "address",
+          "name": "account",
+          "indexed": false
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "ANCHOR_ROLE",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
       "type": "function",
       "name": "AUDITOR_ROLE",
       "constant": true,
@@ -449,17 +538,46 @@
     },
     {
       "type": "function",
+      "name": "MINTER_ROLE",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "REGISTRAR_ROLE",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
       "name": "approve",
-      "constant": false,
+      "constant": true,
+      "stateMutability": "pure",
       "payable": false,
       "inputs": [
         {
           "type": "address",
-          "name": "to"
+          "name": ""
         },
         {
           "type": "uint256",
-          "name": "tokenId"
+          "name": ""
         }
       ],
       "outputs": []
@@ -829,6 +947,28 @@
     },
     {
       "type": "function",
+      "name": "pause",
+      "constant": false,
+      "payable": false,
+      "inputs": [],
+      "outputs": []
+    },
+    {
+      "type": "function",
+      "name": "paused",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bool",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
       "name": "recordAccessAttempt",
       "constant": false,
       "payable": false,
@@ -965,16 +1105,17 @@
     {
       "type": "function",
       "name": "setApprovalForAll",
-      "constant": false,
+      "constant": true,
+      "stateMutability": "pure",
       "payable": false,
       "inputs": [
         {
           "type": "address",
-          "name": "operator"
+          "name": ""
         },
         {
           "type": "bool",
-          "name": "approved"
+          "name": ""
         }
       ],
       "outputs": []
@@ -1075,6 +1216,14 @@
     },
     {
       "type": "function",
+      "name": "unpause",
+      "constant": false,
+      "payable": false,
+      "inputs": [],
+      "outputs": []
+    },
+    {
+      "type": "function",
       "name": "updateDigitalAsset",
       "constant": false,
       "payable": false,
@@ -1082,10 +1231,6 @@
         {
           "type": "uint256",
           "name": "tokenId"
-        },
-        {
-          "type": "string",
-          "name": "requesterDID"
         },
         {
           "type": "string",

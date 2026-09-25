@@ -2,25 +2,35 @@
   "name": "lexcorp-local",
   "private": true,
   "version": "1.0.0",
-  "description": "LexCorp local development orchestration",
+  "description": "LexCorp2 local orchestration",
   "scripts": {
-    "start": "npm run besu:up && npm run chain:wait && npm run contract:ensure && npm run sync:roles && npm run app:stop && concurrently --names backend,frontend --prefix-colors blue,green \"python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --app-dir backend\" \"wait-on http-get://127.0.0.1:8000/health && npm --prefix frontend run dev\"",
-    "dev": "npm start",
+    "secrets:init": "python scripts/init_secrets.py",
+    "db:up": "docker compose up -d postgres",
+    "besu:generate": "python scripts/generate_besu_network.py",
     "besu:up": "docker compose -f network/besu/docker-compose-active.yml up -d",
     "besu:down": "docker compose -f network/besu/docker-compose-active.yml down",
-    "stop": "npm run besu:down",
     "chain:wait": "wait-on tcp:127.0.0.1:8545",
-    "contract:ensure": "powershell -NoProfile -Command \"if ((Invoke-RestMethod -Uri http://127.0.0.1:8545 -Method Post -ContentType application/json -Body (@{jsonrpc='2.0';method='eth_getCode';params=@((Get-Content contracts/deployments/localhost.json | ConvertFrom-Json).address,'latest');id=1} | ConvertTo-Json -Compress)).result -eq '0x') { npm --prefix contracts run deploy:local } else { Write-Host 'Reusing existing AssetNFT deployment' }\"",
+    "contract:deploy": "npm --prefix contracts run deploy",
+    "contract:verify": "npm --prefix contracts run verify:deployment",
+    "migrate": "cd backend && python -m alembic upgrade head",
     "app:stop": "npx kill-port 8000 5173",
-    "deploy": "npm --prefix contracts run deploy:local",
-    "sync:roles": "cd contracts && npx hardhat run scripts/grant_runtime_roles.js --network localhost",
-    "fund": "cd contracts && npx hardhat run scripts/fund_user.js --network localhost",
+    "start": "npm run db:up && npm run besu:up && npm run chain:wait && npm run contract:verify && npm run migrate && npm run app:stop && concurrently --names backend,frontend --prefix-colors blue,green \"python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --app-dir backend\" \"wait-on http-get://127.0.0.1:8000/health && npm --prefix frontend run dev\"",
+    "stop": "npm run app:stop && npm run besu:down",
     "build": "npm --prefix frontend run build",
+    "test:backend": "cd backend && python -m pytest -q",
+    "test:live": "cd backend && cross-env LEXCORP_LIVE_BESU=1 python -m pytest -q tests/test_besu_live.py",
     "test:contracts": "npm --prefix contracts test"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
     "kill-port": "^2.0.1",
-    "wait-on": "^8.0.3"
+    "wait-on": "^8.0.3",
+    "cross-env": "^7.0.3"
+  },
+  "dependencies": {
+    "puppeteer": "^25.12.0"
+  },
+  "allowScripts": {
+    "puppeteer@25.12.0": true
   }
 }

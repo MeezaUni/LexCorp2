@@ -17,7 +17,7 @@ class User(Base, TimestampMixin):
     wallet_address: Mapped[str] = mapped_column(String(42), unique=True, index=True)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     contact_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    organization: Mapped[str] = mapped_column(String(255), default="Bharat Electronics Limited (BEL)")
+    organization: Mapped[str] = mapped_column(String(255), default="LexCorp2")
     department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # MANAGER only: departments managed in addition to `department`.
     managed_departments: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
@@ -276,7 +276,8 @@ class AuditEvent(Base, TimestampMixin):
         Uuid, primary_key=True, default=uuid.uuid4
     )
     event_type: Mapped[str] = mapped_column(String, index=True)  # Mint, Transfer, Revoke, RoleGrant, AccessAttempted
-    tx_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    tx_hash: Mapped[str] = mapped_column(String, index=True)
+    log_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # chain events: unique with tx_hash
     block_number: Mapped[int] = mapped_column(index=True)
     actor_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     target_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -289,7 +290,7 @@ class AuditEvent(Base, TimestampMixin):
     risk_factors: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     
     # Workflow integration for Security Incidents
-    alert_status: Mapped[str] = mapped_column(String, default="OPEN") # OPEN, FORWARDED_TO_MANAGER, ESCALATED_TO_ADMIN, DISMISSED, RESOLVED
+    alert_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # legacy column; alert state lives in security_alerts
 
 
 class VerifiableCredential(Base, TimestampMixin):

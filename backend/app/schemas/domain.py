@@ -14,7 +14,7 @@ class UserBase(BaseSchema):
     wallet_address: str
     name: Optional[str] = None
     contact_number: Optional[str] = None
-    organization: Optional[str] = "Bharat Electronics Limited (BEL)"
+    organization: Optional[str] = "LexCorp2"
     department: Optional[str] = None
     did: Optional[str] = None
     role: str = "USER"
@@ -220,7 +220,7 @@ class AuditEventBase(BaseSchema):
     risk_score: Optional[float] = None
     risk_label: Optional[str] = None
     risk_factors: Optional[dict] = None
-    alert_status: Optional[str] = "OPEN"
+    alert_status: Optional[str] = None  # current SecurityAlert state, if this event raised one
 
 class AlertStatusUpdateRequest(BaseSchema):
     alert_status: str # FORWARDED_TO_MANAGER, ESCALATED_TO_ADMIN, DISMISSED, RESOLVED

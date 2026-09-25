@@ -28,9 +28,10 @@ DISMISSED, IDENTITY_REVOKED = "DISMISSED", "IDENTITY_REVOKED"
 OPEN_STATES = (AUDITOR_REVIEW, MANAGER_REVIEW, ADMIN_REVIEW)
 HIGH_LEVELS = ("HIGH", "CRITICAL")
 
-# Keep the legacy audit_events.alert_status in step (used by audit filters).
-_LEGACY_STATUS = {AUDITOR_REVIEW: "OPEN", MANAGER_REVIEW: "FORWARDED_TO_MANAGER", ADMIN_REVIEW: "ESCALATED_TO_ADMIN",
-                  DISMISSED: "DISMISSED", IDENTITY_REVOKED: "RESOLVED"}
+# Legacy alert-status names (still accepted by the audit filter) -> alert state. The
+# audit row itself is append-only and is never updated; status lives on security_alerts.
+LEGACY_STATUS_TO_STATE = {"OPEN": AUDITOR_REVIEW, "FORWARDED_TO_MANAGER": MANAGER_REVIEW,
+                          "ESCALATED_TO_ADMIN": ADMIN_REVIEW, "DISMISSED": DISMISSED, "RESOLVED": IDENTITY_REVOKED}
 
 
 async def raise_alert(db: AsyncSession, event: AuditEvent, source: str = "RULE") -> Optional[SecurityAlert]:
@@ -62,7 +63,6 @@ async def raise_alert(db: AsyncSession, event: AuditEvent, source: str = "RULE")
     await db.flush()
     db.add(SecurityAlertAction(alert_id=alert.id, action="RAISED", from_state=None, to_state=AUDITOR_REVIEW,
                                note=f"Raised by {source} from {event.event_type}"))
-    event.alert_status = "OPEN"
     return alert
 
 
@@ -94,10 +94,6 @@ async def _transition(db: AsyncSession, alert: SecurityAlert, actor: User, actio
     alert.state = to_state
     db.add(SecurityAlertAction(alert_id=alert.id, actor_user_id=actor.id, actor_did=actor.did, actor_role=actor.role,
                                action=action, from_state=frm, to_state=to_state, note=(note or "")[:1000]))
-    if alert.source_event_id:
-        src = (await db.execute(select(AuditEvent).where(AuditEvent.id == alert.source_event_id))).scalar_one_or_none()
-        if src:
-            src.alert_status = _LEGACY_STATUS[to_state]
     await record_audit(db, f"ALERT_{action}", actor_did=actor.did, target_did=alert.subject_did,
                        asset_serial=alert.asset_serial, client_ip=client_ip,
                        details={"alert_id": alert.alert_id, "from": frm, "to": to_state, "note": (note or "")[:500]})

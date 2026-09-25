@@ -150,11 +150,18 @@ async def list_events(
         if r not in ("SUCCESS", "DENIED"):
             raise HTTPException(status_code=400, detail="result must be SUCCESS or DENIED")
         query = query.filter(denied if r == "DENIED" else ~denied)
+    from app.services.alerts import LEGACY_STATUS_TO_STATE
+    wanted_state = escalation_state.strip().upper() if escalation_state else None
     if alert_status:
-        query = query.filter(func.upper(AuditEvent.alert_status) == alert_status.strip().upper())
-    if escalation_state:
+        legacy = LEGACY_STATUS_TO_STATE.get(alert_status.strip().upper())
+        if legacy is None:
+            raise HTTPException(status_code=400, detail=f"alert_status must be one of {sorted(LEGACY_STATUS_TO_STATE)}")
+        if wanted_state and wanted_state != legacy:
+            return []
+        wanted_state = legacy
+    if wanted_state:
         query = query.join(SecurityAlert, SecurityAlert.source_event_id == AuditEvent.id).filter(
-            SecurityAlert.state == escalation_state.strip().upper())
+            SecurityAlert.state == wanted_state)
 
     if from_date:
         query = query.filter(AuditEvent.created_at >= _parse_dt(from_date, "from_date"))
@@ -173,7 +180,19 @@ async def list_events(
                 query = query.filter(tod <= t2)
 
     query = query.offset(offset).limit(limit)
-    return (await db.execute(query)).scalars().all()
+    rows = (await db.execute(query)).scalars().all()
+    # Alert status is read from security_alerts (audit rows are append-only).
+    states = {}
+    if rows:
+        for ev_id, st in (await db.execute(select(SecurityAlert.source_event_id, SecurityAlert.state)
+                                           .where(SecurityAlert.source_event_id.in_([r.id for r in rows])))).all():
+            states[ev_id] = st
+    out = []
+    for r in rows:
+        item = AuditEventRead.model_validate(r)
+        item.alert_status = states.get(r.id)
+        out.append(item)
+    return out
 
 
 @router.patch("/alerts/{event_id}/status")

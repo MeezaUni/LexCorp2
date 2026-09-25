@@ -7,8 +7,8 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "lint": "solhint 'contracts/**/*.sol'",
-    "node": "hardhat node",
-    "deploy:local": "hardhat run scripts/deploy.js --network localhost"
+    "deploy": "hardhat run scripts/deploy.js --network besu",
+    "verify:deployment": "hardhat run scripts/verify_deployment.js --network besu"
   },
   "keywords": [],
   "devDependencies": {

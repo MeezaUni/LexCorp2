@@ -9,14 +9,27 @@ os.environ.setdefault("JWT_SECRET", _secrets.token_urlsafe(48))
 os.environ.setdefault("VC_SIGNING_SECRET", _secrets.token_urlsafe(48))
 os.environ.setdefault("DATA_ENCRYPTION_KEYS", _b64.urlsafe_b64encode(_secrets.token_bytes(32)).decode())
 
-# Tests must never touch the live lexcorp_sih database. Point the app at an
-# isolated *_test database before app modules create their engines.
-os.environ.setdefault(
-    "DATABASE_URL", "postgresql+asyncpg://lexcorp:lexcorp_dev@localhost:5432/lexcorp_sih_test"
-)
-os.environ.setdefault(
-    "DATABASE_URL_SYNC", "postgresql://lexcorp:lexcorp_dev@localhost:5432/lexcorp_sih_test"
-)
+# Tests must never touch the live lexcorp_sih database. The isolated *_test database
+# uses the same (git-ignored) credentials as backend/.env unless TEST_DATABASE_URL is set.
+def _test_db_url() -> str:
+    if os.environ.get("TEST_DATABASE_URL"):
+        return os.environ["TEST_DATABASE_URL"]
+    env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    base = None
+    if os.path.exists(env_file):
+        for line in open(env_file, encoding="utf-8"):
+            if line.startswith("DATABASE_URL="):
+                base = line.split("=", 1)[1].strip()
+    if not base:
+        raise RuntimeError("Set TEST_DATABASE_URL or create backend/.env (python scripts/init_secrets.py).")
+    return base.rsplit("/", 1)[0] + "/lexcorp_sih_test"
+
+
+_url = _test_db_url()
+os.environ["DATABASE_URL"] = _url
+os.environ["DATABASE_URL_SYNC"] = _url.replace("postgresql+asyncpg://", "postgresql://")
+# Tests never hold the real chain-operator key.
+os.environ["CHAIN_OPERATOR_PRIVATE_KEY"] = ""
 # Test file storage is isolated from the live off-chain vault.
 os.environ.setdefault(
     "OFFCHAIN_STORAGE_DIR", os.path.join(os.path.dirname(__file__), ".test_storage")
@@ -127,6 +140,9 @@ class FakeRoleSync:
 
     def __init__(self):
         pass
+
+    def onchain_role_holders(self):
+        return {w for w, r in FakeRoleSync.roles.items() if r}
 
     def sync(self, wallet, role, is_active):
         from app.services.chain import desired_roles

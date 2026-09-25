@@ -25,6 +25,10 @@ from app.services.ai import ai_engine
 logger = logging.getLogger(__name__)
 
 
+class _SkipAI(Exception):
+    pass
+
+
 class EventIndexer:
     """Background service that indexes blockchain events into the audit trail."""
 
@@ -130,10 +134,12 @@ class EventIndexer:
             await session.close()
         return 0
 
-    async def _is_indexed(self, session: AsyncSession, tx_hash: str) -> bool:
-        """Check if a tx_hash is already in the audit trail."""
+    async def _is_indexed(self, session: AsyncSession, tx_hash: str, log_index: Optional[int] = None) -> bool:
+        """Is this exact chain LOG (tx hash + log index) already in the audit trail?
+        A transaction can emit several events; each is recorded once."""
         result = await session.execute(
-            select(AuditEvent.id).filter(AuditEvent.tx_hash == tx_hash).limit(1)
+            select(AuditEvent.id).filter(AuditEvent.tx_hash == tx_hash,
+                                         AuditEvent.log_index.is_(None) if log_index is None else AuditEvent.log_index == log_index).limit(1)
         )
         return result.scalar_one_or_none() is not None
 
@@ -148,7 +154,8 @@ class EventIndexer:
         tx_hash = log["transactionHash"].hex()
 
         args = log.get("args", {})
-        already_indexed = await self._is_indexed(session, tx_hash)
+        log_index = log.get("logIndex")
+        already_indexed = await self._is_indexed(session, tx_hash, log_index)
 
         if already_indexed:
             logger.debug(f"Skipping already-indexed audit tx: {tx_hash}")
@@ -284,6 +291,10 @@ class EventIndexer:
         )
 
         try:
+            if event_name in ("RoleGranted", "RoleRevoked"):
+                # Role changes are judged by the deterministic expected-role rule above
+                # (the behavioural model was not trained on them).
+                raise _SkipAI()
             # AI/ML Behavioral Analysis using the production model
             analysis = ai_engine.analyze_event(
                 event_type=event_name,
@@ -300,6 +311,8 @@ class EventIndexer:
                 risk_factors["anomaly_score"] = analysis.get("anomaly_score")
                 risk_factors["actor_role"] = actor_role
                 risk_factors["is_granted"] = is_granted
+        except _SkipAI:
+            risk_score, risk_label, risk_factors = 0.0, "LOW", {"rule": "expected_role_check"}
         except Exception as e:
             logger.error(f"AI Risk Engine failed: {e}")
             risk_score, risk_label, risk_factors = None, None, None
@@ -315,6 +328,7 @@ class EventIndexer:
         audit_event = AuditEvent(
             event_type=event_name,
             tx_hash=tx_hash,
+            log_index=log_index,
             block_number=block_number,
             actor_did=actor_did,
             target_did=target_did,

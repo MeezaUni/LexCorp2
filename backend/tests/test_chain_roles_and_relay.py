@@ -180,3 +180,25 @@ async def test_relay_rejects_transactions_to_other_contracts(client, db_session)
         r = await client.post("/api/chain/rpc", headers=hh,
                               json={"jsonrpc": "2.0", "id": 1, "method": "eth_sendRawTransaction", "params": [raw]})
         assert r.status_code == 403, to
+
+
+@pytest.mark.asyncio
+async def test_reconciler_revokes_roles_of_unregistered_wallets(db_session, fake_chain_roles):
+    """A wallet holding an operational role on-chain but unknown to LexCorp2 (e.g. an
+    identity removed by a database rebuild) loses that role; registered ones converge."""
+    from app.services.chain import reconcile_all
+    orphan = "0x" + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    fake_chain_roles[orphan] = {"MINTER_ROLE", "MANAGER_ROLE"}
+    fake_chain_roles[USER] = {"MINTER_ROLE"}  # registered USER wrongly holding a role
+    result = await reconcile_all(db_session)
+    assert result["unregistered_revoked"] == 1
+    assert fake_chain_roles[orphan] == set()
+    assert fake_chain_roles[USER] == set()
+    assert fake_chain_roles[ADMIN] == {"MINTER_ROLE", "ANCHOR_ROLE", "MANAGER_ROLE"}
+    ev = (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "CHAIN_ROLES_REVOKED_UNREGISTERED")
+                                   .order_by(AuditEvent.created_at.desc()))).scalars().first()
+    assert ev.target_did.endswith(orphan) and ev.risk_label == "HIGH"
+    from app.models.domain import SecurityAlert
+    for a in (await db_session.execute(select(SecurityAlert).where(SecurityAlert.state == "AUDITOR_REVIEW"))).scalars().all():
+        a.state = "DISMISSED"
+    await db_session.commit()

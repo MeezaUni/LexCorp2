@@ -233,3 +233,22 @@ async def test_event_indexer_access_attempted(db_session, seed_test_users):
     assert audit.event_type == "AccessAttempted"
     assert audit.risk_label == "HIGH"
     assert audit.risk_score == 0.8
+
+
+@pytest.mark.asyncio
+async def test_every_event_in_one_transaction_is_recorded(db_session, seed_test_users):
+    """A transaction emitting several events (e.g. the constructor's two RoleGranted)
+    must produce one audit row per LOG; re-delivery of any of them is still skipped."""
+    ix = _indexer()
+    for name in ("MINTER_ROLE", "ANCHOR_ROLE", "MANAGER_ROLE", "AUDITOR_ROLE", "REGISTRAR_ROLE", "DEFAULT_ADMIN_ROLE"):
+        getattr(ix.contract.functions, name).return_value.call.return_value = name.encode().ljust(32, b"\0")
+    raw = uuid.uuid4().hex + uuid.uuid4().hex
+    logs = [{"transactionHash": bytes.fromhex(raw), "blockNumber": 3, "logIndex": i,
+             "args": {"role": b"MANAGER_ROLE".ljust(32, b"\0"), "account": "0x049dd1327d3bf40ab2dd8d70086304770e841fca",
+                      "sender": "0x" + "33" * 20}} for i in (0, 1)]
+    assert await _write(ix, db_session, "RoleGranted", logs[0]) is True
+    assert await _write(ix, db_session, "RoleGranted", logs[1]) is True
+    assert await _write(ix, db_session, "RoleGranted", logs[1]) is False
+    rows = (await db_session.execute(select(AuditEvent).where(AuditEvent.tx_hash == raw))).scalars().all()
+    assert sorted(r.log_index for r in rows) == [0, 1]
+    assert all(r.risk_label == "LOW" for r in rows)  # expected grant: no AI false positive

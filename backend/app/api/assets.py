@@ -665,7 +665,7 @@ async def get_asset_qr_by_token(token_id: int, host: Optional[str] = "localhost:
 
 class AssignCustodianRequest(BaseModel):
     custodian_did: str
-    custodian_department: Optional[str] = "BEL Field Engineering"
+    custodian_department: Optional[str] = None
     lifecycle_status: Optional[str] = "ASSIGNED"
 
 

@@ -106,6 +106,23 @@ class RoleSync:
         self.account = Account.from_key(settings.CHAIN_OPERATOR_PRIVATE_KEY)
         self.role_ids = {r: getattr(self.contract.functions, r)().call() for r in OPERATIONAL_ROLES}
 
+    def onchain_role_holders(self) -> set:
+        """Every account that was ever granted an operational role (AccessControl is not
+        enumerable, so membership is rebuilt from RoleGranted logs since deployment)."""
+        d = load_deployment()
+        start = int(d.get("deployBlock") or 0)
+        head = self.w3.eth.block_number
+        op_ids = {rid for rid in self.role_ids.values()}
+        topic = "0x" + Web3.keccak(text="RoleGranted(bytes32,address,address)").hex().removeprefix("0x")
+        holders = set()
+        for a in range(start, head + 1, 1000):
+            logs = self.w3.eth.get_logs({"address": self.contract.address, "fromBlock": a,
+                                         "toBlock": min(a + 999, head), "topics": [topic]})
+            for lg in logs:
+                if bytes(lg["topics"][1]) in op_ids:
+                    holders.add(Web3.to_checksum_address("0x" + bytes(lg["topics"][2]).hex()[-40:]))
+        return holders
+
     def current_roles(self, wallet: str) -> set:
         a = Web3.to_checksum_address(wallet)
         return {r for r, rid in self.role_ids.items() if self.contract.functions.hasRole(rid, a).call()}
@@ -167,15 +184,34 @@ async def sync_user_chain_roles(db, user, *, actor_did: Optional[str] = None, cl
 
 
 async def reconcile_all(db) -> dict:
-    """Converge every identity's on-chain roles (periodic safety net)."""
+    """Converge on-chain roles with the identity registry (periodic safety net):
+    every registered identity gets exactly its expected roles, and any on-chain role
+    holder that is NOT a registered identity loses its operational roles."""
+    import asyncio
     from sqlalchemy import select
+    from app.api.dependencies import record_audit
     from app.models.domain import User
 
     users = (await db.execute(select(User))).scalars().all()
-    ok = failed = 0
+    ok = failed = orphans = 0
+    known = set()
     for u in users:
         if not u.wallet_address:
             continue
+        known.add(u.wallet_address.lower())
         r = await sync_user_chain_roles(db, u, actor_did="system:role-reconciler")
         ok, failed = (ok + 1, failed) if r["ok"] else (ok, failed + 1)
-    return {"synced": ok, "failed": failed}
+    try:
+        rs = await asyncio.to_thread(RoleSync)
+        holders = await asyncio.to_thread(rs.onchain_role_holders)
+        for wallet in sorted(h for h in holders if h.lower() not in known):
+            result = await asyncio.to_thread(rs.sync, wallet, "USER", False)
+            if result["revoked"]:
+                orphans += 1
+                await record_audit(db, "CHAIN_ROLES_REVOKED_UNREGISTERED", actor_did="system:role-reconciler",
+                                   target_did=f"did:ethr:{settings.CHAIN_ID}:{wallet.lower()}", details=result, risk_label="HIGH")
+                await db.commit()
+    except Exception as e:
+        logger.error("Orphan on-chain role sweep failed: %s", e)
+        failed += 1
+    return {"synced": ok, "failed": failed, "unregistered_revoked": orphans}

@@ -1,132 +1,92 @@
 import { ethers } from 'ethers';
-import deployment from '../../../contracts/deployments/localhost.json';
+import deployment from '../../../contracts/deployments/besu.json';
 
-const CONTRACT_ADDRESS = deployment.address;
+/**
+ * Chain access for the browser.
+ *
+ * The Besu JSON-RPC endpoint is NOT reachable from browsers (bound to 127.0.0.1, no
+ * CORS origins). All chain traffic goes through the authenticated backend relay
+ * /api/chain/rpc, which only allows read/submit methods and only forwards
+ * transactions signed by the logged-in user's own wallet to the LexCorp2 contract.
+ * Authorization is enforced by the AssetNFT v3 contract roles, not by this code.
+ */
+
+export const CHAIN_ID = 13371;
+export const CONTRACT_ADDRESS = deployment.address;
 const ABI = deployment.abi;
-
-const getRpcUrl = () => {
-  if (import.meta.env.VITE_RPC_URL && import.meta.env.VITE_RPC_URL !== 'http://localhost:8545') {
-    return import.meta.env.VITE_RPC_URL;
-  }
-  const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-  return `http://${host}:8545`;
-};
-
-export const BESU_NETWORK_PARAMS = {
-  chainId: '0x343B', // 13371 in hex
-  chainName: 'LexCorp Besu Private Consortium',
-  nativeCurrency: {
-    name: 'LexCorp Enterprise Credit',
-    symbol: 'LEX',
-    decimals: 18,
-  },
-  get rpcUrls() {
-    return [getRpcUrl()];
-  },
-  blockExplorerUrls: null,
-};
+const NETWORK = new ethers.Network('lexcorp2-besu', CHAIN_ID);
 
 export function getRpcProvider() {
-  return new ethers.JsonRpcProvider(getRpcUrl());
-}
-
-export async function connectWallet() {
-  // We no longer rely on MetaMask!
-  // This now just checks the network is alive and returns the provider.
-  const provider = getRpcProvider();
-
-  // Test connection
-  try {
-    await provider.getNetwork();
-  } catch (err) {
-    throw new Error('Failed to connect to LexCorp Besu network at ' + getRpcUrl());
-  }
-
-  return { provider };
+  const req = new ethers.FetchRequest(`${window.location.origin}/api/chain/rpc`);
+  const token = localStorage.getItem('lexcorp_token');
+  if (token) req.setHeader('Authorization', `Bearer ${token}`);
+  return new ethers.JsonRpcProvider(req, NETWORK, { staticNetwork: NETWORK, batchMaxCount: 1 });
 }
 
 export async function getContract(signerOrProvider) {
-  return new ethers.Contract(CONTRACT_ADDRESS, ABI, signerOrProvider);
+  return new ethers.Contract(CONTRACT_ADDRESS, ABI, signerOrProvider || getRpcProvider());
 }
 
-export async function checkManagerRole(signer, address) {
-  try {
-    const contract = await getContract(signer);
-    const managerRole = ethers.keccak256(ethers.toUtf8Bytes("MANAGER_ROLE"));
-    const adminRole = ethers.ZeroHash;
-
-    const isMgr = await contract.hasRole(managerRole, address);
-    const isAdmin = await contract.hasRole(adminRole, address);
-
-    return isMgr || isAdmin;
-  } catch (err) {
-    console.error('Role check error details:', err);
-    return false;
-  }
-}
+// Zero-fee permissioned network: explicit legacy transactions with gasPrice 0.
+const TX = { gasLimit: 2_000_000, gasPrice: 0, type: 0 };
 
 async function waitForReceipt(txHash, timeoutMs = 60000) {
-  const freshProvider = getRpcProvider();
-  const startTime = Date.now();
-  while (Date.now() - startTime < timeoutMs) {
-    try {
-      const rcpt = await freshProvider.getTransactionReceipt(txHash);
-      if (rcpt && rcpt.status !== undefined) {
-        return rcpt;
-      }
-    } catch (e) {
-      console.warn('Polling for receipt error (retrying):', e);
+  const provider = getRpcProvider();
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const rcpt = await provider.getTransactionReceipt(txHash).catch(() => null);
+    if (rcpt && rcpt.status !== undefined && rcpt.status !== null) {
+      if (rcpt.status !== 1) throw new Error('The transaction was rejected by the LexCorp2 contract (reverted).');
+      return rcpt;
     }
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
   }
   throw new Error('Transaction confirmation timed out');
 }
 
-export async function mintAsset(signer, toAddress, tokenId, serialNumber, ownerDID) {
-  const contract = await getContract(signer);
-  try {
-    const tx = await contract.mint(toAddress, tokenId, serialNumber, ownerDID, { gasLimit: 2000000 });
-    const receipt = await waitForReceipt(tx.hash);
-    return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
-  } catch (error) {
-    console.error('mintAsset failed:', error);
-    throw error;
+/** Submit backend-prepared calldata (mint / anchor / grant) with the user's wallet. */
+export async function sendPreparedCalldata(wallet, calldata, contractAddress) {
+  const to = calldata.to || contractAddress;
+  if (!to || to.toLowerCase() !== CONTRACT_ADDRESS.toLowerCase()) {
+    throw new Error('Refusing to sign: calldata is not addressed to the LexCorp2 contract.');
   }
+  const signer = wallet.connect(getRpcProvider());
+  const tx = await signer.sendTransaction({ to, data: calldata.data, ...TX });
+  const rcpt = await waitForReceipt(tx.hash);
+  return { txHash: rcpt.hash, blockNumber: rcpt.blockNumber };
 }
 
-export async function mintDigitalAsset(signer, toAddress, tokenId, serialNumber, ownerDID, fileHash, offchainURI) {
+async function call(signer, method, ...args) {
   const contract = await getContract(signer);
+  const tx = await contract[method](...args, TX);
+  const rcpt = await waitForReceipt(tx.hash);
+  return { txHash: rcpt.hash, blockNumber: rcpt.blockNumber };
+}
+
+export const mintAsset = (signer, to, tokenId, serial, ownerDID) => call(signer, 'mint', to, tokenId, serial, ownerDID);
+export const mintDigitalAsset = (signer, to, tokenId, serial, ownerDID, fileHash, uri) =>
+  call(signer, 'mintDigitalAsset', to, tokenId, serial, ownerDID, fileHash, uri);
+export const updateDigitalAsset = (signer, tokenId, newFileHash, newUri) => call(signer, 'updateDigitalAsset', tokenId, newFileHash, newUri);
+export const grantAssetAccess = (signer, tokenId, targetDID, level = 1) => call(signer, 'grantAssetAccess', tokenId, targetDID, level);
+export const revokeAssetAccess = (signer, tokenId, targetDID) => call(signer, 'revokeAssetAccess', tokenId, targetDID);
+export const recordAccessAttempt = (signer, tokenId, actorDID, granted, reason) =>
+  call(signer, 'recordAccessAttempt', tokenId, actorDID, granted, reason);
+export const transferAsset = (signer, to, tokenId, newOwnerDID) => call(signer, 'transferAsset', to, tokenId, newOwnerDID);
+export const revokeAsset = (signer, tokenId) => call(signer, 'revoke', tokenId);
+
+/** Informational only (the contract enforces roles itself). */
+export async function hasChainRole(address, roleName) {
+  const contract = await getContract();
+  const role = roleName === 'DEFAULT_ADMIN_ROLE' ? ethers.ZeroHash : ethers.keccak256(ethers.toUtf8Bytes(roleName));
+  return contract.hasRole(role, address);
+}
+
+export async function checkManagerRole(_signer, address) {
   try {
-    console.log('Attempting to call mintDigitalAsset...');
-    const tx = await contract.mintDigitalAsset(toAddress, tokenId, serialNumber, ownerDID, fileHash, offchainURI, { gasLimit: 2000000 });
-    console.log('Transaction sent:', tx.hash);
-    const receipt = await waitForReceipt(tx.hash);
-    return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
-  } catch (error) {
-    console.error('mintDigitalAsset failed:', error);
-    throw error;
+    return await hasChainRole(address, 'MANAGER_ROLE');
+  } catch {
+    return false;
   }
-}
-
-export async function updateDigitalAsset(signer, tokenId, requesterDID, newFileHash, newOffchainURI) {
-  const contract = await getContract(signer);
-  const tx = await contract.updateDigitalAsset(tokenId, requesterDID, newFileHash, newOffchainURI, { gasLimit: 2000000 });
-  const receipt = await waitForReceipt(tx.hash);
-  return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
-}
-
-export async function grantAssetAccess(signer, tokenId, targetDID, level = 1) {
-  const contract = await getContract(signer);
-  const tx = await contract.grantAssetAccess(tokenId, targetDID, level, { gasLimit: 2000000 });
-  const receipt = await waitForReceipt(tx.hash);
-  return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
-}
-
-export async function revokeAssetAccess(signer, tokenId, targetDID) {
-  const contract = await getContract(signer);
-  const tx = await contract.revokeAssetAccess(tokenId, targetDID, { gasLimit: 2000000 });
-  const receipt = await waitForReceipt(tx.hash);
-  return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
 }
 
 export async function checkAssetAccess(signerOrProvider, tokenId, requesterDID, callerAddress) {
@@ -135,75 +95,13 @@ export async function checkAssetAccess(signerOrProvider, tokenId, requesterDID, 
   return { authorized, level: Number(level) };
 }
 
-export async function recordAccessAttempt(signer, tokenId, actorDID, granted, reason) {
-  const contract = await getContract(signer);
-  const tx = await contract.recordAccessAttempt(tokenId, actorDID, granted, reason, { gasLimit: 2000000 });
-  const receipt = await waitForReceipt(tx.hash);
-  return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
-}
-
-export async function transferAsset(signer, toAddress, tokenId, newOwnerDID) {
-  const contract = await getContract(signer);
-  const tx = await contract.transferAsset(toAddress, tokenId, newOwnerDID, { gasLimit: 2000000 });
-  const receipt = await waitForReceipt(tx.hash);
-  return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
-}
-
-export async function revokeAsset(signer, tokenId) {
-  const contract = await getContract(signer);
-  const tx = await contract.revoke(tokenId, { gasLimit: 2000000 });
-  const receipt = await waitForReceipt(tx.hash);
-  return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
-}
-
 export async function getAsset(tokenId) {
-  const provider = getRpcProvider();
-  const contract = await getContract(provider);
-
+  const contract = await getContract();
   try {
     const res = await contract.getDigitalAsset(tokenId);
     const ownerAddress = await contract.ownerOf(tokenId);
-
-    return {
-      tokenId: Number(tokenId),
-      serialNumber: res[0],
-      ownerDID: res[1],
-      fileHash: res[2],
-      offchainURI: res[3],
-      isDigital: res[4],
-      ownerAddress,
-    };
-  } catch (error) {
-    try {
-      const [serialNumber, ownerDID] = await contract.getAsset(tokenId);
-      const ownerAddress = await contract.ownerOf(tokenId);
-      return {
-        tokenId: Number(tokenId),
-        serialNumber,
-        ownerDID,
-        isDigital: false,
-        ownerAddress,
-      };
-    } catch {
-      return null;
-    }
-  }
-}
-
-export async function addTokenToMetaMask(address, tokenId) {
-  if (!window.ethereum) return;
-  try {
-    await window.ethereum.request({
-      method: 'wallet_watchAsset',
-      params: {
-        type: 'ERC721',
-        options: {
-          address,
-          tokenId,
-        },
-      },
-    });
-  } catch (error) {
-    console.error('Failed to add token to MetaMask:', error);
+    return { tokenId: Number(tokenId), serialNumber: res[0], ownerDID: res[1], fileHash: res[2], offchainURI: res[3], isDigital: res[4], ownerAddress };
+  } catch {
+    return null;
   }
 }

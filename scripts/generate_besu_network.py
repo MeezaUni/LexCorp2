@@ -114,8 +114,11 @@ def main() -> int:
     work.mkdir()
     (work / "config.json").write_text(json.dumps(CONFIG, indent=2), encoding="utf-8")
     subprocess.run(
-        ["docker", "run", "--rm", "-v", f"{work.as_posix()}:/work", IMAGE, "operator", "generate-blockchain-config",
-         "--config-file=/work/config.json", "--to=/work/out", "--private-key-file-name=key"],
+        # Generate inside the container, then copy out (Windows bind mounts confuse Besu's
+        # "output directory already exists" check).
+        ["docker", "run", "--rm", "-v", f"{work.as_posix()}:/work", "--entrypoint", "sh", IMAGE, "-c",
+         "besu operator generate-blockchain-config --config-file=/work/config.json --to=/tmp/out "
+         "--private-key-file-name=key && cp -r /tmp/out /work/out"],
         check=True, stdout=subprocess.DEVNULL,
     )
     out = work / "out"

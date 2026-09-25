@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getAllAssets, deleteAsset, getAssetCertificateUrl } from '../services/api';
-import deployment from '../../../contracts/deployments/localhost.json';
+import deployment from '../../../contracts/deployments/besu.json';
 import { useAuth } from '../context/AuthContext';
 import { revokeAsset } from '../services/web3';
 

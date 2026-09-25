@@ -29,9 +29,8 @@ import {
   grantAssetAccess,
   revokeAssetAccess,
   revokeAsset,
-  addTokenToMetaMask
 } from '../services/web3';
-import deployment from '../../../contracts/deployments/localhost.json';
+import deployment from '../../../contracts/deployments/besu.json';
 
 export default function UserDashboard() {
   const { wallet, signer, user } = useAuth();
