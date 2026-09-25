@@ -218,6 +218,7 @@ export default function UserDashboard() {
           to: pre.calldata.to,
           data: pre.calldata.data,
           gasLimit: pre.calldata.gas,
+          gasPrice: pre.calldata.gasPrice,
         });
         await tx.wait();
         setActionSuccessMsg(`Document mint transaction ${tx.hash.slice(0, 10)}... executed on-chain successfully!`);
@@ -301,6 +302,7 @@ export default function UserDashboard() {
           to: pre.calldata.to,
           data: pre.calldata.data,
           gasLimit: pre.calldata.gas,
+          gasPrice: pre.calldata.gasPrice,
         });
         await tx.wait();
         setActionSuccessMsg(`Physical Hardware mint transaction ${tx.hash.slice(0, 10)}... executed on-chain successfully!`);
