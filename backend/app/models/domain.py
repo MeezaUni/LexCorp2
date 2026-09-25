@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer, BigInteger, UniqueConstraint, DateTime, Date
+from sqlalchemy import Index, text, String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer, BigInteger, UniqueConstraint, DateTime, Date
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -137,6 +137,14 @@ class StepUpGrant(Base, TimestampMixin):
 
 class Asset(Base, TimestampMixin):
     __tablename__ = "assets"
+    __table_args__ = (
+        # Global normalised uniqueness (migration 0008): serial, MAC and unique address
+        Index("ux_assets_serial_norm", text("lower(btrim(serial_number))"), unique=True),
+        Index("ux_assets_mac_norm", text("lower(regexp_replace(mac_address, '[^0-9a-fA-F]', '', 'g'))"),
+              unique=True, postgresql_where=text("mac_address IS NOT NULL")),
+        Index("ux_assets_unique_address_norm", text("lower(btrim(device_unique_address))"),
+              unique=True, postgresql_where=text("device_unique_address IS NOT NULL")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, default=uuid.uuid4

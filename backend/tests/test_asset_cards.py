@@ -59,12 +59,14 @@ async def test_asset_certificate_svg_card_success(client, db_session):
     assert response.headers["content-type"].startswith("image/svg+xml")
     svg_text = response.text
     assert "<svg" in svg_text
-    assert "BHARAT ELECTRONICS LIMITED" in svg_text
-    assert "DEFENSE CRYPTOGRAPHIC ASSET CERTIFICATE" in svg_text
-    assert serial in svg_text
-    assert f"#{token_id}" in svg_text
-    assert "Tactical Radar Processing Unit" in svg_text
+    # Spec 35: ONLY Serial Number, NFT / Token ID, Creation Date, Department and a QR code
+    assert serial in svg_text and f"#{token_id}" in svg_text and "Avionics" in svg_text
+    assert "SERIAL NUMBER" in svg_text and "NFT / TOKEN ID" in svg_text and "CREATION DATE" in svg_text and "DEPARTMENT" in svg_text
     assert "data:image/png;base64," in svg_text  # Embedded QR Code
+    import re as _re
+    visible = _re.sub(r'data:image/png;base64,[^"]+', "", svg_text)  # ignore the QR image bytes
+    for forbidden in (mac, dev_addr, "Tactical Radar Processing Unit", ADMIN_WALLET, "did:ethr", "CRT-", "0x"):
+        assert forbidden not in visible, forbidden
 
 
 @pytest.mark.asyncio

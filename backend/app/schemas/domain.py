@@ -113,6 +113,7 @@ class PhysicalProposalRequest(BaseSchema):
     name: str
     serial_number: str
     asset_type: str = "EQUIPMENT"
+    has_mac_address: Optional[bool] = None  # YES -> mac_address required; NO -> device_unique_address required
     mac_address: Optional[str] = None
     device_unique_address: Optional[str] = None
     location: Optional[str] = None
@@ -248,3 +249,14 @@ class VcRead(VcBase):
     user_id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+
+
+class PhysicalStatusRequest(BaseSchema):
+    status: str
+    reason: Optional[str] = None
+    totp_code: Optional[str] = None
+
+
+class MintConfirmRequest(BaseSchema):
+    tx_hash: str
+

@@ -137,12 +137,25 @@ async def test_user_cannot_mint_physical_defense_assets(client):
 
 @pytest.mark.asyncio
 async def test_manager_can_mint_physical_assets(client, db_session):
-    """MANAGER role is authorized to prepare physical defense hardware mints (with Factor 3)."""
+    """MANAGER may prepare the mint (Factor 3) of an APPROVED physical asset in their department,
+    and never of an arbitrary / unregistered serial."""
+    import uuid as _uuid
+    from sqlalchemy import select as _select
+    from app.models.domain import Asset, User as _User
     token = get_token(ACTIVE_MANAGER_WALLET, "MANAGER", ACTIVE_MANAGER_VERSION)
+    body = {"to_address": "0x1234567890123456789012345678901234567890", "token_id": 999, "serial_number": "SEC-PHY-001", "owner_did": "did:ethr:13371:0x123"}
+    arbitrary = await client.post("/api/assets/mint/prepare", headers=await mfa_headers(db_session, token, ACTIVE_MANAGER_WALLET, "asset.mint"), json=body)
+    assert arbitrary.status_code == 409
+    owner = (await db_session.execute(_select(_User).where(_User.wallet_address == ACTIVE_MANAGER_WALLET))).scalar_one()
+    serial = f"SEC-PHY-{_uuid.uuid4().hex[:6]}"
+    asset = Asset(token_id=_uuid.uuid4().int % 2_000_000_000, serial_number=serial, owner_id=owner.id, is_physical=True,
+                  department="Avionics", approval_status="APPROVED", device_unique_address=f"UA-{_uuid.uuid4().hex[:8]}")
+    db_session.add(asset)
+    await db_session.commit()
     response = await client.post(
         "/api/assets/mint/prepare",
         headers=await mfa_headers(db_session, token, ACTIVE_MANAGER_WALLET, "asset.mint"),
-        json={"to_address": "0x1234567890123456789012345678901234567890", "token_id": 999, "serial_number": "SEC-PHY-001", "owner_did": "did:ethr:13371:0x123"}
+        json={**body, "token_id": asset.token_id, "serial_number": serial}
     )
     assert response.status_code == 200
     assert "calldata" in response.json()

@@ -417,3 +417,9 @@ export async function readBlobError(err, fallback) {
   }
   return detail || err?.message || fallback;
 }
+
+/** Record an on-chain mint / revision anchor after the server verifies the receipt and chain state. */
+export async function confirmChainEffect(serial, txHash) {
+  const response = await axios.post(`${API_BASE}/assets/chain-confirm/${encodeURIComponent(serial)}`, { tx_hash: txHash });
+  return response.data;
+}

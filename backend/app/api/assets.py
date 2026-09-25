@@ -20,9 +20,11 @@ from app.core.config import settings
 from app.services.contract import contract_service
 from app.services.watermark import HistoryEntry, UnsupportedDocumentType, WatermarkContext, render_protected_copy
 from app.services.qr import generate_qr_for_url
-from app.services.asset_card import generate_asset_certificate_svg
+from app.services.asset_card import generate_physical_card_svg
+from app.services import physical as phys
+from sqlalchemy.exc import IntegrityError
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent, AssetAccessGrant
-from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead, OwnerDecisionRequest, FetchDownloadRequest
+from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead, OwnerDecisionRequest, FetchDownloadRequest, PhysicalStatusRequest, MintConfirmRequest
 from app.services import access, grants as grant_svc, mfa
 from app.services.action_ids import next_action_id, next_token_id
 from sqlalchemy import select, desc, false, func, or_
@@ -82,6 +84,15 @@ def _asset_row(asset: Asset, viewer: User) -> dict:
         "updated_at": asset.updated_at,
     }
     return access.redact_asset_dict(data, viewer, asset)
+
+
+def _public_url(path: str) -> str:
+    """Absolute URL on the configured web app (never a caller-supplied host)."""
+    base = settings.PUBLIC_BASE_URL.rstrip("/")
+    if "localhost" in base or "127.0.0.1" in base:
+        lan = get_lan_ip()
+        base = base.replace("localhost", lan).replace("127.0.0.1", lan)
+    return f"{base}{path}"
 
 
 def _verify_url(action_id: str) -> str:
@@ -356,6 +367,11 @@ async def prepare_mint(request: MintRequest, current_user: User = Depends(get_on
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Role '{current_user.role}' is not permitted to register physical defense hardware. Only Managers and Administrators can register physical assets."
         )
+
+    record = (await db.execute(select(Asset).where(Asset.serial_number == request.serial_number))).scalar_one_or_none()
+    if (not record or not record.is_physical or record.approval_status != "APPROVED" or record.token_id != request.token_id
+            or not access.can_manage_asset(current_user, record)):
+        raise HTTPException(status_code=409, detail="Only an approved physical asset (matching serial and reserved token ID) can be minted.")
 
     # Factor 3 Validation
     await mfa.require_factor(db, current_user, "asset.mint", totp_code=request.totp_code, step_up_token=step_up_token)
@@ -662,58 +678,23 @@ class MaintenanceRecordRequest(BaseModel):
 @router.get("/serial/{serial}/card")
 async def get_asset_certificate_card(
     serial: str,
-    host: Optional[str] = "localhost:5173",
     current_user: User = Depends(get_onboarded_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    """Generate and return a high-resolution printable SVG Defense Asset Certificate for the given asset."""
-    await _visible_asset_or_404(db, current_user, serial=serial)
-    token_id = contract_service.get_token_by_serial(serial)
-    if token_id is None:
-        raise HTTPException(status_code=404, detail="Asset with this serial not found on chain")
-
-    # Fetch on-chain metadata
-    on_chain = contract_service.get_digital_asset(token_id)
-    if not on_chain or not on_chain.get("is_digital"):
-        on_chain = contract_service.get_asset(token_id)
-
-    # Fetch DB metadata (if available) for name, custodian, and lifecycle status
-    res = await db.execute(select(Asset).filter(Asset.serial_number == serial))
-    asset_db = res.scalar_one_or_none()
-
-    owner_did = on_chain.get("owner_did") if on_chain else "did:ethr:13371:unknown"
-    name = asset_db.name if asset_db and asset_db.name else f"BEL Defense Hardware {serial}"
-    asset_type = asset_db.asset_type if asset_db and asset_db.asset_type else "EQUIPMENT"
-    custodian_did = asset_db.custodian_did if asset_db else None
-    custodian_dept = asset_db.custodian_department if asset_db else "BEL Radar Division"
-    file_hash = (on_chain.get("file_hash") if on_chain else None) or (asset_db.file_hash if asset_db else None)
-    lifecycle_status = asset_db.lifecycle_status if asset_db else "VERIFIED"
-
-    # Resolve LAN IP for mobile scan compatibility
-    target_host = host
-    if target_host:
-        lan_ip = get_lan_ip()
-        if "localhost" in target_host:
-            target_host = target_host.replace("localhost", lan_ip)
-        elif "127.0.0.1" in target_host:
-            target_host = target_host.replace("127.0.0.1", lan_ip)
-
-    verify_url = f"http://{target_host}/verify/{serial}"
-
-    svg_data = generate_asset_certificate_svg(
-        serial_number=serial,
-        token_id=token_id,
-        name=name,
-        asset_type=asset_type,
-        owner_did=owner_did,
-        custodian_did=custodian_did,
-        custodian_department=custodian_dept,
-        file_hash=file_hash,
-        lifecycle_status=lifecycle_status,
-        verify_url=verify_url
+    """Printable physical NFT/QR card: Serial, Token ID, Creation Date, Department, QR only."""
+    asset = await _visible_asset_or_404(db, current_user, serial=serial)
+    if not asset.is_physical:
+        raise HTTPException(status_code=400, detail="Cards are issued for physical assets only.")
+    if asset.approval_status not in ("APPROVED", "ACTIVE"):
+        raise HTTPException(status_code=409, detail="A card is issued only after the asset is approved.")
+    svg = generate_physical_card_svg(
+        serial_number=asset.serial_number,
+        token_id=asset.token_id,
+        creation_date=asset.created_at.strftime("%d %b %Y") if asset.created_at else "",
+        department=asset.department or "",
+        verify_url=_public_url(f"/verify/token/{asset.token_id}"),
     )
-
-    return Response(content=svg_data, media_type="image/svg+xml")
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 @router.post("/serial/{serial}/assign")
@@ -755,9 +736,12 @@ async def assign_asset_custodian(
         raise HTTPException(status_code=404, detail="Asset is not in the LexCorp registry.")
     if not access.can_manage_asset(current_user, asset_db):
         raise HTTPException(status_code=403, detail="Managers can only reassign custody of assets in their authorized departments.")
+    previous = {"custodian_did": asset_db.custodian_did, "custodian_department": asset_db.custodian_department}
     asset_db.custodian_did = req.custodian_did
     asset_db.custodian_department = req.custodian_department
     asset_db.lifecycle_status = req.lifecycle_status or "ASSIGNED"
+    await record_audit(db, "ASSET_CUSTODIAN_CHANGED", actor_did=current_user.did, target_did=req.custodian_did,
+                       asset_serial=serial, details={"previous": previous, "custodian_department": req.custodian_department})
 
     await db.commit()
     await db.refresh(asset_db)
@@ -800,12 +784,12 @@ async def record_asset_maintenance(
         if not asset_scope or not access.can_manage_asset(current_user, asset_scope):
             raise HTTPException(status_code=403, detail="This asset is outside your authorized departments.")
     elif current_user.role != "ADMIN":
-        access = contract_service.check_asset_access(
+        chain_access = contract_service.check_asset_access(
             token_id=token_id,
             requester_did=performed_by_did,
             caller_address=current_user.wallet_address
         )
-        if not access.get("authorized"):
+        if not chain_access.get("authorized"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have authorization to record maintenance on this asset."
@@ -832,6 +816,8 @@ async def record_asset_maintenance(
     asset_db = res.scalar_one_or_none()
     if asset_db:
         asset_db.lifecycle_status = "MAINTENANCE"
+    await record_audit(db, "ASSET_MAINTENANCE_RECORDED", actor_did=performed_by_did, asset_serial=serial,
+                       details={"log_hash": log_hash, "action": req.action_description[:200]})
 
     await db.commit()
     await db.refresh(record)
@@ -906,7 +892,12 @@ async def get_asset_full_verification_data(
         "created_at": asset_db.created_at.isoformat() if asset_db and asset_db.created_at else None,
         "detail_level": "PUBLIC",
     }
-    if not current_user or not asset_db or not await access.can_see_asset(db, current_user, asset_db):
+    authorized = bool(current_user and asset_db and await access.can_see_asset(db, current_user, asset_db))
+    if asset_db and asset_db.is_physical:
+        await record_audit(db, "ASSET_VERIFIED", actor_did=current_user.did if current_user else None, asset_serial=serial,
+                           details={"detail_level": "AUTHORIZED" if authorized else "PUBLIC"})
+        await db.commit()
+    if not authorized:
         return public
 
     maint = (await db.execute(
@@ -934,6 +925,17 @@ async def get_asset_full_verification_data(
         detail["mac_address"] = asset_db.mac_address
         detail["device_unique_address"] = asset_db.device_unique_address
         detail["location"] = asset_db.location
+    if asset_db.is_physical:
+        creation = (await db.execute(select(DocumentAction).where(DocumentAction.action_id == asset_db.action_id))).scalar_one_or_none() if asset_db.action_id else None
+        detail["creation_id"] = asset_db.action_id
+        detail["approval"] = {"proposed_by": creation.actor_did, "approved_by": creation.approver_did,
+                              "status": creation.status} if creation else None
+        lifecycle_types = ("PHYSICAL_ASSET_CREATED", "PHYSICAL_ASSET_APPROVED", "PHYSICAL_ASSET_MINTED", "ASSET_TRANSFERRED",
+                           "AssetTransferred", "ASSET_CUSTODIAN_CHANGED", "ASSET_STATUS_CHANGED", "ASSET_MAINTENANCE_RECORDED")
+        events = (await db.execute(select(AuditEvent).where(AuditEvent.asset_serial == serial, AuditEvent.event_type.in_(lifecycle_types))
+                                   .order_by(AuditEvent.created_at))).scalars().all()
+        detail["lifecycle"] = [{"event": e.event_type, "at": e.created_at.isoformat() if e.created_at else None,
+                                "actor_did": e.actor_did, "tx_hash": e.tx_hash if e.block_number else None} for e in events]
     return detail
 
 
@@ -981,8 +983,9 @@ async def propose_document_creation(
     step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Propose a new digital document for creation and approval."""
-    if current_user.role in ["ADMIN", "MANAGER"]:
-        raise HTTPException(status_code=403, detail="Admins and Managers cannot propose documents. They act as approvers.")
+    if current_user.role == "AUDITOR":
+        raise HTTPException(status_code=403, detail="Auditors cannot propose documents.")
+    # Admins/Managers may submit too; separation of duties means someone else must approve.
 
     dept = request.department or current_user.department
     if current_user.role in ["USER", "AUDITOR"] and dept != current_user.department:
@@ -1161,58 +1164,25 @@ async def propose_physical_asset_creation(
 
     await mfa.require_factor(db, current_user, "document.submit", totp_code=request.totp_code, step_up_token=step_up_token)
 
-    # 1. Uniqueness check on serial_number
-    res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
-    if res.scalar_one_or_none():
-        audit_event = AuditEvent(
-            event_type="DUPLICATE_PHYSICAL_ASSET_ATTEMPT",
-            tx_hash=f"audit_dup_serial_{uuid.uuid4().hex}",
-            block_number=0,
-            actor_did=current_user.did,
-            asset_serial=request.serial_number,
-            risk_score=0.85,
-            risk_label="HIGH",
-            risk_factors={"reason": "Duplicate Serial Number Attempt", "serial_number": request.serial_number}
-        )
-        db.add(audit_event)
+    # Serial + (MAC OR Unique Address), normalised, globally unique across the registry.
+    serial = phys.normalize_serial(request.serial_number)
+    mac, unique_address = phys.resolve_identifiers(request.has_mac_address, request.mac_address, request.device_unique_address)
+
+    async def _reject_duplicate(field: str):
+        event, message = phys.DUPLICATE_EVENTS[field]
+        value = {"serial": serial, "mac": mac, "unique_address": unique_address}[field]
+        details = {"duplicate_field": field, "value_fingerprint": phys.fingerprint(value or ""), "department": dept}
+        # Serials are printed on the public card; MAC / unique address values are never logged.
+        await record_audit(db, "DUPLICATE_PHYSICAL_ASSET_ATTEMPT", actor_did=current_user.did, asset_serial=serial,
+                           client_ip=client_ip, risk_label="HIGH", risk_score=0.85, details=details)
+        await record_audit(db, event, actor_did=current_user.did, asset_serial=serial,
+                           client_ip=client_ip, risk_label="HIGH", risk_score=0.85, details=details)
         await db.commit()
-        raise HTTPException(status_code=400, detail="Asset serial number already exists.")
+        raise HTTPException(status_code=400, detail=message)
 
-    # 2. Uniqueness check on mac_address
-    if request.mac_address:
-        res = await db.execute(select(Asset).filter(Asset.mac_address == request.mac_address))
-        if res.scalar_one_or_none():
-            audit_event = AuditEvent(
-                event_type="DUPLICATE_PHYSICAL_ASSET_ATTEMPT",
-                tx_hash=f"audit_dup_mac_{uuid.uuid4().hex}",
-                block_number=0,
-                actor_did=current_user.did,
-                asset_serial=request.serial_number,
-                risk_score=0.85,
-                risk_label="HIGH",
-                risk_factors={"reason": "Duplicate MAC Address Attempt", "mac_address": request.mac_address, "serial_number": request.serial_number}
-            )
-            db.add(audit_event)
-            await db.commit()
-            raise HTTPException(status_code=400, detail="MAC address is already registered to an asset.")
-
-    # 3. Uniqueness check on device_unique_address
-    if request.device_unique_address:
-        res = await db.execute(select(Asset).filter(Asset.device_unique_address == request.device_unique_address))
-        if res.scalar_one_or_none():
-            audit_event = AuditEvent(
-                event_type="DUPLICATE_PHYSICAL_ASSET_ATTEMPT",
-                tx_hash=f"audit_dup_dev_{uuid.uuid4().hex}",
-                block_number=0,
-                actor_did=current_user.did,
-                asset_serial=request.serial_number,
-                risk_score=0.85,
-                risk_label="HIGH",
-                risk_factors={"reason": "Duplicate Device Unique Address Attempt", "device_unique_address": request.device_unique_address, "serial_number": request.serial_number}
-            )
-            db.add(audit_event)
-            await db.commit()
-            raise HTTPException(status_code=400, detail="Device unique address is already registered to an asset.")
+    duplicate = await phys.find_duplicate(db, serial, mac, unique_address)
+    if duplicate:
+        await _reject_duplicate(duplicate)
 
     action_id_str = await next_action_id(db, "CRT")
     reserved_token_id = await next_token_id(db)
@@ -1220,12 +1190,12 @@ async def propose_physical_asset_creation(
     draft_asset = Asset(
         token_id=reserved_token_id,
         version_number=1,
-        serial_number=request.serial_number,
+        serial_number=serial,
         name=request.name,
         asset_type=request.asset_type or "EQUIPMENT",
         is_physical=True,
-        mac_address=request.mac_address,
-        device_unique_address=request.device_unique_address,
+        mac_address=mac,
+        device_unique_address=unique_address,
         location=request.location,
         department=dept,
         owner_id=current_user.id,
@@ -1235,7 +1205,12 @@ async def propose_physical_asset_creation(
         action_type="CREATION"
     )
     db.add(draft_asset)
-    await db.flush()
+    try:
+        await db.flush()  # the database's normalised unique indexes are the final arbiter (races)
+    except IntegrityError:
+        await db.rollback()
+        duplicate = await phys.find_duplicate(db, serial, mac, unique_address) or "serial"
+        await _reject_duplicate(duplicate)
     draft_asset.root_asset_id = draft_asset.id
 
     action = DocumentAction(
@@ -1244,7 +1219,7 @@ async def propose_physical_asset_creation(
         asset_id=draft_asset.id,
         asset_version=1,
         client_ip=client_ip,
-        asset_serial=request.serial_number,
+        asset_serial=serial,
         actor_id=current_user.id,
         actor_did=current_user.did,
         status="PENDING",
@@ -1253,8 +1228,7 @@ async def propose_physical_asset_creation(
             "name": request.name,
             "asset_type": request.asset_type or "EQUIPMENT",
             "is_physical": True,
-            "mac_address": request.mac_address,
-            "device_unique_address": request.device_unique_address,
+            "identifier_kind": "MAC" if mac else "UNIQUE_ADDRESS",
             "location": request.location,
             "department": dept,
             "recipient_address": request.recipient_address,
@@ -1263,13 +1237,15 @@ async def propose_physical_asset_creation(
     )
     db.add(action)
 
+    await record_audit(db, "PHYSICAL_ASSET_CREATED", actor_did=current_user.did, asset_serial=serial, client_ip=client_ip,
+                       details={"creation_id": action_id_str, "department": dept, "token_id": reserved_token_id})
     audit_event = AuditEvent(
         event_type="PhysicalAssetProposed",
         tx_hash=f"audit_prop_phys_{uuid.uuid4().hex[:12]}",
         block_number=0,
         actor_did=current_user.did,
         target_did=request.recipient_did,
-        asset_serial=request.serial_number,
+        asset_serial=serial,
         client_ip=client_ip,
         risk_score=0.1,
         risk_label="LOW",
@@ -1420,6 +1396,9 @@ async def approve_document(
                             asset.owner_id = target_user.id
 
             if asset.is_physical:
+                await record_audit(db, "PHYSICAL_ASSET_APPROVED", actor_did=current_user.did, target_did=action.actor_did,
+                                   asset_serial=asset.serial_number, client_ip=client_ip,
+                                   details={"creation_id": action.action_id, "token_id": asset.token_id})
                 calldata = contract_service.prepare_mint_calldata(
                     to_address=owner_address,
                     token_id=asset.token_id,
@@ -2222,6 +2201,119 @@ async def revoke_access_grant(
                            asset_serial=grant.asset_serial, client_ip=client_ip, details={"grant_id": str(grant.id)})
         await db.commit()
     return _grant_row(grant)
+
+
+
+
+
+
+
+
+
+PHYSICAL_STATUSES = ("ACTIVE", "ASSIGNED", "MAINTENANCE", "IN_STORAGE", "LOST", "RETIRED", "DECOMMISSIONED")
+
+
+@router.post("/physical/{serial}/status")
+async def change_physical_status(
+    serial: str,
+    body: PhysicalStatusRequest,
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
+):
+    """Lifecycle status change by Admin / in-scope Manager (Factor 3), audited."""
+    asset = (await db.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one_or_none()
+    if not asset or not asset.is_physical:
+        raise HTTPException(status_code=404, detail="Physical asset not found.")
+    if not access.can_manage_asset(current_user, asset):
+        raise HTTPException(status_code=403, detail="This asset is outside your authorized departments.")
+    new_status = body.status.strip().upper()
+    if new_status not in PHYSICAL_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {PHYSICAL_STATUSES}")
+    await mfa.require_factor(db, current_user, "asset.manage", totp_code=body.totp_code, step_up_token=step_up_token)
+    previous = asset.lifecycle_status
+    asset.lifecycle_status = new_status
+    await record_audit(db, "ASSET_STATUS_CHANGED", actor_did=current_user.did, asset_serial=serial, client_ip=client_ip,
+                       details={"from": previous, "to": new_status, "reason": (body.reason or "")[:500]})
+    await db.commit()
+    return {"serial_number": serial, "previous_status": previous, "lifecycle_status": new_status}
+
+
+
+async def _confirm_on_chain(db: AsyncSession, current_user: User, serial: str, tx_hash: str, client_ip: str) -> dict:
+    """Record an on-chain effect ONLY after verifying it against Besu:
+    successful receipt, sent to the LexCorp contract, and the resulting chain state:
+      physical creation -> getTokenBySerial(serial) == reserved token ID
+      digital creation  -> token exists with the approved file hash
+      revision          -> the lineage root token now carries this revision's hash
+    Nothing is recorded if any check fails (no fake blockchain success)."""
+    asset = (await db.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found.")
+    root = asset if asset.version_number == 1 else (await db.execute(select(Asset).where(Asset.id == asset.root_asset_id))).scalar_one()
+    if not access.can_manage_asset(current_user, root):
+        raise HTTPException(status_code=403, detail="This asset is outside your authorized departments.")
+    if asset.approval_status != "APPROVED":
+        raise HTTPException(status_code=409, detail="Only approved assets/revisions can be anchored on-chain.")
+    try:
+        receipt = contract_service.w3.eth.get_transaction_receipt(tx_hash)
+    except Exception:
+        raise HTTPException(status_code=409, detail="Transaction receipt not found on the chain.")
+    to_addr = (receipt.get("to") or "").lower()
+    if receipt.get("status") != 1 or to_addr != (contract_service.contract_address or "").lower():
+        raise HTTPException(status_code=409, detail="Transaction failed or was not sent to the LexCorp asset contract.")
+
+    if asset.is_physical:
+        if contract_service.get_token_by_serial(serial) != asset.token_id:
+            raise HTTPException(status_code=409, detail="The chain does not show this serial minted with the reserved token ID.")
+        event, new_state = "PHYSICAL_ASSET_MINTED", "MINTED"
+    elif asset.version_number == 1:
+        on_chain = contract_service.get_digital_asset(asset.token_id)
+        if not on_chain or on_chain.get("serial_number") != serial or on_chain.get("file_hash") != asset.file_hash:
+            raise HTTPException(status_code=409, detail="The chain does not show this document minted with the approved hash.")
+        event, new_state = "DOCUMENT_MINTED", "MINTED"
+    else:
+        on_chain = contract_service.get_digital_asset(root.token_id)
+        if not on_chain or on_chain.get("file_hash") != asset.file_hash:
+            raise HTTPException(status_code=409, detail="The chain does not show the root token updated to this revision's hash.")
+        event, new_state = "DOCUMENT_REVISION_ANCHORED", "ANCHORED"
+
+    asset.lifecycle_status = new_state
+    asset.watermark_metadata = {**(asset.watermark_metadata or {}), "chain_tx": tx_hash, "block_number": receipt.get("blockNumber")}
+    await record_audit(db, event, actor_did=current_user.did, asset_serial=serial, client_ip=client_ip,
+                       details={"tx_hash": tx_hash, "block_number": receipt.get("blockNumber"),
+                                "token_id": root.token_id, "version": asset.version_number,
+                                "chain_id": settings.CHAIN_ID, "contract": contract_service.contract_address})
+    await db.commit()
+    return {"serial_number": serial, "token_id": root.token_id, "version": asset.version_number,
+            "lifecycle_status": new_state, "tx_hash": tx_hash, "block_number": receipt.get("blockNumber")}
+
+
+@router.post("/physical/{serial}/mint-confirm")
+async def confirm_physical_mint(
+    serial: str,
+    body: MintConfirmRequest,
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip),
+):
+    asset = (await db.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one_or_none()
+    if not asset or not asset.is_physical:
+        raise HTTPException(status_code=404, detail="Physical asset not found.")
+    return await _confirm_on_chain(db, current_user, serial, body.tx_hash, client_ip)
+
+
+@router.post("/chain-confirm/{serial}")
+async def confirm_chain_effect(
+    serial: str,
+    body: MintConfirmRequest,
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip),
+):
+    """Confirm a mint (physical/digital) or a revision anchor after the approver signed the calldata."""
+    return await _confirm_on_chain(db, current_user, serial, body.tx_hash, client_ip)
 
 
 # Legacy parameterised download path declared late so it never shadows /document/download/pending.

@@ -379,11 +379,16 @@ async def test_passkey3_approve_mint_modify_and_factor2_cannot_satisfy_factor3(c
                                  headers=bearer(mgr["token"], **{"X-Step-Up-Token": approve.json()["step_up_token"]}))
     assert r_ok.status_code == 200, r_ok.text
 
-    # Passkey 3 for mint
+    # Passkey 3 for mint (of an approved physical asset in the manager's department)
+    from app.models.domain import Asset
+    phys = Asset(token_id=int(uuid.uuid4().int % 2_000_000_000), serial_number=f"PK3-{uuid.uuid4().hex[:8]}", owner_id=mgr_user.id,
+                 is_physical=True, department="Avionics", approval_status="APPROVED", device_unique_address=f"UA-{uuid.uuid4().hex[:8]}")
+    db_session.add(phys)
+    await db_session.commit()
     mint = await step_up_via_passkey(client, mgr["token"], pk3, "factor3", "asset.mint")
     with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0x1", "data": "0x2"}):
         r_mint = await client.post("/api/assets/mint/prepare", headers=bearer(mgr["token"], **{"X-Step-Up-Token": mint.json()["step_up_token"]}),
-                                   json={"to_address": mgr["acct"].address, "token_id": 424242, "serial_number": "X", "owner_did": mgr_user.did})
+                                   json={"to_address": mgr["acct"].address, "token_id": phys.token_id, "serial_number": phys.serial_number, "owner_did": mgr_user.did})
     assert r_mint.status_code == 200, r_mint.text
 
     # Passkey 3 for modify (revision proposal)
@@ -408,8 +413,14 @@ async def test_totp3_and_factor2_totp_cannot_satisfy_factor3(client, db_session)
     secret2, _ = await enable_totp(client, mgr["token"], "factor2/")
     secret3, _ = await enable_totp(client, mgr["token"], "factor3/")
     step = pyotp.TOTP(secret3).timecode(mfa.utcnow()) * 30 + 30
+    from app.models.domain import Asset
+    mgr_user = (await db_session.execute(select(User).where(User.wallet_address == mgr["wallet"]))).scalar_one()
+    phys = Asset(token_id=int(uuid.uuid4().int % 2_000_000_000), serial_number=f"T3-{uuid.uuid4().hex[:8]}", owner_id=mgr_user.id,
+                 is_physical=True, department="Avionics", approval_status="APPROVED", device_unique_address=f"UA-{uuid.uuid4().hex[:8]}")
+    db_session.add(phys)
+    await db_session.commit()
     with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0x1", "data": "0x2"}):
-        body = {"to_address": mgr["acct"].address, "token_id": 1, "serial_number": "S", "owner_did": "did:x"}
+        body = {"to_address": mgr["acct"].address, "token_id": phys.token_id, "serial_number": phys.serial_number, "owner_did": "did:x"}
         f2 = await client.post("/api/assets/mint/prepare", headers=bearer(mgr["token"]), json={**body, "totp_code": pyotp.TOTP(secret2).at(step)})
         assert f2.status_code == 401
         f1 = await client.post("/api/assets/mint/prepare", headers=bearer(mgr["token"]), json={**body, "totp_code": pyotp.TOTP(mgr["totp1"]).at(step)})

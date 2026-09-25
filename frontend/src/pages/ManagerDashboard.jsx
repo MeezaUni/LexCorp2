@@ -15,7 +15,8 @@ import {
   getDownloadDocumentUrl,
   getAuditEvents,
   updateAlertStatus,
-  authenticateWithPasskey
+  authenticateWithPasskey,
+  confirmChainEffect
 } from '../services/api';
 import {
   grantAssetAccess,
@@ -28,7 +29,7 @@ import {
 } from '../services/web3';
 
 export default function ManagerDashboard() {
-  const { signer, user } = useAuth();
+  const { signer, user, unlockSigner } = useAuth();
   const [activeTab, setActiveTab] = useState('pending'); // 'pending' | 'propose_doc' | 'propose_phys' | 'access' | 'transfer'
   const [pendingSubTab, setPendingSubTab] = useState('docs'); // 'docs' | 'physical' | 'downloads'
 
@@ -208,6 +209,27 @@ export default function ManagerDashboard() {
 
       setSuccessMsg(`Action ${actionId} successfully marked as ${decision}!`);
       setApprovalResult(res);
+
+      // Creation / modification approvals return calldata: the approver's wallet submits it,
+      // then the server records it only after verifying the Besu receipt and contract state.
+      const anchors = ['CREATION', 'MODIFICATION'];
+      if (decision === 'APPROVE' && res?.calldata?.data && anchors.includes(item.action_type)) {
+        try {
+          setSuccessMsg(`Approved ${actionId}. Unlocking your wallet to submit the on-chain transaction...`);
+          const wallet = signer || await unlockSigner();
+          const tx = await wallet.sendTransaction({
+            to: res.calldata.to || res.contract_address,
+            data: res.calldata.data,
+            gasLimit: res.calldata.gas || 2000000,
+          });
+          setSuccessMsg(`Transaction ${tx.hash.slice(0, 12)}… sent. Waiting for Besu confirmation...`);
+          await tx.wait();
+          const confirmed = await confirmChainEffect(item.asset_serial, tx.hash);
+          setSuccessMsg(`${actionId} approved and ${confirmed.lifecycle_status.toLowerCase()} on-chain (token #${confirmed.token_id}, block ${confirmed.block_number}).`);
+        } catch (chainErr) {
+          setError(`Approved, but the on-chain step did not complete: ${chainErr.response?.data?.detail || chainErr.shortMessage || chainErr.message}. The record stays approved but not minted; retry from the registry.`);
+        }
+      }
       setSelectedAction(null);
       setFactor3Code('');
       setRejectionReason('');

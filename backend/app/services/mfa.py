@@ -47,6 +47,7 @@ ACTION_PURPOSE = {
     "document.download": "factor3",
     "admin.reset": "factor3",
     "identity.revoke": "factor3",
+    "asset.manage": "factor3",
     # Adding/removing a credential for an already-protected purpose requires
     # proving an existing factor of that same purpose.
     "factor2.manage": "factor2",

@@ -197,54 +197,22 @@ export default function UserDashboard() {
       // Handle Passkey vs TOTP Factor Check
       if (usePasskey) {
         try {
-          const factor = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'factor3' : 'factor2';
+          const factor = 'factor2';
           setProposalStatus(`Verifying ${factor === 'factor3' ? 'Factor 3' : 'Factor 2'} Passkey...`);
-          await authenticateWithPasskey(factor, factor === 'factor3' ? 'asset.mint' : 'document.submit');
+          await authenticateWithPasskey('factor2', 'document.submit');
           currentTotp = '';
         } catch (pkErr) {
           throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
         }
       } else {
         if (!currentTotp || currentTotp.trim() === '') {
-          const factorName = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'Factor 3' : 'Factor 2';
+          const factorName = 'Factor 2';
           throw new Error(`${factorName} TOTP code is required if passkey is not used.`);
         }
         setProposalStatus('Verifying TOTP credentials...');
       }
 
-      if (user?.role === 'ADMIN' || user?.role === 'MANAGER') {
-        if (!signer) {
-          throw new Error('No active wallet signer found. Please ensure your wallet is unlocked for on-chain execution.');
-        }
-        setProposalStatus('Preparing on-chain calldata...');
-        // Direct Minting for Admin/Manager
-        const tokenId = Math.floor(Math.random() * 1000000) + 1000;
-        const preparePayload = {
-          to_address: docRecipientAddress,
-          token_id: tokenId,
-          serial_number: digitalSerial,
-          owner_did: `did:ethr:13371:${docRecipientAddress.toLowerCase()}`,
-          file_hash: fileHash,
-          offchain_uri: offchainURI,
-          totp_code: currentTotp || null
-        };
-
-        await prepareMintDigital(preparePayload);
-
-        setProposalStatus('Signing transaction via integrated wallet...');
-
-        const tx = await mintDigitalAsset(
-            signer,
-            docRecipientAddress,
-            tokenId,
-            digitalSerial,
-            `did:ethr:13371:${docRecipientAddress.toLowerCase()}`,
-            fileHash,
-            offchainURI
-        );
-
-        setActionSuccessMsg(`Document mint transaction ${tx.txHash.slice(0, 10)}... executed on-chain successfully!`);
-      } else {
+      {
         // User/Auditor Proposal Submission
         setProposalStatus('Submitting document proposal to server...');
         const payload = {
@@ -304,54 +272,28 @@ export default function UserDashboard() {
 
       if (usePasskey) {
         try {
-          const factor = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'factor3' : 'factor2';
+          const factor = 'factor2';
           setPhysProposalStatus(`Verifying ${factor === 'factor3' ? 'Factor 3' : 'Factor 2'} Passkey...`);
-          await authenticateWithPasskey(factor, factor === 'factor3' ? 'asset.mint' : 'document.submit');
+          await authenticateWithPasskey('factor2', 'document.submit');
           currentTotp = '';
         } catch (pkErr) {
           throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
         }
       } else {
         if (!currentTotp || currentTotp.trim() === '') {
-          const factorName = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'Factor 3' : 'Factor 2';
+          const factorName = 'Factor 2';
           throw new Error(`${factorName} TOTP code is required if passkey is not used.`);
         }
         setPhysProposalStatus('Verifying TOTP credentials...');
       }
 
-      if (user?.role === 'ADMIN' || user?.role === 'MANAGER') {
-        if (!signer) {
-          throw new Error('No active wallet signer found. Please ensure your wallet is unlocked for on-chain execution.');
-        }
-        setPhysProposalStatus('Preparing on-chain calldata...');
-        const tokenId = Math.floor(Math.random() * 1000000) + 1000;
-        const preparePayload = {
-          to_address: physRecipientAddress,
-          token_id: tokenId,
-          serial_number: physSerial,
-          owner_did: `did:ethr:13371:${physRecipientAddress.toLowerCase()}`,
-          totp_code: currentTotp || null
-        };
-
-        await prepareMintPhysical(preparePayload);
-
-        setPhysProposalStatus('Signing transaction via integrated wallet...');
-
-        const tx = await mintAsset(
-            signer,
-            physRecipientAddress,
-            tokenId,
-            physSerial,
-            `did:ethr:13371:${physRecipientAddress.toLowerCase()}`
-        );
-
-        setActionSuccessMsg(`Physical Hardware mint transaction ${tx.txHash.slice(0, 10)}... executed on-chain successfully!`);
-      } else {
+      {
         setPhysProposalStatus('Submitting physical proposal to server...');
         const payload = {
           name: physName,
           serial_number: physSerial,
           asset_type: physType,
+          has_mac_address: hasMac,
           mac_address: hasMac ? physMac : null,
           device_unique_address: !hasMac ? physDevAddr : null,
           location: physLocation || 'HQ Security Vault',
@@ -919,7 +861,7 @@ export default function UserDashboard() {
               {proposing
                 ? (proposalStatus || 'Processing...')
                 : (user?.role === 'ADMIN' || user?.role === 'MANAGER'
-                  ? 'Mint Document Asset on-Chain'
+                  ? 'Submit Document for Approval (CRT-)'
                   : 'Submit Document Proposal (CRT-)')
               }
             </button>
@@ -986,8 +928,8 @@ export default function UserDashboard() {
               {proposingPhys
                 ? (physProposalStatus || 'Processing...')
                 : (user?.role === 'ADMIN' || user?.role === 'MANAGER'
-                  ? 'Mint Hardware Asset on-Chain'
-                  : 'Submit Hardware Proposal (CRT-PHY-)')
+                  ? 'Submit Hardware for Approval (CRT-)'
+                  : 'Submit Hardware Proposal (CRT-)')
               }
             </button>
           </form>
