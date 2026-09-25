@@ -15,7 +15,7 @@ The platform provides a sovereign infrastructure for identity, authorization, an
 
 ---
 
-## 🏗️ Detailed Enterprise Architecture
+## Detailed Enterprise Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -99,7 +99,7 @@ When a user modifies a registered asset/document:
 
 ---
 
-## 🚀 Quick Start (Local Setup)
+## Quick Start (Local Setup)
 
 ### Prerequisites
 - Node.js v18+
@@ -137,7 +137,7 @@ npm run dev
 
 ---
 
-## 🛡️ Security Compliance Matrix
+##  Security Compliance Matrix
 
 | Requirement | LexCorp Implementation |
 |---|---|
