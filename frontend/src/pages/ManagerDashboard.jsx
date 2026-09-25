@@ -43,6 +43,8 @@ export default function ManagerDashboard() {
   const [selectedAction, setSelectedAction] = useState(null); // { type: 'doc' | 'physical' | 'download', item: ... }
   const [factor3Code, setFactor3Code] = useState('');
   const [maxViewsLimit, setMaxViewsLimit] = useState('');
+  const [accessibleUntil, setAccessibleUntil] = useState('');
+  const [allowDownload, setAllowDownload] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [isProcessingApproval, setIsProcessingApproval] = useState(false);
   const [approvalResult, setApprovalResult] = useState(null);
@@ -189,7 +191,10 @@ export default function ManagerDashboard() {
         decision,
         totp_code: factor3Code || null,
         rejection_reason: decision === 'REJECT' ? (rejectionReason || 'Rejected by Department Manager') : null,
-        ...(maxViewsLimit && { max_views: parseInt(maxViewsLimit) })
+        ...(maxViewsLimit && { max_views: parseInt(maxViewsLimit) }),
+        // datetime-local is the approver's local time; send it as an absolute instant (with offset).
+        ...(accessibleUntil && { accessible_until: new Date(accessibleUntil).toISOString() }),
+        allow_download: allowDownload,
       };
 
       let res;
@@ -206,6 +211,9 @@ export default function ManagerDashboard() {
       setSelectedAction(null);
       setFactor3Code('');
       setRejectionReason('');
+      setMaxViewsLimit('');
+      setAccessibleUntil('');
+      setAllowDownload(false);
       await fetchPendingQueues();
     } catch (err) {
       console.error('Approval execution error:', err);
@@ -831,7 +839,11 @@ export default function ManagerDashboard() {
 
             {selectedAction.item.action_type === 'SHARE' && (
               <div style={{ marginBottom: '1.2rem' }}>
-                <label style={labelStyle}>Max Allowed Views (Optional Quota)</label>
+                <div style={{ fontSize: '12px', color: '#475569', marginBottom: '8px' }}>
+                  Delegated access for <code>{selectedAction.item.details?.target_did}</code>
+                  {selectedAction.item.details?.request_download ? ' (download also requested)' : ' (view only requested)'}
+                </div>
+                <label style={labelStyle}>Max Allowed Views (default: unlimited)</label>
                 <input
                   type="number"
                   value={maxViewsLimit}
@@ -840,6 +852,17 @@ export default function ManagerDashboard() {
                   style={inputStyle}
                   min={1}
                 />
+                <label style={{ ...labelStyle, marginTop: '10px' }}>Accessible Until (default: no expiry)</label>
+                <input
+                  type="datetime-local"
+                  value={accessibleUntil}
+                  onChange={(e) => setAccessibleUntil(e.target.value)}
+                  style={inputStyle}
+                />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={allowDownload} onChange={(e) => setAllowDownload(e.target.checked)} />
+                  Also allow download (download still requires its own request, approval and Factor 3)
+                </label>
               </div>
             )}
 

@@ -74,6 +74,12 @@ async def test_creation_view_download_modification_ids_and_versions(client, db_s
         await client.post(f"/api/assets/document/approval/{crt}", headers=await mfa_headers(db_session, mgr_t, MANAGER, "asset.approve"),
                           json={"decision": "APPROVE"})
 
+    import os
+    from app.api.assets import OFFCHAIN_STORAGE_DIR
+    os.makedirs(os.path.join(OFFCHAIN_STORAGE_DIR, "documents"), exist_ok=True)
+    with open(os.path.join(OFFCHAIN_STORAGE_DIR, "documents", "ids.txt"), "w") as f:
+        f.write("action id test document")
+
     # VIEW via a trusted proxy hop: the recorded IP is the forwarded client IP, not a placeholder
     view_h = await mfa_headers(db_session, user_t, USER, "document.view")
     user_t2 = create_jwt(USER, f"did:ethr:13371:{USER}", "USER", 1, client_ip="198.51.100.23")

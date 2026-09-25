@@ -11,7 +11,7 @@ import {
   proposeDocumentShare,
   prepareMintDigital,
   prepareMintPhysical,
-  getViewDocumentUrl,
+  viewDocument,
   requestDocumentDownload,
   authenticateWithPasskey,
   proposeDocumentRevision
@@ -80,6 +80,7 @@ export default function UserDashboard() {
   const [shareTargetAddress, setShareTargetAddress] = useState('');
   const [shareLevel, setShareLevel] = useState(1); // 1 = READ, 2 = READ_WRITE
   const [sharePurpose, setSharePurpose] = useState('');
+  const [shareRequestDownload, setShareRequestDownload] = useState(false);
   const [shareTotpCode, setShareTotpCode] = useState('');
   const [sharing, setSharing] = useState(false);
   const [shareSuccessMsg, setShareSuccessMsg] = useState('');
@@ -385,6 +386,25 @@ export default function UserDashboard() {
   };
 
   // Handle Proposing Access Share (Factor 2 protected)
+  const handleViewDocument = async (serial) => {
+    setError(null);
+    // Open the tab synchronously (popup blockers), then load the protected copy into it.
+    const tab = window.open('', '_blank');
+    try {
+      const code = window.prompt('Viewing requires Factor 2. Enter your Factor 2 (View/Submission) TOTP code, or leave empty to use your Factor 2 passkey:');
+      const blob = await viewDocument(serial, code ? code.trim() : null);
+      const url = URL.createObjectURL(blob);
+      if (tab) tab.location.href = url; else window.open(url, '_blank');
+    } catch (err) {
+      if (tab) tab.close();
+      let detail = err.response?.data?.detail;
+      if (!detail && err.response?.data instanceof Blob) {
+        try { detail = JSON.parse(await err.response.data.text()).detail; } catch (e) { detail = null; }
+      }
+      setError(detail || err.message || 'Document could not be viewed.');
+    }
+  };
+
   const handleGrantAccess = async (e, usePasskey = false) => {
     if (e) e.preventDefault();
     setError(null);
@@ -422,6 +442,7 @@ export default function UserDashboard() {
         target_did: targetDID,
         access_level: parseInt(shareLevel),
         purpose: sharePurpose || 'Share access permission',
+        request_download: shareRequestDownload,
         totp_code: currentTotp || null
       };
 
@@ -1061,6 +1082,10 @@ export default function UserDashboard() {
                   style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
                 />
               </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '10px 0', fontSize: '13px' }}>
+                <input type="checkbox" checked={shareRequestDownload} onChange={(e) => setShareRequestDownload(e.target.checked)} />
+                Also request download permission (a Manager/Admin decides; view is always separate from download)
+              </label>
 
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
@@ -1312,7 +1337,7 @@ export default function UserDashboard() {
                   {asset.is_digital && asset.offchain_uri && (
                     <div style={{ display: 'flex', gap: '8px', flex: '1 1 100%' }}>
                       <button
-                        onClick={() => window.open(getViewDocumentUrl(asset.serial_number), '_blank')}
+                        onClick={() => handleViewDocument(asset.serial_number)}
                         style={{ flex: 1, padding: '8px', background: '#059669', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
                       >
                         View (Watermarked)

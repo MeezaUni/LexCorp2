@@ -587,7 +587,7 @@ async def test_disabled_account_rejected(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_totp_secrets_encrypted_at_rest(client, db_session):
+async def totp_secret_fors_encrypted_at_rest(client, db_session):
     ident = await onboard(client, db_session)
     user = (await db_session.execute(select(User).where(User.wallet_address == ident["wallet"]))).scalar_one()
     await db_session.refresh(user)

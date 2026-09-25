@@ -237,18 +237,29 @@ class AccessRequest(Base, TimestampMixin):
 
 
 class AssetAccessGrant(Base, TimestampMixin):
+    """Approved delegated access. View and download are separate permissions;
+    max_views (None = unlimited) and expires_at (None = no expiry) are enforced
+    server-side, and only successful authorized views increment views_count."""
     __tablename__ = "asset_access_grants"
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, default=uuid.uuid4
     )
+    asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("assets.id"), index=True, nullable=True)
     asset_serial: Mapped[str] = mapped_column(String, index=True)
     grantee_did: Mapped[str] = mapped_column(String, index=True)
     granted_by_did: Mapped[str] = mapped_column(String)
+    requested_by_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    request_action_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     access_level: Mapped[int] = mapped_column(Integer, default=1)
+    can_view: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    can_download: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     max_views: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     views_count: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 class AuditEvent(Base, TimestampMixin):
     __tablename__ = "audit_events"

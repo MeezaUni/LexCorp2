@@ -31,14 +31,14 @@ from app.core.crypto import encrypt_secret
 
 # Deterministic per-user, per-purpose TOTP secrets for tests. No MFA bypass exists:
 # tests must present a real TOTP code or a real step-up grant for the right purpose.
-def test_totp_secret(wallet: str, purpose: str) -> str:
+def totp_secret_for(wallet: str, purpose: str) -> str:
     import base64, hashlib
     raw = hashlib.sha256(f"{wallet.lower()}:{purpose}".encode()).digest()[:20]
     return base64.b32encode(raw).decode()
 
 
 def totp_code(wallet: str, purpose: str) -> str:
-    return pyotp.TOTP(test_totp_secret(wallet, purpose)).now()
+    return pyotp.TOTP(totp_secret_for(wallet, purpose)).now()
 
 
 async def mfa_headers(db, token: str, wallet: str, action: str) -> dict:
@@ -162,9 +162,9 @@ async def seed_test_users(setup_database):
                     is_totp_factor3_enabled=True,
                     onboarding_pending=False
                 )
-                u.totp_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "login"))
-                u.totp_factor2_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "factor2"))
-                u.totp_factor3_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "factor3"))
+                u.totp_secret = encrypt_secret(totp_secret_for(u_data["wallet_address"], "login"))
+                u.totp_factor2_secret = encrypt_secret(totp_secret_for(u_data["wallet_address"], "factor2"))
+                u.totp_factor3_secret = encrypt_secret(totp_secret_for(u_data["wallet_address"], "factor3"))
                 session.add(u)
             else:
                 existing.role = u_data["role"]
@@ -190,9 +190,9 @@ async def reset_user_mfa(db_session):
             user.is_totp_enabled = True
             user.is_totp_factor2_enabled = True
             user.is_totp_factor3_enabled = True
-            user.totp_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "login"))
-            user.totp_factor2_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "factor2"))
-            user.totp_factor3_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "factor3"))
+            user.totp_secret = encrypt_secret(totp_secret_for(u_data["wallet_address"], "login"))
+            user.totp_factor2_secret = encrypt_secret(totp_secret_for(u_data["wallet_address"], "factor2"))
+            user.totp_factor3_secret = encrypt_secret(totp_secret_for(u_data["wallet_address"], "factor3"))
             user.totp_last_step = None
             user.totp_factor2_last_step = None
             user.totp_factor3_last_step = None

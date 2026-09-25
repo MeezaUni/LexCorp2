@@ -56,9 +56,11 @@ async def require_assignable_department(db: AsyncSession, user: User, department
 
 
 async def granted_serials(db: AsyncSession, user: User) -> list[str]:
+    """Serials this user holds a currently usable grant for (not revoked, not expired)."""
+    from app.services.grants import valid_grant_clause
     rows = await db.execute(
         select(AssetAccessGrant.asset_serial).where(
-            AssetAccessGrant.grantee_did == user.did, AssetAccessGrant.is_active.is_(True)
+            AssetAccessGrant.grantee_did == user.did, valid_grant_clause()
         )
     )
     return list(rows.scalars().all())

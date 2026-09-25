@@ -109,6 +109,20 @@ export async function approvePhysicalAsset(actionId, data) {
   return response.data;
 }
 
+/**
+ * Controlled view: Factor 2 step-up (TOTP 2 code, or Passkey 2 when no code is given)
+ * bound to 'document.view', then an authenticated fetch of the watermarked copy.
+ */
+export async function viewDocument(identifier, totpCode = null) {
+  if (totpCode) {
+    await stepUpWithTotp('document.view', totpCode);
+  } else {
+    await authenticateWithPasskey('factor2', 'document.view');
+  }
+  const response = await axios.get(`${API_BASE}/assets/document/view/${encodeURIComponent(identifier)}`, { responseType: 'blob' });
+  return response.data;
+}
+
 export function getViewDocumentUrl(identifier, totpCode = null) {
   let url = `${API_BASE}/assets/document/view/${identifier}`;
   if (totpCode) url += `?totp_code=${totpCode}`;

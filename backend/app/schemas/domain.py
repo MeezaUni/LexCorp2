@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class BaseSchema(BaseModel):
@@ -137,13 +137,17 @@ class ShareProposalRequest(BaseSchema):
     access_level: int = 1
     purpose: Optional[str] = None
     totp_code: Optional[str] = None
-    max_views: Optional[int] = None
+    max_views: Optional[int] = None  # a suggestion only; the approver decides
+    request_download: bool = False
 
 class DocumentApprovalRequest(BaseSchema):
     decision: str # "APPROVE" or "REJECT"
     totp_code: Optional[str] = None
     rejection_reason: Optional[str] = None
-    max_views: Optional[int] = None
+    # Delegated-access approvals only (defaults: unlimited views, no expiry, view-only)
+    max_views: Optional[int] = Field(default=None, ge=1)
+    accessible_until: Optional[datetime] = None
+    allow_download: bool = False
 
 class DownloadRequest(BaseSchema):
     asset_serial: str

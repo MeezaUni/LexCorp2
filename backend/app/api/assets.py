@@ -22,7 +22,7 @@ from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent, AssetAccessGrant
 from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead
-from app.services import access, mfa
+from app.services import access, grants as grant_svc, mfa
 from app.services.action_ids import next_action_id, next_token_id
 from sqlalchemy import select, desc, false, func, or_
 
@@ -606,18 +606,6 @@ async def get_asset_qr_by_token(token_id: int, host: Optional[str] = "localhost:
     return Response(content=png_bytes, media_type="image/png")
 
 
-@router.get("/{token_id}")
-async def get_asset(token_id: int, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
-    """On-chain metadata for a registry asset the caller may see."""
-    await _visible_asset_or_404(db, current_user, token_id=token_id)
-    on_chain = contract_service.get_digital_asset(token_id)
-    if not on_chain or not on_chain.get("is_digital"):
-        on_chain = contract_service.get_asset(token_id)
-    if not on_chain:
-        raise HTTPException(status_code=404, detail="Asset not found on chain")
-    return on_chain
-
-
 class AssignCustodianRequest(BaseModel):
     custodian_did: str
     custodian_department: Optional[str] = "BEL Field Engineering"
@@ -1046,8 +1034,20 @@ async def propose_document_share(
 
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.asset_serial))
     asset = res.scalar_one_or_none()
-    if not asset:
+    # Only the owner/custodian, or a Manager/Admin with scope, may request access for someone
+    # else. Grantees cannot re-share. Nothing is granted until a Manager/Admin approves.
+    is_holder = asset is not None and (asset.owner_id == current_user.id or asset.custodian_id == current_user.id)
+    if not asset or not (is_holder or access.can_manage_asset(current_user, asset)):
         raise HTTPException(status_code=404, detail="Asset not found.")
+    if asset.is_physical:
+        raise HTTPException(status_code=400, detail="Delegated document access applies to digital assets only.")
+    if asset.approval_status in ("PENDING_APPROVAL", "REJECTED"):
+        raise HTTPException(status_code=409, detail="Access can only be requested for an approved document.")
+    target = (await db.execute(select(User).where(User.did == request.target_did))).scalar_one_or_none()
+    if not target or not target.is_active or target.revoked_at is not None:
+        raise HTTPException(status_code=400, detail="Target identity is not an active LexCorp user.")
+    if target.id == current_user.id or target.id == asset.owner_id:
+        raise HTTPException(status_code=400, detail="The target already holds this document.")
 
     action_id_str = await next_action_id(db, "ACR")
 
@@ -1065,7 +1065,9 @@ async def propose_document_share(
         details={
             "target_did": request.target_did,
             "access_level": request.access_level,
-            "asset_serial": request.asset_serial
+            "asset_serial": request.asset_serial,
+            "requested_max_views": request.max_views,
+            "request_download": request.request_download,
         }
     )
     db.add(action)
@@ -1311,15 +1313,31 @@ async def approve_document(
 
     if not access.can_manage_asset(current_user, asset):
         raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
-
+    if action.actor_id == current_user.id:
+        # Separation of duties: nobody approves a request they initiated.
+        raise HTTPException(status_code=403, detail="You cannot approve or reject a request you initiated.")
 
     await mfa.require_factor(db, current_user, "asset.approve", totp_code=request.totp_code, step_up_token=step_up_token)
+
+    # Only creation/modification decisions change the document's own approval state;
+    # approving a share or download request must never mark the document approved.
+    changes_asset_state = action.action_type in ("CREATION", "MODIFICATION")
+
+    if request.decision.upper() == "APPROVE" and action.action_type == "SHARE" and request.accessible_until is not None:
+        # Validate approver-supplied limits before anything is mutated.
+        if request.accessible_until.tzinfo is None:
+            raise HTTPException(status_code=400, detail="accessible_until must include a timezone (e.g. 2026-10-01T18:00:00+05:30).")
+        if request.accessible_until <= datetime.now(UTC):
+            raise HTTPException(status_code=400, detail="accessible_until must be in the future.")
 
     if request.decision.upper() == "APPROVE":
         action.status = "APPROVED"
         action.approver_id = current_user.id
         action.approver_did = current_user.did
-        asset.approval_status = "APPROVED"
+        if changes_asset_state:
+            asset.approval_status = "APPROVED"
+        elif asset.approval_status in ("PENDING_APPROVAL", "REJECTED"):
+            raise HTTPException(status_code=409, detail="The document itself is not approved; access to it cannot be granted.")
 
         calldata = None
         download_token = None
@@ -1396,28 +1414,45 @@ async def approve_document(
             action.token_expires_at = token_expires_at
             download_url = f"/api/assets/document/download-token/{download_token}"
         elif action.action_type == "SHARE":
-            target_did = action.details.get("target_did") if action.details else None
-            level = action.details.get("access_level", 1) if action.details else 1
-            max_views = request.max_views if request.max_views is not None else (action.details.get("max_views") if action.details else None)
+            details = action.details or {}
+            target_did = details.get("target_did")
+            level = details.get("access_level", 1)
+            if not target_did:
+                raise HTTPException(status_code=400, detail="Access request has no target identity.")
+            # The approver decides the limits (defaults: unlimited views, no expiry, view-only).
+            expires_at = request.accessible_until  # validated above
+            new_grant = AssetAccessGrant(
+                asset_id=asset.id,
+                asset_serial=asset.serial_number,
+                grantee_did=target_did,
+                granted_by_did=current_user.did,
+                requested_by_did=action.actor_did,
+                request_action_id=action.action_id,
+                access_level=level,
+                can_view=True,
+                can_download=bool(request.allow_download),
+                max_views=request.max_views,
+                views_count=0,
+                expires_at=expires_at,
+                is_active=True,
+            )
+            db.add(new_grant)
+            details = dict(details)
+            details.update({"approved_max_views": request.max_views, "approved_until": expires_at.isoformat() if expires_at else None,
+                            "approved_download": bool(request.allow_download)})
+            action.details = details
+            await record_audit(
+                db, "ACCESS_GRANTED", actor_did=current_user.did, target_did=target_did, asset_serial=asset.serial_number,
+                client_ip=client_ip,
+                details={"request_action_id": action.action_id, "requested_by": action.actor_did,
+                         "max_views": request.max_views, "expires_at": expires_at.isoformat() if expires_at else None,
+                         "can_download": bool(request.allow_download), "asset_version": asset.version_number},
+            )
             token_id = contract_service.get_token_by_serial(asset.serial_number) or asset.token_id
-            if target_did:
-                # Record the grant and view limit in the AssetAccessGrant registry
-                new_grant = AssetAccessGrant(
-                    asset_serial=asset.serial_number,
-                    grantee_did=target_did,
-                    granted_by_did=current_user.did,
-                    access_level=level,
-                    max_views=max_views,
-                    views_count=0,
-                    is_active=True
-                )
-                db.add(new_grant)
-
-                calldata = contract_service.prepare_grant_access_calldata(
-                    token_id=token_id,
-                    target_did=target_did,
-                    level=level
-                )
+            try:
+                calldata = contract_service.prepare_grant_access_calldata(token_id=token_id, target_did=target_did, level=level)
+            except Exception:
+                calldata = None  # DB grant is authoritative for view counts/expiry; on-chain mirror is optional
 
         audit_event = AuditEvent(
             event_type="AssetActionApproved",
@@ -1458,7 +1493,8 @@ async def approve_document(
         details = dict(action.details) if action.details else {}
         details["rejection_reason"] = request.rejection_reason
         action.details = details
-        asset.approval_status = "REJECTED"
+        if changes_asset_state:
+            asset.approval_status = "REJECTED"
 
         audit_event = AuditEvent(
             event_type="AssetActionRejected",
@@ -1501,86 +1537,58 @@ async def view_digital_document(
 
     await mfa.require_factor(db, current_user, "document.view", totp_code=totp_code, step_up_token=step_up_token)
 
-    # 2. Lookup asset or action
+    # 2. Resolve the asset (by creation action ID, serial, or token ID)
     asset = None
-    # Try by Action ID (Creation action)
     res_a = await db.execute(select(DocumentAction).filter(DocumentAction.action_id == identifier))
     action = res_a.scalar_one_or_none()
     if action:
-        asset_res = await db.execute(select(Asset).filter(Asset.id == action.asset_id))
-        asset = asset_res.scalar_one_or_none()
-
-    # Try by Serial
+        asset = (await db.execute(select(Asset).filter(Asset.id == action.asset_id))).scalar_one_or_none()
     if not asset:
-        asset_res = await db.execute(select(Asset).filter(Asset.serial_number == identifier))
-        asset = asset_res.scalar_one_or_none()
-
-    # Try by Token ID (int)
+        asset = (await db.execute(select(Asset).filter(Asset.serial_number == identifier))).scalar_one_or_none()
     if not asset and identifier.isdigit():
-        asset_res = await db.execute(select(Asset).filter(Asset.token_id == int(identifier)))
-        asset = asset_res.scalar_one_or_none()
-
-    if not asset:
+        asset = (await db.execute(select(Asset).filter(Asset.token_id == int(identifier)))).scalar_one_or_none()
+    if not asset or asset.is_physical:
         raise HTTPException(status_code=404, detail="Document asset not found.")
 
-    # Authorization logic & View Limit Enforcement
-    if current_user.role == "USER":
-        # Check if user has an explicit active AssetAccessGrant
-        grant_res = await db.execute(
-            select(AssetAccessGrant)
-            .filter(
-                AssetAccessGrant.asset_serial == asset.serial_number,
-                AssetAccessGrant.grantee_did == current_user.did,
-                AssetAccessGrant.is_active == True
-            )
-            .order_by(desc(AssetAccessGrant.created_at))
-        )
-        grant = grant_res.scalar_one_or_none()
-
-        if grant:
-            if grant.max_views is not None and grant.views_count >= grant.max_views:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"View limit of {grant.max_views} views exceeded for this document."
-                )
-            grant.views_count += 1
+    # 3. Authorization: owner/custodian, in-scope Manager, Admin, or an approved grant.
+    is_holder = asset.owner_id == current_user.id or asset.custodian_id == current_user.id
+    grant = None
+    if not (is_holder or access.can_manage_asset(current_user, asset)):
+        grant = await grant_svc.usable_grant(db, current_user, asset, "view")
+        if grant is None:
+            event, message = grant_svc.denial_reason(await grant_svc.latest_grant(db, current_user, asset), "view")
+            await record_audit(db, event, actor_did=current_user.did, asset_serial=asset.serial_number,
+                               client_ip=client_ip, risk_label="MEDIUM", risk_score=0.4,
+                               details={"asset_version": asset.version_number, "attempt": "VIEW"})
             await db.commit()
-        else:
-            # Check if owner, custodian, or department match
-            if (str(asset.owner_id) != str(current_user.id) and
-                str(asset.custodian_id) != str(current_user.id) and
-                asset.department != current_user.department):
-                raise HTTPException(status_code=403, detail="Users can only view their own or department documents.")
-    elif current_user.role == "MANAGER":
-        if not access.can_manage_asset(current_user, asset) and asset.owner_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Managers can only view documents in their own department.")
+            raise HTTPException(status_code=403, detail=message)
+    if asset.approval_status in ("PENDING_APPROVAL", "REJECTED") and not (is_holder or access.can_manage_asset(current_user, asset)):
+        raise HTTPException(status_code=403, detail="This document is not approved for viewing.")
 
     if not asset.metadata_cid:
         raise HTTPException(status_code=404, detail="No offchain URI stored for this document.")
 
     offchain_uri = asset.metadata_cid.replace("secure-vault://", "").replace("ipfs://", "").lstrip("/\\")
-    filepath = os.path.abspath(os.path.join(OFFCHAIN_STORAGE_DIR, offchain_uri))
+    storage_root = os.path.abspath(OFFCHAIN_STORAGE_DIR)
+    filepath = os.path.abspath(os.path.join(storage_root, offchain_uri))
     if not os.path.exists(filepath):
-        # Fallback check for basename directly in OFFCHAIN_STORAGE_DIR
-        alt_filepath = os.path.abspath(os.path.join(OFFCHAIN_STORAGE_DIR, os.path.basename(offchain_uri)))
-        if os.path.exists(alt_filepath):
-            filepath = alt_filepath
+        filepath = os.path.abspath(os.path.join(storage_root, os.path.basename(offchain_uri)))
+    if not filepath.startswith(storage_root + os.sep) or not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="Document file is not available in the vault.")
+    with open(filepath, "rb") as f:
+        file_bytes = f.read()
 
-    # Check if the file Actually exists
-    if not os.path.exists(filepath):
-        # We'll just generate a dummy image in memory if not for PoC
-        try:
-            from PIL import Image
-            import io
-            img = Image.new('RGB', (800, 600), color=(200, 200, 200))
-            buf = io.BytesIO()
-            img.save(buf, format='PNG')
-            file_bytes = buf.getvalue()
-        except ImportError:
-            file_bytes = b"MOCK_DOCUMENT_CONTENT"
-    else:
-        with open(filepath, "rb") as f:
-            file_bytes = f.read()
+    # 4. Count this successful view atomically (only grants are metered).
+    if grant is not None:
+        if await grant_svc.consume_view(db, grant.id) is None:
+            # Lost the race (limit reached / expired / revoked meanwhile). The conditional
+            # UPDATE changed nothing, so no rollback is needed (a rollback would expire the
+            # loaded user/asset objects).
+            event, message = grant_svc.denial_reason(await grant_svc.latest_grant(db, current_user, asset), "view")
+            await record_audit(db, event, actor_did=current_user.did, asset_serial=asset.serial_number, client_ip=client_ip,
+                               risk_label="MEDIUM", risk_score=0.4, details={"attempt": "VIEW"})
+            await db.commit()
+            raise HTTPException(status_code=403, detail=message)
 
     watermarked_bytes = await apply_watermark(
         file_bytes,
@@ -1601,6 +1609,7 @@ async def view_digital_document(
         status="COMPLETED",
         purpose="View Document",
         client_ip=client_ip,
+        details={"grant_id": str(grant.id)} if grant is not None else None,
     )
     db.add(log_action)
     await db.commit()
@@ -1659,16 +1668,18 @@ async def request_document_download(
     if asset.asset_type not in ["DIGITAL", "DOCUMENT"]:
         raise HTTPException(status_code=400, detail="Only digital documents can be downloaded")
 
-    # 3. RBAC & Scoping
-    if current_user.role == "USER":
-        # A USER can only download from their assigned department or if they are owner/custodian
-        if (asset.department != current_user.department and
-            str(asset.owner_id) != str(current_user.id) and
-            str(asset.custodian_id) != str(current_user.id)):
-            raise HTTPException(status_code=403, detail="Users can only request downloads for their assigned department or owned assets")
-
+    # 3. RBAC & scoping: download is a separate permission from view.
     if current_user.role == "AUDITOR":
         raise HTTPException(status_code=403, detail="Auditors are not permitted to download operational documents")
+    is_holder = asset.owner_id == current_user.id or asset.custodian_id == current_user.id
+    if not (is_holder or access.can_manage_asset(current_user, asset)):
+        if await grant_svc.usable_grant(db, current_user, asset, "download") is None:
+            event, message = grant_svc.denial_reason(await grant_svc.latest_grant(db, current_user, asset), "download")
+            await record_audit(db, event, actor_did=current_user.did, asset_serial=asset.serial_number,
+                               client_ip=get_request_client_ip(req), risk_label="MEDIUM", risk_score=0.4,
+                               details={"attempt": "DOWNLOAD_REQUEST"})
+            await db.commit()
+            raise HTTPException(status_code=403, detail=message)
 
     # 4. Action Creation
     action_id = await next_action_id(db, "DL")
@@ -1992,3 +2003,78 @@ async def download_document_with_token(
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
 
+
+
+def _grant_row(g: AssetAccessGrant) -> dict:
+    now = datetime.now(UTC)
+    exhausted = g.max_views is not None and g.views_count >= g.max_views
+    expired = g.expires_at is not None and g.expires_at <= now
+    return {
+        "id": str(g.id), "asset_serial": g.asset_serial, "grantee_did": g.grantee_did,
+        "granted_by_did": g.granted_by_did, "requested_by_did": g.requested_by_did,
+        "request_action_id": g.request_action_id, "can_view": g.can_view, "can_download": g.can_download,
+        "max_views": g.max_views, "views_count": g.views_count,
+        "views_remaining": None if g.max_views is None else max(0, g.max_views - g.views_count),
+        "expires_at": g.expires_at.isoformat() if g.expires_at else None,
+        "status": "REVOKED" if g.revoked_at or not g.is_active else "EXPIRED" if expired else "EXHAUSTED" if exhausted else "ACTIVE",
+        "created_at": g.created_at.isoformat() if g.created_at else None,
+    }
+
+
+@router.get("/access-grants")
+async def list_access_grants(
+    asset_serial: Optional[str] = None,
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Grants the caller may see: their own, grants on assets they hold, or (Manager/Admin/Auditor) in scope."""
+    query = select(AssetAccessGrant).join(Asset, Asset.serial_number == AssetAccessGrant.asset_serial)
+    if asset_serial:
+        query = query.where(AssetAccessGrant.asset_serial == asset_serial)
+    if current_user.role not in access.UNRESTRICTED_ROLES:
+        own = or_(AssetAccessGrant.grantee_did == current_user.did, Asset.owner_id == current_user.id)
+        if current_user.role == "MANAGER":
+            own = or_(own, Asset.department.in_(access.manager_departments(current_user)))
+        query = query.where(own)
+    rows = (await db.execute(query.order_by(desc(AssetAccessGrant.created_at)))).scalars().all()
+    return [_grant_row(g) for g in rows]
+
+
+@router.post("/access-grants/{grant_id}/revoke")
+async def revoke_access_grant(
+    grant_id: str,
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip),
+):
+    try:
+        gid = uuid.UUID(grant_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid grant id")
+    grant = (await db.execute(select(AssetAccessGrant).where(AssetAccessGrant.id == gid))).scalar_one_or_none()
+    asset = grant and (await db.execute(select(Asset).where(Asset.serial_number == grant.asset_serial))).scalar_one_or_none()
+    if not grant or not asset:
+        raise HTTPException(status_code=404, detail="Grant not found")
+    if not (asset.owner_id == current_user.id or access.can_manage_asset(current_user, asset)):
+        raise HTTPException(status_code=403, detail="Not authorized to revoke this grant.")
+    if grant.revoked_at is None:
+        grant.revoked_at = datetime.now(UTC)
+        grant.revoked_by_did = current_user.did
+        grant.is_active = False
+        await record_audit(db, "ACCESS_REVOKED", actor_did=current_user.did, target_did=grant.grantee_did,
+                           asset_serial=grant.asset_serial, client_ip=client_ip, details={"grant_id": str(grant.id)})
+        await db.commit()
+    return _grant_row(grant)
+
+
+# Catch-all token route is declared LAST so it never shadows literal paths (e.g. /access-grants).
+@router.get("/{token_id}")
+async def get_asset(token_id: int, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
+    """On-chain metadata for a registry asset the caller may see."""
+    await _visible_asset_or_404(db, current_user, token_id=token_id)
+    on_chain = contract_service.get_digital_asset(token_id)
+    if not on_chain or not on_chain.get("is_digital"):
+        on_chain = contract_service.get_asset(token_id)
+    if not on_chain:
+        raise HTTPException(status_code=404, detail="Asset not found on chain")
+    return on_chain

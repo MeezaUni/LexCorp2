@@ -120,6 +120,11 @@ async def test_view_audit_logs(client, db_session):
     assert prop_res.status_code == 200
     action_id = prop_res.json()["action_id"]
 
+    # The document must exist in the (isolated test) vault; missing files are never faked.
+    from app.api.assets import OFFCHAIN_STORAGE_DIR
+    os.makedirs(os.path.join(OFFCHAIN_STORAGE_DIR, "documents"), exist_ok=True)
+    Image.new("RGB", (400, 300), color=(255, 255, 255)).save(os.path.join(OFFCHAIN_STORAGE_DIR, "documents", "view_test_3.png"), format="PNG")
+
     # View it multiple times
     await client.get(f"/api/assets/document/view/{action_id}", headers=await mfa_headers(db_session, token, USER_WALLET, "document.view"))
     await client.get(f"/api/assets/document/view/{action_id}", headers=await mfa_headers(db_session, token, USER_WALLET, "document.view"))
