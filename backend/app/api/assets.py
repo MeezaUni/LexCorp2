@@ -23,6 +23,7 @@ from app.services.asset_card import generate_asset_certificate_svg
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent, AssetAccessGrant
 from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead
 from app.services import access, mfa
+from app.services.action_ids import next_action_id, next_token_id
 from sqlalchemy import select, desc, false, func, or_
 
 # Simple in-memory TTL cache (60 seconds) for registry queries
@@ -967,14 +968,13 @@ async def propose_document_creation(
     if res.scalar_one_or_none():
          raise HTTPException(status_code=400, detail="Asset serial number already exists.")
 
-    action_id_str = f"CRT-{uuid.uuid4().hex[:12].upper()}"
-    
-    # Temporarily allocate a unique mock token_id for the draft. Real token_id will be minted later.
-    import random
-    temp_token_id = random.randint(1000000000, 2000000000)
+    action_id_str = await next_action_id(db, "CRT")
+    # Token ID reserved from a DB sequence; the NFT is minted with it after approval.
+    reserved_token_id = await next_token_id(db)
 
     draft_asset = Asset(
-        token_id=temp_token_id, 
+        token_id=reserved_token_id,
+        version_number=1,
         serial_number=request.serial_number,
         name=request.name,
         asset_type="DOCUMENT",
@@ -990,12 +990,14 @@ async def propose_document_creation(
     )
     db.add(draft_asset)
     await db.flush()
-
+    draft_asset.root_asset_id = draft_asset.id
 
     action = DocumentAction(
         action_id=action_id_str,
         action_type="CREATION",
         asset_id=draft_asset.id,
+        asset_version=1,
+        client_ip=client_ip,
         asset_serial=request.serial_number,
         actor_id=current_user.id,
         actor_did=current_user.did,
@@ -1010,7 +1012,7 @@ async def propose_document_creation(
         }
     )
     db.add(action)
-    
+
     audit_event = AuditEvent(
         event_type="DocumentProposed",
         tx_hash=f"audit_prop_doc_{uuid.uuid4().hex[:12]}",
@@ -1047,12 +1049,14 @@ async def propose_document_share(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found.")
 
-    action_id_str = f"SHR-{uuid.uuid4().hex[:12].upper()}"
+    action_id_str = await next_action_id(db, "ACR")
 
     action = DocumentAction(
         action_id=action_id_str,
         action_type="SHARE",
         asset_id=asset.id,
+        asset_version=asset.version_number,
+        client_ip=client_ip,
         asset_serial=request.asset_serial,
         actor_id=current_user.id,
         actor_did=current_user.did,
@@ -1160,14 +1164,12 @@ async def propose_physical_asset_creation(
             await db.commit()
             raise HTTPException(status_code=400, detail="Device unique address is already registered to an asset.")
 
-    action_id_str = f"CRT-PHY-{uuid.uuid4().hex[:10].upper()}"
-
-    # Temporarily allocate a unique mock token_id for the draft. Real token_id will be minted later.
-    import random
-    temp_token_id = random.randint(1000000000, 2000000000)
+    action_id_str = await next_action_id(db, "CRT")
+    reserved_token_id = await next_token_id(db)
 
     draft_asset = Asset(
-        token_id=temp_token_id,
+        token_id=reserved_token_id,
+        version_number=1,
         serial_number=request.serial_number,
         name=request.name,
         asset_type=request.asset_type or "EQUIPMENT",
@@ -1184,11 +1186,14 @@ async def propose_physical_asset_creation(
     )
     db.add(draft_asset)
     await db.flush()
+    draft_asset.root_asset_id = draft_asset.id
 
     action = DocumentAction(
         action_id=action_id_str,
         action_type="CREATION",
         asset_id=draft_asset.id,
+        asset_version=1,
+        client_ip=client_ip,
         asset_serial=request.serial_number,
         actor_id=current_user.id,
         actor_did=current_user.did,
@@ -1230,19 +1235,19 @@ async def propose_physical_asset_creation(
 @router.get("/document/pending", response_model=list[DocumentActionRead])
 async def get_pending_documents(
     action_type: Optional[str] = None,
-    current_user: User = Depends(get_onboarded_user), 
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve pending document actions awaiting approval."""
     query = select(DocumentAction).filter(DocumentAction.status == "PENDING")
     if action_type:
         query = query.filter(DocumentAction.action_type == action_type)
-        
+
     if current_user.role == "USER":
         query = query.filter(DocumentAction.actor_id == current_user.id)
     elif current_user.role == "MANAGER":
         query = query.join(Asset, DocumentAction.asset_id == Asset.id).filter(Asset.department.in_(access.manager_departments(current_user)))
-        
+
     result = await db.execute(query.order_by(desc(DocumentAction.created_at)))
     return result.scalars().all()
 
@@ -1487,6 +1492,7 @@ async def view_digital_document(
     totp_code: Optional[str] = None,
     current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip),
     step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Securely render a document with on-the-fly dynamic watermarking."""
@@ -1559,7 +1565,7 @@ async def view_digital_document(
         alt_filepath = os.path.abspath(os.path.join(OFFCHAIN_STORAGE_DIR, os.path.basename(offchain_uri)))
         if os.path.exists(alt_filepath):
             filepath = alt_filepath
-    
+
     # Check if the file Actually exists
     if not os.path.exists(filepath):
         # We'll just generate a dummy image in memory if not for PoC
@@ -1577,23 +1583,24 @@ async def view_digital_document(
             file_bytes = f.read()
 
     watermarked_bytes = await apply_watermark(
-        file_bytes, 
-        user_did=current_user.did, 
+        file_bytes,
+        user_did=current_user.did,
         department=current_user.department or "ALL"
     )
 
     # Log the view action
     # For Phase 5 we reuse DocumentAction with action_type=VIEW
     log_action = DocumentAction(
-        action_id=f"VW-{uuid.uuid4().hex[:12].upper()}",
+        action_id=await next_action_id(db, "VW"),
         action_type="VIEW",
         asset_id=asset.id,
         asset_serial=asset.serial_number,
+        asset_version=asset.version_number,
         actor_id=current_user.id,
         actor_did=current_user.did,
         status="COMPLETED",
         purpose="View Document",
-        client_ip="internal_log"
+        client_ip=client_ip,
     )
     db.add(log_action)
     await db.commit()
@@ -1637,7 +1644,7 @@ async def request_document_download(
     step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Submit a request to download a digital document, pending Manager/Admin approval."""
-    
+
     # 1. MFA Factor 2 Enforcement
 
     await mfa.require_factor(db, current_user, "download.request", totp_code=request.totp_code, step_up_token=step_up_token)
@@ -1645,42 +1652,43 @@ async def request_document_download(
     # 2. Asset Verification
     asset_res = await db.execute(select(Asset).filter(Asset.serial_number == request.asset_serial))
     asset = asset_res.scalar_one_or_none()
-    
+
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-        
+
     if asset.asset_type not in ["DIGITAL", "DOCUMENT"]:
         raise HTTPException(status_code=400, detail="Only digital documents can be downloaded")
 
     # 3. RBAC & Scoping
     if current_user.role == "USER":
         # A USER can only download from their assigned department or if they are owner/custodian
-        if (asset.department != current_user.department and 
-            str(asset.owner_id) != str(current_user.id) and 
+        if (asset.department != current_user.department and
+            str(asset.owner_id) != str(current_user.id) and
             str(asset.custodian_id) != str(current_user.id)):
             raise HTTPException(status_code=403, detail="Users can only request downloads for their assigned department or owned assets")
-            
+
     if current_user.role == "AUDITOR":
         raise HTTPException(status_code=403, detail="Auditors are not permitted to download operational documents")
 
     # 4. Action Creation
-    action_id = f"DL-{uuid.uuid4().hex[:8].upper()}"
+    action_id = await next_action_id(db, "DL")
     new_action = DocumentAction(
         action_id=action_id,
         action_type="DOWNLOAD",
         asset_id=asset.id,
         asset_serial=asset.serial_number,
+        asset_version=asset.version_number,
         actor_id=current_user.id,
         actor_did=current_user.did,
         status="PENDING",
         purpose=request.purpose,
-        client_ip=req.client.host if req.client else "unknown"
+        client_ip=get_request_client_ip(req),
     )
-    
+
     db.add(new_action)
     await db.commit()
     await db.refresh(new_action)
-    
+
     return new_action
 
 
@@ -1736,13 +1744,19 @@ async def revise_document(
     if res.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Asset serial number already exists.")
 
-    action_id_str = f"MOD-{uuid.uuid4().hex[:12].upper()}"
-    import random
-    temp_token_id = random.randint(1000000000, 2000000000)
+    action_id_str = await next_action_id(db, "MOD")
+    reserved_token_id = await next_token_id(db)
+    root_id = parent_asset.root_asset_id or parent_asset.id
+    latest_version = (await db.execute(
+        select(func.max(Asset.version_number)).where(or_(Asset.root_asset_id == root_id, Asset.id == root_id))
+    )).scalar_one() or parent_asset.version_number
+    new_version = latest_version + 1
 
-    # 5. Create new draft child asset
+    # 5. Create new draft child asset (the parent/original is never modified)
     revised_asset = Asset(
-        token_id=temp_token_id,
+        token_id=reserved_token_id,
+        version_number=new_version,
+        root_asset_id=root_id,
         serial_number=request.new_serial_number,
         name=request.name,
         asset_type=parent_asset.asset_type,
@@ -1764,6 +1778,7 @@ async def revise_document(
         action_id=action_id_str,
         action_type="MODIFICATION",
         asset_id=revised_asset.id,
+        asset_version=new_version,
         asset_serial=request.new_serial_number,
         actor_id=current_user.id,
         actor_did=current_user.did,
@@ -1773,6 +1788,8 @@ async def revise_document(
             "name": request.name,
             "parent_asset_serial": parent_asset.serial_number,
             "parent_asset_id": str(parent_asset.id),
+            "parent_version": parent_asset.version_number,
+            "version": new_version,
             "file_hash": request.new_file_hash,
             "offchain_uri": request.new_offchain_uri
         }
@@ -1815,6 +1832,8 @@ async def get_document_lineage(
             "lifecycle_status": a.lifecycle_status,
             "approval_status": a.approval_status,
             "file_hash": a.file_hash,
+            "version_number": a.version_number,
+            "action_id": a.action_id,
             "parent_asset_id": str(a.parent_asset_id) if a.parent_asset_id else None,
             "created_at": a.created_at.isoformat() if a.created_at else None
         }
@@ -1907,55 +1926,55 @@ async def download_document_with_token(
     db: AsyncSession = Depends(get_db)
 ):
     """Use a single-use token to download a document, with dynamic watermarking applied on-the-fly."""
-    
+
     # 1. Token validation
     res = await db.execute(select(DocumentAction).filter(DocumentAction.download_token == token))
     action = res.scalar_one_or_none()
-    
+
     if not action:
         raise HTTPException(status_code=404, detail="Invalid or expired download token")
-        
+
     if action.status != "APPROVED":
         raise HTTPException(status_code=403, detail="Download request is not in APPROVED status")
-        
+
     if action.token_expires_at and action.token_expires_at < datetime.now(UTC):
         raise HTTPException(status_code=403, detail="Download token has expired")
 
     # 2. Consume token (single use)
     action.status = "COMPLETED"
     action.download_token = None # Prevent reuse
-    
+
     # 3. Retrieve asset and file
     asset_res = await db.execute(select(Asset).filter(Asset.id == action.asset_id))
     asset = asset_res.scalar_one_or_none()
-    
+
     if not asset or not asset.metadata_cid:
         await db.commit() # Save token consumption early
         raise HTTPException(status_code=404, detail="Document file reference not found")
 
     await db.commit()
-    
+
     # Resolve file path
     vault_uri = asset.metadata_cid
     # Format: secure-vault://documents/file.pdf
     if not vault_uri.startswith("secure-vault://"):
         raise HTTPException(status_code=500, detail="Invalid storage URI scheme")
-        
+
     file_rel_path = vault_uri.replace("secure-vault://", "")
     file_path = os.path.join(OFFCHAIN_STORAGE_DIR, file_rel_path)
-    
+
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Document file missing in vault")
-        
+
     # 4. Load file, apply dynamic watermark (DID + Dept + Purpose + Token tracking + Time)
     try:
         with open(file_path, "rb") as f:
             file_bytes = f.read()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
-        
+
     watermark_dept = asset.department or "GENERAL"
-    
+
     # In a real system, the watermark schema here might be more detailed for downloads
     # but we can reuse the generic dynamic watermarker which takes (bytes, DID, Dept).
     # Since we want it robust, we'll call apply_watermark.
@@ -1963,13 +1982,13 @@ async def download_document_with_token(
 
     # Note: A bespoke download watermark could include purpose and token.
     # We will just stream back what apply_watermark outputs.
-    
+
     filename = os.path.basename(file_path)
     # If the watermark converted a PDF to PNG, we'd need to adjust name/mime, but for PoC we keep it simple.
-    
+
     return Response(
-        content=watermarked_bytes, 
-        media_type="application/octet-stream", 
+        content=watermarked_bytes,
+        media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
 

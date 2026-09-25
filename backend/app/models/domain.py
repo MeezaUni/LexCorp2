@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer, BigInteger, UniqueConstraint, DateTime
+from sqlalchemy import String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer, BigInteger, UniqueConstraint, DateTime, Date
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -87,6 +87,15 @@ class WebAuthnCredential(Base, TimestampMixin):
     user: Mapped[User] = relationship(back_populates="webauthn_credentials")
 
 
+class ActionIdCounter(Base):
+    """Atomic per-prefix, per-UTC-day counter backing CRT/VW/DL/MOD-YYYYMMDD-XXXX IDs."""
+    __tablename__ = "action_id_counters"
+
+    prefix: Mapped[str] = mapped_column(String(8), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    last_value: Mapped[int] = mapped_column(Integer)
+
+
 class Department(Base, TimestampMixin):
     __tablename__ = "departments"
 
@@ -154,8 +163,11 @@ class Asset(Base, TimestampMixin):
 
     # Revision Tree (Phase 7)
     parent_asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("assets.id"), nullable=True)
-    parent_asset: Mapped[Optional["Asset"]] = relationship(remote_side=[id], back_populates="revisions")
-    revisions: Mapped[List["Asset"]] = relationship(back_populates="parent_asset")
+    parent_asset: Mapped[Optional["Asset"]] = relationship(remote_side=[id], back_populates="revisions", foreign_keys=[parent_asset_id])
+    revisions: Mapped[List["Asset"]] = relationship(back_populates="parent_asset", foreign_keys=[parent_asset_id])
+    # Version lineage: the original is version 1; every revision is a new row (originals never overwritten).
+    version_number: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    root_asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("assets.id"), index=True, nullable=True)
 
     # Action / Approval Tracking (Phase 4, 6)
     action_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
@@ -188,6 +200,7 @@ class DocumentAction(Base, TimestampMixin):
     approver_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    asset_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     purpose: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     client_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     download_token: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True, nullable=True)
