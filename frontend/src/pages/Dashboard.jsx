@@ -6,6 +6,7 @@ import UserDashboard from './UserDashboard';
 import AssetRegistry from './AssetRegistry';
 import AdminDashboard from './AdminDashboard';
 import Identity from './Identity';
+import SetupWizard from '../components/SetupWizard';
 
 function ExecutiveDashboard() {
   const [metrics, setMetrics] = useState({ totalAssets: 0, riskStatus: 'LOW', activeDIDs: 0 });
@@ -114,17 +115,11 @@ function ExecutiveDashboard() {
 }
 
 export default function Dashboard() {
-  const { wallet, user, isManager, connect, disconnect, loading } = useAuth();
+  const { wallet, user, isManager, connect, disconnect, loading, setupRequired, establishSession } = useAuth();
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('auto');
 
-  useEffect(() => {
-    if (user && user.onboarding_pending) {
-      if (activeTab !== 'identity') {
-        setActiveTab('identity');
-      }
-    }
-  }, [user, activeTab]);
+
 
   useEffect(() => {
     if (!wallet) {
@@ -273,6 +268,12 @@ export default function Dashboard() {
       boxSizing: 'border-box',
     },
   };
+
+  // Mandatory first-login setup: no dashboard (and, server-side, no API) until
+  // Login TOTP 1 and Login Passkey 1 are both configured.
+  if (user && setupRequired) {
+    return <SetupWizard onComplete={establishSession} onSignOut={disconnect} />;
+  }
 
   if (!wallet) {
     return (

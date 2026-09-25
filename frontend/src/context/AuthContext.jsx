@@ -1,175 +1,124 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { getRpcProvider, checkManagerRole } from '../services/web3';
-import { getNonce, login } from '../services/api';
-import { hasEncryptedWallet, unlockWallet } from '../services/walletCore';
+import { getRpcProvider } from '../services/web3';
+import { getMe, getWalletKey, logoutSession } from '../services/api';
+import { hasEncryptedWallet, purgeLegacyPlaintextWallet, unlockWallet } from '../services/walletCore';
 import WalletModal from '../components/WalletModal';
 
 const AuthContext = createContext(null);
-const SESSION_TTL_MS = 5 * 60 * 1000;
+// Mirrors the server's INACTIVITY_TIMEOUT_MINUTES; the server is authoritative.
+const INACTIVITY_MS = 15 * 60 * 1000;
 
 export function AuthProvider({ children }) {
-  const [reauthRequired, setReauthRequired] = useState(() => Boolean(localStorage.getItem('lexcorp_user') || localStorage.getItem('lexcorp_token')));
-  const [wallet, setWallet] = useState(null);
-  const [signer, setSigner] = useState(null);
   const [user, setUser] = useState(null);
-  const [isManager, setIsManager] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [signer, setSigner] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [notice, setNotice] = useState('');
   const inactivityTimerRef = useRef(null);
-  const lastActivityRef = useRef(0);
 
-  useEffect(() => {
-    const hasPreviousSession = localStorage.getItem('lexcorp_user') || localStorage.getItem('lexcorp_token');
-    if (hasEncryptedWallet() || hasPreviousSession) {
-      localStorage.removeItem('lexcorp_wallet');
-      localStorage.removeItem('lexcorp_user');
-      localStorage.removeItem('lexcorp_token');
-      setIsModalOpen(true);
+  const clearSession = useCallback(() => {
+    localStorage.removeItem('lexcorp_token');
+    localStorage.removeItem('lexcorp_user');
+    localStorage.removeItem('lexcorp_wallet');
+    setUser(null);
+    setSigner(null);
+  }, []);
+
+  const endSession = useCallback((message) => {
+    clearSession();
+    setNotice(message || '');
+    setIsModalOpen(true);
+  }, [clearSession]);
+
+  /** Decrypt the local keystore in memory with the session-released wrapping key. */
+  const unlockSigner = useCallback(async () => {
+    if (!hasEncryptedWallet()) throw new Error('No wallet on this device. Import it with a provisioning PIN.');
+    const key = await getWalletKey();
+    const wallet = await unlockWallet(key);
+    const connected = wallet.connect(getRpcProvider());
+    setSigner(connected);
+    return connected;
+  }, []);
+
+  const establish = useCallback(async (result) => {
+    localStorage.setItem('lexcorp_token', result.token);
+    const me = await getMe();
+    setUser(me);
+    setNotice('');
+    if (!me.onboarding_pending && hasEncryptedWallet()) {
+      unlockSigner().catch((err) => console.warn('Wallet signer unavailable:', err.message));
     }
-  }, []);
+    return me;
+  }, [unlockSigner]);
 
-  const expireInactiveSession = useCallback(() => {
-      localStorage.removeItem('lexcorp_wallet');
-      localStorage.removeItem('lexcorp_user');
-      localStorage.removeItem('lexcorp_token');
-      setWallet(null);
-      setSigner(null);
-      setUser(null);
-      setIsManager(false);
-      setReauthRequired(true);
-      setIsModalOpen(true);
-  }, []);
-
-  const resetInactivityTimer = useCallback(() => {
-    if (!user && !signer) return;
-    const now = Date.now();
-    if (now - lastActivityRef.current < 1000) return;
-    lastActivityRef.current = now;
-    if (inactivityTimerRef.current) window.clearTimeout(inactivityTimerRef.current);
-    inactivityTimerRef.current = window.setTimeout(expireInactiveSession, SESSION_TTL_MS);
-  }, [expireInactiveSession, signer, user]);
+  // Restore a server-validated session on load; never trust cached profile data.
+  useEffect(() => {
+    if (purgeLegacyPlaintextWallet()) {
+      setNotice('An unencrypted wallet copy from an older version was removed from this device. Re-import your wallet with a provisioning PIN to sign transactions.');
+    }
+    const token = localStorage.getItem('lexcorp_token');
+    if (!token) { setLoading(false); setIsModalOpen(true); return; }
+    getMe()
+      .then((me) => {
+        setUser(me);
+        if (!me.onboarding_pending && hasEncryptedWallet()) unlockSigner().catch(() => {});
+      })
+      .catch(() => { clearSession(); setIsModalOpen(true); })
+      .finally(() => setLoading(false));
+  }, [clearSession, unlockSigner]);
 
   useEffect(() => {
-    if (!user && !signer) return undefined;
-    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
-    activityEvents.forEach((eventName) => window.addEventListener(eventName, resetInactivityTimer));
-    resetInactivityTimer();
+    const onEnded = (e) => endSession(e.detail || 'Your session ended. Please sign in again.');
+    window.addEventListener('lexcorp:session-ended', onEnded);
+    return () => window.removeEventListener('lexcorp:session-ended', onEnded);
+  }, [endSession]);
+
+  const disconnect = useCallback(async () => {
+    await logoutSession();
+    clearSession();
+    setIsModalOpen(true);
+  }, [clearSession]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    const reset = () => {
+      if (inactivityTimerRef.current) window.clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = window.setTimeout(() => {
+        logoutSession().finally(() => endSession('Signed out after 15 minutes of inactivity.'));
+      }, INACTIVITY_MS);
+    };
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    events.forEach((ev) => window.addEventListener(ev, reset));
+    reset();
     return () => {
-      activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetInactivityTimer));
+      events.forEach((ev) => window.removeEventListener(ev, reset));
       if (inactivityTimerRef.current) window.clearTimeout(inactivityTimerRef.current);
     };
-  }, [resetInactivityTimer, signer, user]);
+  }, [user, endSession]);
 
-  // Authenticate when a wallet is unlocked
-  const authenticateWithWallet = useCallback(async (unlockedWallet) => {
-    setLoading(true);
-    try {
-      const provider = getRpcProvider();
-      const connectedSigner = unlockedWallet.connect(provider);
-      const address = await connectedSigner.getAddress();
-
-      // SIWE Auth Flow
-      const { nonce, message } = await getNonce(address);
-      const signature = await connectedSigner.signMessage(message);
-      const result = await login(message, signature, nonce);
-      const manager = await checkManagerRole(connectedSigner, address);
-
-      // Persist state
-      const walletData = { address };
-      localStorage.setItem('lexcorp_wallet', JSON.stringify(walletData));
-      localStorage.setItem('lexcorp_user', JSON.stringify(result.user));
-
-      setWallet(walletData);
-      setSigner(connectedSigner);
-      setUser(result.user);
-      setIsManager(manager);
-      setReauthRequired(false);
-
-      return { address, isManager: manager, user: result.user };
-    } catch (err) {
-      console.error('Auth error:', err);
-      disconnect();
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const authenticateWithSession = useCallback(async (result) => {
-    const walletData = { address: result.user.wallet_address };
-    localStorage.setItem('lexcorp_wallet', JSON.stringify(walletData));
-    localStorage.setItem('lexcorp_user', JSON.stringify(result.user));
-    localStorage.setItem('lexcorp_token', result.token);
-
-    let connectedSigner = null;
-    try {
-      if (hasEncryptedWallet()) {
-        const unlocked = await unlockWallet();
-        const provider = getRpcProvider();
-        connectedSigner = unlocked.connect(provider);
-      }
-    } catch (err) {
-      console.warn('Could not auto-bind local wallet signer on session login:', err);
-    }
-
-    setWallet(walletData);
-    setUser(result.user);
-    setSigner(connectedSigner);
-    setIsManager(result.user.role === 'ADMIN' || result.user.role === 'MANAGER');
-    setReauthRequired(false);
-  }, []);
-
-  const refreshUser = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('lexcorp_token');
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const res = await fetch('/api/auth/me', { headers });
-      if (res.ok) {
-        const userData = await res.json();
-        setUser(userData);
-        localStorage.setItem('lexcorp_user', JSON.stringify(userData));
-        setIsManager(userData.role === 'ADMIN' || userData.role === 'MANAGER');
-        return userData;
-      }
-    } catch (err) {
-      console.error('Failed to refresh user profile:', err);
-    }
-    return null;
-  }, []);
-
-  const connect = useCallback(() => {
-    setIsModalOpen(true);
-  }, []);
-
-  const disconnect = useCallback(() => {
-    localStorage.removeItem('lexcorp_wallet');
-    localStorage.removeItem('lexcorp_user');
-    localStorage.removeItem('lexcorp_token');
-    setWallet(null);
-    setSigner(null);
-    setUser(null);
-    setIsManager(false);
-  }, []);
+  const wallet = user ? { address: user.wallet_address } : null;
 
   return (
     <AuthContext.Provider value={{
       wallet,
       signer,
       user,
-      isManager,
+      isManager: user?.role === 'ADMIN' || user?.role === 'MANAGER',
+      setupRequired: Boolean(user?.onboarding_pending),
       loading,
-      connect,
+      connect: () => setIsModalOpen(true),
       disconnect,
-      refreshUser,
+      unlockSigner,
+      establishSession: establish,
+      refreshUser: async () => { const me = await getMe(); setUser(me); return me; },
       openWalletModal: () => setIsModalOpen(true),
     }}>
       {children}
       <WalletModal
-        isOpen={isModalOpen}
+        isOpen={isModalOpen && !user}
         onClose={() => setIsModalOpen(false)}
-        onUnlocked={(w) => authenticateWithWallet(w)}
-        onAuthenticated={authenticateWithSession}
-        forceLogin={reauthRequired}
+        onAuthenticated={establish}
+        notice={notice}
       />
     </AuthContext.Provider>
   );

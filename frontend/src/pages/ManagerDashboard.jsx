@@ -134,7 +134,7 @@ export default function ManagerDashboard() {
   const handlePasskeyF2Doc = async () => {
     try {
       setError('');
-      await authenticateWithPasskey('factor2');
+      await authenticateWithPasskey('factor2', 'document.submit');
       setDocPasskeyVerified(true);
       setSuccessMsg('Passkey Factor 2 verified successfully!');
     } catch (err) {
@@ -146,7 +146,7 @@ export default function ManagerDashboard() {
   const handlePasskeyF2Phys = async () => {
     try {
       setError('');
-      await authenticateWithPasskey('factor2');
+      await authenticateWithPasskey('factor2', 'document.submit');
       setPhysPasskeyVerified(true);
       setSuccessMsg('Passkey Factor 2 verified successfully!');
     } catch (err) {
@@ -158,7 +158,7 @@ export default function ManagerDashboard() {
   const handlePasskeyF3 = async () => {
     try {
       setError('');
-      await authenticateWithPasskey('factor3');
+      await authenticateWithPasskey('factor3', 'asset.approve');
       setPasskeyFactor3Verified(true);
       setSuccessMsg('Passkey Factor 3 verified successfully!');
     } catch (err) {

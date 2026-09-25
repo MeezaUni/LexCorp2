@@ -601,3 +601,42 @@ async def test_login_rate_limit_enforced(client, db_session):
     codes = [(await client.post("/api/auth/login/totp", json={"wallet_address": wallet, "token": "123456"})).status_code for _ in range(7)]
     assert codes[:5] == [401] * 5
     assert 429 in codes[5:]
+
+
+# =============================================================== Wallet keystore wrapping secret
+
+@pytest.mark.asyncio
+async def test_wallet_key_released_only_to_session_and_rotated_on_reset(client, db_session):
+    acct, pin = await new_identity(client)
+    prov = await provision(client, acct, pin)
+    key1 = prov.json()["wallet_key"]
+    assert key1 and len(key1) >= 32
+    setup = prov.json()["token"]
+    client.cookies.clear()  # provisioning set the httpOnly session cookie
+    assert (await client.get("/api/auth/wallet-key")).status_code == 401
+    assert (await client.get("/api/auth/wallet-key", headers=bearer(setup))).json()["wallet_key"] == key1
+    user = (await db_session.execute(select(User).where(User.wallet_address == acct.address.lower()))).scalar_one()
+    await db_session.refresh(user)
+    assert user.wallet_wrap_secret.startswith("enc:v1:") and key1 not in user.wallet_wrap_secret
+
+    # Admin reset clears it; re-provisioning issues a different one
+    await enable_totp(client, setup, "")
+    pk = await register_passkey(client, setup, "login")
+    full = pk.last_result["token"]
+    await client.post("/api/auth/reset-request", headers=bearer(full), json={})
+    ok = await client.post(f"/api/auth/reset-approve/{user.id}", headers=bearer(admin_token()),
+                           json={"totp_code": totp_code(ADMIN_WALLET, "factor3")})
+    assert ok.status_code == 200
+    prov2 = await provision(client, acct, ok.json()["one_time_pin"])
+    key2 = prov2.json()["wallet_key"]
+    assert key2 != key1
+    assert (await client.get("/api/auth/wallet-key", headers=bearer(prov2.json()["token"]))).json()["wallet_key"] == key2
+
+
+@pytest.mark.asyncio
+async def test_totp_qr_rendered_locally(client, db_session):
+    acct, pin = await new_identity(client)
+    setup = (await provision(client, acct, pin)).json()["token"]
+    res = await client.post("/api/auth/2fa/setup", headers=bearer(setup))
+    assert res.status_code == 200
+    assert res.json()["qr_data_uri"].startswith("data:image/png;base64,")

@@ -1,88 +1,74 @@
 import { ethers } from 'ethers';
 
-const STORAGE_KEY = 'lexcorp_keystore';
-
 /**
- * Creates a brand new random wallet and stores its private key locally without password.
+ * Encrypted wallet storage.
  *
- * @returns {Promise<ethers.Wallet>} - The unencrypted wallet instance
+ * The wallet is stored only as an ethers v3 JSON keystore (scrypt + AES-128-CTR).
+ * The keystore is unlocked with a random wrapping secret held by the LexCorp server,
+ * which releases it only to an authenticated session (GET /api/auth/wallet-key) and
+ * rotates it on every provisioning or admin reset. A copy of this browser's storage
+ * is therefore useless without logging in, and the private key / mnemonic is never
+ * written to storage in plaintext.
+ *
+ * The keystore is NOT the authentication boundary: login always requires the typed
+ * wallet address plus Login TOTP 1 or Login Passkey 1, verified server-side.
  */
-export async function createNewWallet() {
-  const wallet = ethers.Wallet.createRandom();
-  localStorage.setItem(STORAGE_KEY, wallet.privateKey);
-  return wallet;
-}
 
-/**
- * Imports an existing private key or mnemonic and stores it.
- *
- * @param {string} keyOrMnemonic - Valid Private Key or 12/24 word Mnemonic
- * @returns {Promise<ethers.Wallet>} - The imported wallet instance
- */
-export async function importWallet(keyOrMnemonic) {
-  let wallet;
+const STORAGE_KEY = 'lexcorp_keystore_v2';
+const LEGACY_PLAINTEXT_KEY = 'lexcorp_keystore';
+
+export function parseWalletInput(keyOrMnemonic) {
+  const value = (keyOrMnemonic || '').trim();
   try {
-    if (keyOrMnemonic.includes(' ')) {
-      wallet = ethers.Wallet.fromPhrase(keyOrMnemonic.trim());
-    } else {
-      wallet = new ethers.Wallet(keyOrMnemonic.trim());
-    }
-  } catch (err) {
-    throw new Error('Invalid private key or mnemonic phrase');
+    return value.includes(' ') ? ethers.Wallet.fromPhrase(value) : new ethers.Wallet(value);
+  } catch {
+    throw new Error('Invalid private key or recovery phrase.');
   }
-
-  localStorage.setItem(STORAGE_KEY, wallet.privateKey);
-  return wallet;
 }
 
-/**
- * Checks if a wallet is stored in local storage.
- * @returns {boolean}
- */
+/** Encrypt and store a wallet with the server-issued wrapping secret. */
+export async function storeEncryptedWallet(wallet, walletKey) {
+  if (!walletKey) throw new Error('Missing wallet wrapping key from server.');
+  const keystore = await wallet.encrypt(walletKey);
+  localStorage.setItem(STORAGE_KEY, keystore);
+  // Remove any legacy plaintext copy written by older versions of this app.
+  localStorage.removeItem(LEGACY_PLAINTEXT_KEY);
+}
+
 export function hasEncryptedWallet() {
-  // Still called hasEncryptedWallet by consumers, but implies HAS wallet.
   return !!localStorage.getItem(STORAGE_KEY);
 }
 
-/**
- * Loads the locally stored wallet keystore without password.
- *
- * @returns {Promise<ethers.Wallet>} - Wallet instance
- */
-export async function unlockWallet() {
-  const privateKey = localStorage.getItem(STORAGE_KEY);
-  if (!privateKey) {
-    throw new Error('No wallet found on this device');
-  }
-
+/** The address recorded in the keystore (public; never used as an auth boundary). */
+export function storedWalletAddress() {
   try {
-    // If it is stored as an encrypted JSON originally, it will fail here.
-    // So we try parsing it. If it fails, maybe we should clear it or alert the user.
-    if (privateKey.startsWith('{')) {
-       throw new Error('Legacy password-encrypted wallet found. Please logout and re-import your key.');
-    }
-    const wallet = new ethers.Wallet(privateKey);
-    return wallet;
-  } catch (err) {
-    console.error("Failed to load wallet:", err);
-    throw new Error(err.message || 'Corrupted wallet file');
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? ethers.getAddress('0x' + JSON.parse(raw).address) : null;
+  } catch {
+    return null;
   }
 }
 
-/**
- * Connects an unencrypted wallet instance to a network provider.
- *
- * @param {ethers.Wallet} wallet - Unlocked wallet
- * @param {ethers.Provider} provider - The RPC provider (Besu)
- * @returns {ethers.Wallet} - The connected signer ready to execute transactions
- */
-export function connectWalletToProvider(wallet, provider) {
-  return wallet.connect(provider);
+/** Decrypt the keystore in memory with the wrapping secret from an authenticated session. */
+export async function unlockWallet(walletKey) {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) throw new Error('No wallet on this device. Import it with a provisioning PIN.');
+  try {
+    return await ethers.Wallet.fromEncryptedJson(raw, walletKey);
+  } catch {
+    throw new Error('This device\'s wallet copy is out of date (it was re-provisioned). Re-import it with a new PIN.');
+  }
 }
 
-/**
- * Clears the stored keystore (Logout/Reset)
- */
-export function removeWallet() {
+export function purgeLegacyPlaintextWallet() {
+  if (localStorage.getItem(LEGACY_PLAINTEXT_KEY)) {
+    localStorage.removeItem(LEGACY_PLAINTEXT_KEY);
+    return true;
+  }
+  return false;
+}
+
+export function clearWallet() {
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LEGACY_PLAINTEXT_KEY);
 }

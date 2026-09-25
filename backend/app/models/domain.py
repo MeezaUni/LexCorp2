@@ -33,6 +33,9 @@ class User(Base, TimestampMixin):
     reset_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     reset_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Unlocks the browser's encrypted wallet keystore; encrypted at rest, rotated on provisioning.
+    wallet_wrap_secret: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     # Server-side session activity (single active session per user) and identity revocation
     last_activity_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

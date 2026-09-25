@@ -194,7 +194,7 @@ export default function UserDashboard() {
         try {
           const factor = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'factor3' : 'factor2';
           setProposalStatus(`Verifying ${factor === 'factor3' ? 'Factor 3' : 'Factor 2'} Passkey...`);
-          await authenticateWithPasskey(factor);
+          await authenticateWithPasskey(factor, factor === 'factor3' ? 'asset.mint' : 'document.submit');
           currentTotp = '';
         } catch (pkErr) {
           throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
@@ -301,7 +301,7 @@ export default function UserDashboard() {
         try {
           const factor = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'factor3' : 'factor2';
           setPhysProposalStatus(`Verifying ${factor === 'factor3' ? 'Factor 3' : 'Factor 2'} Passkey...`);
-          await authenticateWithPasskey(factor);
+          await authenticateWithPasskey(factor, factor === 'factor3' ? 'asset.mint' : 'document.submit');
           currentTotp = '';
         } catch (pkErr) {
           throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
@@ -408,7 +408,7 @@ export default function UserDashboard() {
       let currentTotp = shareTotpCode;
       if (usePasskey) {
         try {
-          await authenticateWithPasskey('factor2');
+          await authenticateWithPasskey('factor2', 'access.request');
           currentTotp = '';
         } catch (pkErr) {
           throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
@@ -507,13 +507,13 @@ export default function UserDashboard() {
 
       if (usePasskey) {
         try {
-          await authenticateWithPasskey('factor2');
+          await authenticateWithPasskey('factor3', 'document.modify');
           currentTotp = '';
         } catch (pkErr) {
           throw new Error('Passkey verification failed. Please use TOTP fallback. ' + pkErr.message);
         }
       } else if (!currentTotp || currentTotp.trim() === '') {
-        throw new Error('Factor 2 TOTP code is required if passkey is not used.');
+        throw new Error('Factor 3 (Mint/Approve/Modify) TOTP code is required if passkey is not used.');
       }
 
       const formData = new FormData();
@@ -1473,7 +1473,7 @@ export default function UserDashboard() {
 
               <div style={{ marginBottom: '1.2rem' }}>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#334155', marginBottom: '6px' }}>
-                  Factor 2 TOTP Code *
+                  Factor 3 (Mint/Approve/Modify) TOTP Code *
                 </label>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <input

@@ -10,6 +10,9 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        // Forward the browser's IP (X-Forwarded-For). The backend trusts this header
+        // only from TRUSTED_PROXIES (loopback), and binds sessions to that IP.
+        xfwd: true,
       },
     },
   },

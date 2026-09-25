@@ -14,6 +14,7 @@ and issues a new single-use provisioning PIN.
 
 import json
 import logging
+import secrets
 import uuid
 from datetime import timedelta
 from typing import List, Optional
@@ -42,7 +43,7 @@ from app.api.dependencies import (
     record_audit,
 )
 from app.core.config import settings
-from app.core.crypto import hash_pin, verify_pin
+from app.core.crypto import decrypt_secret, encrypt_secret, hash_pin, verify_pin
 from app.core.limiter import limiter
 from app.models.domain import User, WebAuthnCredential
 from app.services import auth, mfa, security, vc
@@ -248,8 +249,8 @@ async def get_nonce(address: str, request: Request, db: AsyncSession = Depends(g
     return NonceResponse(nonce=nonce, message=auth.build_siwe_message(checksummed, nonce))
 
 
-@router.post("/provision", response_model=LoginResponse)
-@router.post("/login", response_model=LoginResponse, include_in_schema=False)
+@router.post("/provision")
+@router.post("/login", include_in_schema=False)
 @limiter.limit("5/minute")
 async def provision_wallet(
     req: ProvisionRequest, request: Request, response: Response, db: AsyncSession = Depends(get_db)
@@ -293,9 +294,13 @@ async def provision_wallet(
         await db.rollback()
         raise HTTPException(status_code=400, detail="This provisioning PIN has already been used.")
     await db.refresh(user)
+    # Fresh wrapping secret for the newly imported keystore; any older keystore copy stops unlocking.
+    wallet_key = secrets.token_urlsafe(32)
+    user.wallet_wrap_secret = encrypt_secret(wallet_key)
     await record_audit(db, "WALLET_PROVISIONED", actor_did=user.did, target_did=user.did,
                        client_ip=get_request_client_ip(request))
-    return await _issue_session(db, user, request, response, "WALLET_PROVISIONING")
+    session = await _issue_session(db, user, request, response, "WALLET_PROVISIONING")
+    return {"token": session.token, "user": session.user, "wallet_key": wallet_key}
 
 
 @router.post("/otp/verify-import", include_in_schema=False)
@@ -380,6 +385,16 @@ async def get_current_user_profile(user: User = Depends(get_setup_user), db: Asy
     }
 
 
+@router.get("/wallet-key")
+@limiter.limit("20/minute")
+async def get_wallet_key(request: Request, user: User = Depends(get_setup_user)):
+    """Release the keystore wrapping secret to an authenticated session only."""
+    key = decrypt_secret(user.wallet_wrap_secret)
+    if not key:
+        raise HTTPException(status_code=404, detail="No wallet is provisioned for this identity. Re-import it with a new PIN.")
+    return {"wallet_key": key}
+
+
 # ============================================================ TOTP enrollment
 
 def _totp_purpose(path_factor: Optional[str]) -> str:
@@ -397,7 +412,12 @@ async def _totp_setup(user: User, purpose: str, db: AsyncSession) -> dict:
     mfa.set_totp_secret(user, purpose, secret)
     await db.commit()
     # Returned once to the enrolling user only, for their authenticator app. Never logged.
-    return {"secret": secret, "uri": security.get_totp_uri(user.name or user.wallet_address, secret, issuer_name=issuer)}
+    # The QR is rendered here: the otpauth URI contains the secret and must never go to a third-party QR service.
+    import base64
+    from app.services.qr import generate_qr_for_url
+    uri = security.get_totp_uri(user.name or user.wallet_address, secret, issuer_name=issuer)
+    qr = "data:image/png;base64," + base64.b64encode(generate_qr_for_url(uri)).decode()
+    return {"secret": secret, "uri": uri, "qr_data_uri": qr}
 
 
 async def _totp_verify(user: User, purpose: str, code: str, request: Request, response: Response, db: AsyncSession) -> dict:
@@ -763,6 +783,7 @@ async def approve_user_reset(
     )
     new_pin = security.generate_one_time_pin(12)
     expires_at = mfa.utcnow() + timedelta(hours=settings.PROVISIONING_PIN_TTL_HOURS)
+    target.wallet_wrap_secret = None  # old keystore copies can no longer be unlocked
     target.pin_hash = hash_pin(new_pin)
     target.pin_expires_at = expires_at
     target.pin_used = False
@@ -772,7 +793,7 @@ async def approve_user_reset(
     await record_audit(
         db, "ADMIN_LOGIN_RESET_APPROVED",
         actor_did=admin.did, target_did=target.did, client_ip=get_request_client_ip(request),
-        details={"invalidated": ["login_totp", "login_passkeys", "sessions"], "pin_expires_at": expires_at.isoformat()},
+        details={"invalidated": ["login_totp", "login_passkeys", "sessions", "wallet_keystore"], "pin_expires_at": expires_at.isoformat()},
     )
     await db.commit()
     return {

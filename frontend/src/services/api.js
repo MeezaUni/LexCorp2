@@ -2,7 +2,37 @@ import axios from 'axios';
 
 axios.defaults.withCredentials = true;
 
-// Attach Bearer token from localStorage for all API requests
+/*
+ * Purpose-bound step-up tokens. A passkey (or TOTP) step-up returns a single-use
+ * token bound server-side to ONE action. It is attached only to the request that
+ * performs that action, and dropped once sent or after it expires.
+ */
+const STEP_UP_ROUTES = [
+  [/\/assets\/(document|physical)\/propose$/, 'document.submit'],
+  [/\/assets\/document\/share\/propose$/, 'access.request'],
+  [/\/assets\/(document|physical)\/approval\//, 'asset.approve'],
+  [/\/assets\/document\/download\/(approve|approval)\//, 'asset.approve'],
+  [/\/assets\/(mint|mint-digital)\/prepare$/, 'asset.mint'],
+  [/\/assets\/update-digital\/prepare$/, 'document.modify'],
+  [/\/assets\/document\/revise/, 'document.modify'],
+  [/\/assets\/document\/view\//, 'document.view'],
+  [/\/assets\/document\/download\/request$/, 'download.request'],
+  [/\/auth\/reset-approve\//, 'admin.reset'],
+];
+const pendingStepUp = {};
+
+export function rememberStepUp(action, token, expiresAt) {
+  pendingStepUp[action] = { token, expiresAt: expiresAt ? Date.parse(expiresAt) : Date.now() + 5 * 60 * 1000 };
+}
+
+function takeStepUp(url) {
+  const route = STEP_UP_ROUTES.find(([re]) => re.test((url || '').split('?')[0]));
+  if (!route) return null;
+  const entry = pendingStepUp[route[1]];
+  delete pendingStepUp[route[1]];
+  return entry && entry.expiresAt > Date.now() ? entry.token : null;
+}
+
 axios.interceptors.request.use((config) => {
   try {
     const token = localStorage.getItem('lexcorp_token');
@@ -10,8 +40,26 @@ axios.interceptors.request.use((config) => {
       config.headers.Authorization = `Bearer ${token}`;
     }
   } catch (e) {}
+  if (!config.headers['X-Step-Up-Token']) {
+    const stepUp = takeStepUp(config.url);
+    if (stepUp) config.headers['X-Step-Up-Token'] = stepUp;
+  }
   return config;
 });
+
+// A revoked / expired / IP-changed session sends the user back to sign-in.
+const AUTH_FLOW_URLS = ['/auth/login', '/auth/provision', '/auth/webauthn', '/auth/step-up', '/auth/nonce', '/auth/reset-request'];
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status;
+    const url = error?.config?.url || '';
+    if (status === 401 && !AUTH_FLOW_URLS.some((u) => url.includes(u))) {
+      window.dispatchEvent(new CustomEvent('lexcorp:session-ended', { detail: error.response?.data?.detail }));
+    }
+    return Promise.reject(error);
+  }
+);
 
 const API_BASE = '/api';
 
@@ -86,72 +134,133 @@ export function getDownloadDocumentUrl(token) {
   return `${API_BASE}/assets/document/download-token/${token}`;
 }
 
-// Passkey/MFA
-export async function getPasskeyOptions(factor) {
-  const response = await axios.post(`${API_BASE}/auth/webauthn/${factor}/options`);
-  return response.data;
-}
+// ---------------------------------------------------------------- WebAuthn helpers
 
-export async function verifyPasskey(factor, data) {
-  const response = await axios.post(`${API_BASE}/auth/webauthn/${factor}/verify`, data);
-  return response.data;
-}
+const b64urlToBytes = (value) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const bytesToB64url = (value) => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 
-// WebAuthn Helper
-export async function authenticateWithPasskey(factor) {
-  const { options } = await getPasskeyOptions(factor);
-
-  // Convert challenge and allowCredential IDs from base64url strings for navigator.credentials
-  const bufferDecode = (value) => {
-    return Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
-  };
-
-  const bufferEncode = (value) => {
-    return btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-  };
-
-  const publicKey = {
-    ...options,
-    challenge: bufferDecode(options.challenge),
-    allowCredentials: options.allowCredentials.map(cred => ({
-      ...cred,
-      id: bufferDecode(cred.id)
-    }))
-  };
-
-  const assertion = await navigator.credentials.get({ publicKey });
-
-  const response = {
+export async function getAssertion(options) {
+  const assertion = await navigator.credentials.get({
+    publicKey: {
+      ...options,
+      challenge: b64urlToBytes(options.challenge),
+      allowCredentials: (options.allowCredentials || []).map((c) => ({ ...c, id: b64urlToBytes(c.id) })),
+    },
+  });
+  if (!assertion) throw new Error('Passkey prompt was cancelled.');
+  return {
     id: assertion.id,
-    rawId: bufferEncode(new Uint8Array(assertion.rawId)),
+    rawId: bytesToB64url(assertion.rawId),
     type: assertion.type,
     authenticatorAttachment: assertion.authenticatorAttachment,
     response: {
-      authenticatorData: bufferEncode(new Uint8Array(assertion.response.authenticatorData)),
-      clientDataJSON: bufferEncode(new Uint8Array(assertion.response.clientDataJSON)),
-      signature: bufferEncode(new Uint8Array(assertion.response.signature)),
-      userHandle: assertion.response.userHandle ? bufferEncode(new Uint8Array(assertion.response.userHandle)) : null
-    }
+      authenticatorData: bytesToB64url(assertion.response.authenticatorData),
+      clientDataJSON: bytesToB64url(assertion.response.clientDataJSON),
+      signature: bytesToB64url(assertion.response.signature),
+      userHandle: assertion.response.userHandle ? bytesToB64url(assertion.response.userHandle) : null,
+    },
   };
-
-  return await verifyPasskey(factor, {
-    credential_id: assertion.id,
-    response
-  });
 }
 
+export async function createPasskeyCredential(options) {
+  const credential = await navigator.credentials.create({
+    publicKey: {
+      ...options,
+      challenge: b64urlToBytes(options.challenge),
+      user: { ...options.user, id: b64urlToBytes(options.user.id) },
+      excludeCredentials: (options.excludeCredentials || []).map((c) => ({ ...c, id: b64urlToBytes(c.id) })),
+    },
+  });
+  if (!credential) throw new Error('Passkey registration was cancelled.');
+  return {
+    id: credential.id,
+    rawId: bytesToB64url(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: bytesToB64url(credential.response.clientDataJSON),
+      attestationObject: bytesToB64url(credential.response.attestationObject),
+      transports: credential.response.getTransports ? credential.response.getTransports() : [],
+    },
+  };
+}
 
-export async function getNonce(address) {
-  const response = await axios.post(`${API_BASE}/auth/nonce?address=${address}`);
+/** Register a passkey for 'login', 'factor2' or 'factor3'. */
+export async function registerPasskey(factorScope, deviceName = 'Platform Authenticator', totpCode = null) {
+  // Adding a passkey to an already-protected purpose requires a current code of that purpose.
+  const { data } = await axios.post(`${API_BASE}/auth/webauthn/register/options`, { factor_scope: factorScope, device_name: deviceName, totp_code: totpCode });
+  const response = await createPasskeyCredential(data.options);
+  const res = await axios.post(`${API_BASE}/auth/webauthn/register/verify`, { factor_scope: factorScope, device_name: deviceName, response });
+  return res.data;
+}
+
+const DEFAULT_ACTION = { factor2: 'document.submit', factor3: 'asset.approve' };
+
+/**
+ * Passkey step-up for one action (e.g. 'document.view', 'asset.approve').
+ * The resulting single-use token is attached automatically to that action's request.
+ */
+export async function authenticateWithPasskey(factor, action = DEFAULT_ACTION[factor]) {
+  const { data } = await axios.post(`${API_BASE}/auth/webauthn/${factor}/options`, { action });
+  const response = await getAssertion(data.options);
+  const res = await axios.post(`${API_BASE}/auth/webauthn/${factor}/verify`, { response });
+  rememberStepUp(res.data.action, res.data.step_up_token, res.data.expires_at);
+  return res.data;
+}
+
+/** TOTP step-up for one action (for requests that cannot carry totp_code in their body). */
+export async function stepUpWithTotp(action, code) {
+  const res = await axios.post(`${API_BASE}/auth/step-up/totp`, { action, code });
+  rememberStepUp(res.data.action, res.data.step_up_token, res.data.expires_at);
+  return res.data;
+}
+
+// ---------------------------------------------------------------- Identity / session
+
+export async function provisionWallet(message, signature, nonce, pin) {
+  const response = await axios.post(`${API_BASE}/auth/provision`, { message, signature, nonce, pin });
   return response.data;
 }
 
-export async function login(message, signature, nonce) {
-  const response = await axios.post(`${API_BASE}/auth/login`, {
-    message,
-    signature,
-    nonce,
-  });
+export async function loginWithTotp(walletAddress, token) {
+  const response = await axios.post(`${API_BASE}/auth/login/totp`, { wallet_address: walletAddress, token });
+  return response.data;
+}
+
+export async function loginWithPasskey(walletAddress) {
+  const { data } = await axios.post(`${API_BASE}/auth/login/passkey/options`, { wallet_address: walletAddress });
+  const response = await getAssertion(data.options);
+  const res = await axios.post(`${API_BASE}/auth/login/passkey/verify`, { wallet_address: walletAddress, response });
+  return res.data;
+}
+
+export async function getWalletKey() {
+  const response = await axios.get(`${API_BASE}/auth/wallet-key`);
+  return response.data.wallet_key;
+}
+
+export async function getMe() {
+  const response = await axios.get(`${API_BASE}/auth/me`);
+  return response.data;
+}
+
+export async function logoutSession() {
+  try {
+    await axios.post(`${API_BASE}/auth/logout`);
+  } catch (e) {}
+}
+
+export async function requestAdminAssistance(reason) {
+  const response = await axios.post(`${API_BASE}/auth/reset-request`, { reason });
+  return response.data;
+}
+
+export async function requestAdminAssistanceWithWallet(message, signature, nonce, reason) {
+  const response = await axios.post(`${API_BASE}/auth/reset-request/wallet`, { message, signature, nonce, reason });
+  return response.data;
+}
+
+export async function getNonce(address) {
+  const response = await axios.post(`${API_BASE}/auth/nonce?address=${address}`);
   return response.data;
 }
 

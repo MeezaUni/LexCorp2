@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
+import { registerPasskey, requestAdminAssistance } from '../services/api';
 
 const API_BASE = '/api';
 
-const FactorCard = ({ title, desc, isSetup, setupHandler, verifyHandler, disableHandler, resetHandler, setupData, code, setCode, loading, error, success }) => (
+const FactorCard = ({ title, desc, isSetup, setupHandler, verifyHandler, disableHandler, resetHandler, lockedMessage, setupData, code, setCode, loading, error, success }) => (
   <div style={{ background: '#fff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
       <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '700', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -36,7 +37,9 @@ const FactorCard = ({ title, desc, isSetup, setupHandler, verifyHandler, disable
     {setupData && (
       <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
         <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
-          <img src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(setupData.uri)}`} alt="QR" style={{ width: '120px', height: '120px', borderRadius: '8px', border: '2px solid #e2e8f0' }} />
+          {/* Rendered by the LexCorp server: the otpauth URI contains the secret and must not go to a third-party QR service. */}
+          <img src={setupData.qr_data_uri} alt="Authenticator QR" style={{ width: '140px', height: '140px', borderRadius: '8px', border: '2px solid #e2e8f0' }} />
+          <div style={{ fontSize: '11px', color: '#64748b', marginTop: '6px', wordBreak: 'break-all' }}>Manual key: <code style={{ userSelect: 'all' }}>{setupData.secret}</code></div>
         </div>
         <form onSubmit={verifyHandler}>
           <input type="text" maxLength={6} placeholder="000000" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} style={{
@@ -52,9 +55,12 @@ const FactorCard = ({ title, desc, isSetup, setupHandler, verifyHandler, disable
     {isSetup && (
       <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '12px', fontSize: '12px', color: '#166534' }}>
         ✓ Authenticator activated.
-        <button onClick={disableHandler} disabled={loading} style={{ display: 'block', marginTop: '10px', background: '#fff', color: '#991b1b', border: '1px solid #fecaca', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer' }}>
-          Disable
-        </button>
+        {lockedMessage && <div style={{ marginTop: '8px', color: '#475569' }}>{lockedMessage}</div>}
+        {disableHandler && (
+          <button onClick={disableHandler} disabled={loading} style={{ display: 'block', marginTop: '10px', background: '#fff', color: '#991b1b', border: '1px solid #fecaca', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer' }}>
+            Disable (requires current code)
+          </button>
+        )}
         {resetHandler && (
           <button onClick={resetHandler} disabled={loading} style={{ display: 'block', marginTop: '8px', background: '#fff', color: '#92400e', border: '1px solid #fed7aa', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer' }}>
             Reset & Re-enroll
@@ -98,7 +104,7 @@ export default function Identity() {
   const [passkeySuccess, setPasskeySuccess] = useState('');
   const [passkeyError, setPasskeyError] = useState('');
   const [registeredPasskeys, setRegisteredPasskeys] = useState([]);
-  const [passkeyScope, setPasskeyScope] = useState('login');
+  const [passkeyScope, setPasskeyScope] = useState('factor2');
 
   useEffect(() => {
     if (user) {
@@ -153,35 +159,6 @@ export default function Identity() {
     }
   };
 
-  const handleDisableTotp = async () => {
-    setTotpError('');
-    setTotpLoading(true);
-    try {
-      await axios.post(`${API_BASE}/auth/2fa/disable`);
-      setIsTotpEnabled(false);
-      setTotpSuccess('Mobile authenticator disabled.');
-    } catch (err) {
-      setTotpError(err.response?.data?.detail || 'Failed to disable mobile authenticator.');
-    } finally {
-      setTotpLoading(false);
-    }
-  };
-
-  const handleResetTotp = async () => {
-    setTotpError('');
-    setTotpLoading(true);
-    try {
-      await axios.post(`${API_BASE}/auth/2fa/reset`);
-      setIsTotpEnabled(false);
-      setTotpSetupData(null);
-      setTotpSuccess('Mobile authenticator reset. You can enroll a new device.');
-    } catch (err) {
-      setTotpError(err.response?.data?.detail || 'Failed to reset mobile authenticator.');
-    } finally {
-      setTotpLoading(false);
-    }
-  };
-
   // --- TOTP Factor 2 Flow ---
   const handleStartF2Setup = async () => {
     setF2Error('');
@@ -224,7 +201,9 @@ export default function Identity() {
     setF2Error('');
     setF2Loading(true);
     try {
-      await axios.post(`${API_BASE}/auth/2fa/factor2/disable`);
+      const code = window.prompt('Enter your current Factor 2 (View/Submission) TOTP code to confirm:');
+      if (!code) return;
+      await axios.post(`${API_BASE}/auth/2fa/factor2/disable`, { totp_code: code.trim() });
       setIsF2Enabled(false);
       setF2Success('Factor 2 disabled.');
     } catch (err) {
@@ -276,7 +255,9 @@ export default function Identity() {
     setF3Error('');
     setF3Loading(true);
     try {
-      await axios.post(`${API_BASE}/auth/2fa/factor3/disable`);
+      const code = window.prompt('Enter your current Factor 3 (Mint/Approve/Modify) TOTP code to confirm:');
+      if (!code) return;
+      await axios.post(`${API_BASE}/auth/2fa/factor3/disable`, { totp_code: code.trim() });
       setIsF3Enabled(false);
       setF3Success('Factor 3 disabled.');
     } catch (err) {
@@ -286,114 +267,51 @@ export default function Identity() {
     }
   };
 
-  // --- WebAuthn / Passkey Registration Flow ---
+  // --- Passkey registration: Factor 2 / Factor 3 only (the Login Passkey is set up during onboarding) ---
+  const scopeLabel = { factor2: 'Factor 2 (View/Submission)', factor3: 'Factor 3 (Mint/Approve/Modify)' };
+  const scopeProtected = (scope) => (scope === 'factor2' ? isF2Enabled : isF3Enabled) || registeredPasskeys.some((pk) => pk.factor_scope === scope);
+
   const handleRegisterPasskey = async () => {
     setPasskeyError('');
     setPasskeySuccess('');
     setPasskeyLoading(true);
-
     try {
-      // 1. Fetch registration options from server
-      const optRes = await axios.post(`${API_BASE}/auth/webauthn/register/options`, {
-        device_name: navigator.userAgent.includes('Windows') ? 'Windows Hello / TPM' : navigator.userAgent.includes('Mac') ? 'Touch ID Enclave' : 'Hardware FIDO2 Authenticator',
-        factor_scope: passkeyScope
-      });
-
-      const options = optRes.data.options;
-
-      // 2. Decode challenge and user ID for navigator.credentials.create
-      const challengeBuffer = Uint8Array.from(atob(options.challenge.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-      const userIdBuffer = Uint8Array.from(atob(options.user.id.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-
-      const publicKeyCredentialCreationOptions = {
-        challenge: challengeBuffer,
-        rp: options.rp,
-        user: {
-          ...options.user,
-          id: userIdBuffer,
-        },
-        pubKeyCredParams: options.pubKeyCredParams,
-        authenticatorSelection: options.authenticatorSelection || {
-          authenticatorAttachment: 'platform',
-          userVerification: 'preferred'
-        },
-        timeout: 60000,
-        attestation: 'none'
-      };
-
-      // 3. Prompt user for TouchID / Windows Hello / FaceID biometric
-      const credential = await navigator.credentials.create({
-        publicKey: publicKeyCredentialCreationOptions
-      });
-
-      if (!credential) {
-        throw new Error('Biometric authentication cancelled or not available on this device.');
+      let code = null;
+      if (scopeProtected(passkeyScope)) {
+        code = window.prompt(`${scopeLabel[passkeyScope]} is already protected. Enter a current ${scopeLabel[passkeyScope]} TOTP code to add another passkey:`);
+        if (!code) return;
       }
-
-      // Convert raw buffers to base64url for verification endpoint
-      const rawId = btoa(String.fromCharCode(...new Uint8Array(credential.rawId))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-      const clientDataJSON = btoa(String.fromCharCode(...new Uint8Array(credential.response.clientDataJSON))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-      const attestationObject = btoa(String.fromCharCode(...new Uint8Array(credential.response.attestationObject))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-
-      // 4. Send to server for cryptographic verification
-      await axios.post(`${API_BASE}/auth/webauthn/register/verify`, {
-        credential_id: credential.id,
-        device_name: navigator.userAgent.includes('Windows') ? 'Windows Hello / Hardware TPM' : 'Touch ID / Platform Key',
-        factor_scope: passkeyScope,
-        response: {
-          id: credential.id,
-          rawId: rawId,
-          type: credential.type,
-          response: {
-            clientDataJSON: clientDataJSON,
-            attestationObject: attestationObject
-          }
-        }
-      });
-
-      setPasskeySuccess('✓ Hardware Passkey / Biometric Authenticator bound successfully!');
+      const deviceName = navigator.userAgent.includes('Windows') ? 'Windows Hello' : navigator.userAgent.includes('Mac') ? 'Touch ID' : 'Platform Authenticator';
+      await registerPasskey(passkeyScope, `${deviceName} (${scopeLabel[passkeyScope]})`, code ? code.trim() : null);
+      setPasskeySuccess(`✓ ${scopeLabel[passkeyScope]} passkey registered.`);
       const credentials = await axios.get(`${API_BASE}/auth/webauthn/credentials`);
       setRegisteredPasskeys(credentials.data || []);
     } catch (err) {
-      console.error('Passkey error:', err);
-      // Helpful fallback simulation message if browser platform authenticator isn't configured in test VM
-      if (err.name === 'NotSupportedError' || err.message?.includes('not supported') || err.message?.includes('cancelled')) {
-        setPasskeyError(`Biometric prompt: ${err.message || 'TouchID/Windows Hello cancelled'}. WebAuthn API is ready on this endpoint.`);
-      } else {
-        setPasskeyError(err.response?.data?.detail || err.message || 'Passkey enrollment failed.');
-      }
+      setPasskeyError(err.response?.data?.detail || err.message || 'Passkey enrollment failed.');
     } finally {
       setPasskeyLoading(false);
     }
   };
 
-  const handleDisablePasskey = async (credentialId) => {
+  const handleDisablePasskey = async (credential) => {
+    setPasskeyError('');
     try {
-      await axios.delete(`${API_BASE}/auth/webauthn/credentials/${credentialId}`);
-      setRegisteredPasskeys(prev => prev.filter((credential) => credential.credential_id !== credentialId));
+      const code = window.prompt(`Enter a current ${scopeLabel[credential.factor_scope]} TOTP code to remove this passkey:`);
+      if (!code) return;
+      await axios.delete(`${API_BASE}/auth/webauthn/credentials/${credential.credential_id}`, { data: { totp_code: code.trim() } });
+      setRegisteredPasskeys(prev => prev.filter((c) => c.credential_id !== credential.credential_id));
       setPasskeySuccess('Passkey disabled.');
     } catch (err) {
       setPasskeyError(err.response?.data?.detail || 'Failed to disable passkey.');
     }
   };
 
-  const handleResetPasskeys = async () => {
-    setPasskeyError('');
-    try {
-      await axios.post(`${API_BASE}/auth/webauthn/reset`);
-      setRegisteredPasskeys([]);
-      setPasskeySuccess('All passkeys reset. You can enroll a new passkey.');
-    } catch (err) {
-      setPasskeyError(err.response?.data?.detail || 'Failed to reset passkeys.');
-    }
-  };
-
-
   // --- Admin MFA Reset Request ---
   const handleRequestReset = async () => {
     setPasskeyError('');
     try {
-      await axios.post(`${API_BASE}/auth/reset-request`, { wallet_address: wallet.address });
+      const reason = window.prompt('Briefly describe why you need your login factors reset (e.g. phone lost):') || 'Login factor reset requested';
+      await requestAdminAssistance(reason);
       if (refreshUser) refreshUser();
     } catch (err) {
       setPasskeyError(err.response?.data?.detail || 'Failed to request admin reset.');
@@ -402,15 +320,6 @@ export default function Identity() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', width: '100%', boxSizing: 'border-box' }}>
-      {user?.onboarding_pending && (
-        <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '8px', padding: '1rem', marginBottom: '1rem' }}>
-          <h4 style={{ margin: '0 0 4px 0', color: '#92400e', fontSize: '14px' }}>⚠️ Mandatory Security Enrollment</h4>
-          <p style={{ margin: 0, color: '#92400e', fontSize: '12px' }}>
-            To unlock the dashboard and perform operations, please configure and activate all required authentication factors: Login Authenticator (Factor 1), View/Submission Authenticator (Factor 2), and Mint/Approve Authenticator (Factor 3), and register at least one Hardware Passkey.
-          </p>
-        </div>
-      )}
-
       {user?.reset_requested && (
         <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '8px', padding: '1rem', marginBottom: '1rem' }}>
             <h4 style={{ margin: '0 0 4px 0', color: '#92400e', fontSize: '14px' }}>⏳ Admin MFA Reset Pending</h4>
@@ -508,8 +417,9 @@ export default function Identity() {
            isSetup={isTotpEnabled}
            setupHandler={handleStartTotpSetup}
            verifyHandler={handleVerifyTotp}
-           disableHandler={handleDisableTotp}
-           resetHandler={handleResetTotp}
+           disableHandler={null}
+           resetHandler={null}
+           lockedMessage="Login factors cannot be reset self-service. Use REQUEST ADMIN ASSISTANCE below if you lose access." 
            setupData={totpSetupData}
            code={totpCode}
            setCode={setTotpCode}
@@ -594,7 +504,6 @@ export default function Identity() {
                 color: '#0f172a'
               }}
             >
-              <option value="login">Login Authenticator (Factor 1)</option>
               <option value="factor2">View &amp; Proposal Submission (Factor 2)</option>
               <option value="factor3">Mint, Approval &amp; Revisions (Factor 3)</option>
             </select>
@@ -649,8 +558,8 @@ export default function Identity() {
                     ID: {pk.credential_id ? `${pk.credential_id.substring(0, 16)}...` : 'Unknown'}
                   </div>
                 </div>
-                <button
-                  onClick={() => handleDisablePasskey(pk.credential_id)}
+                {pk.factor_scope !== 'login' && <button
+                  onClick={() => handleDisablePasskey(pk)}
                   style={{
                     background: 'none',
                     border: '1px solid #fecaca',
@@ -663,7 +572,7 @@ export default function Identity() {
                   }}
                 >
                   Remove
-                </button>
+                </button>}
               </div>
             )) : (
               <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '0.75rem' }}>
@@ -677,10 +586,10 @@ export default function Identity() {
       {/* Admin MFA Reset Request Section */}
       <div style={{ background: '#fff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
         <h3 style={{ margin: '0 0 8px 0', fontSize: '15px', fontWeight: '700', color: '#0f172a' }}>
-          🆘 Account Recovery &amp; MFA Reset Request
+          🆘 Lost Login Authenticator or Login Passkey?
         </h3>
         <p style={{ fontSize: '13px', color: '#475569', margin: '0 0 1rem 0' }}>
-          If you have lost your authenticator device or hardware security keys, you can submit an official reset request to platform administrators. Upon Factor 3 cryptographic approval by an administrator, your MFA factors will be revoked and a fresh single-use 3-hour import PIN will be provisioned.
+          Login factors (TOTP 1 and Passkey 1) cannot be reset self-service. An administrator approves the reset with their Factor 3; your login factors and sessions are then revoked and you receive a new single-use 3-hour provisioning PIN to re-import your wallet and set up new login factors.
         </p>
         <button
           onClick={handleRequestReset}
@@ -696,7 +605,7 @@ export default function Identity() {
             cursor: user?.reset_requested ? 'not-allowed' : 'pointer'
           }}
         >
-          {user?.reset_requested ? '⏳ Reset Request Pending Admin Approval' : 'Submit Admin MFA Reset Request'}
+          {user?.reset_requested ? '⏳ Reset Request Pending Admin Approval' : 'REQUEST ADMIN ASSISTANCE'}
         </button>
       </div>
 

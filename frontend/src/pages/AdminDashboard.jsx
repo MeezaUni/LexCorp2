@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { ethers } from 'ethers';
 import { useAuth } from '../context/AuthContext';
+import { authenticateWithPasskey } from '../services/api';
 import { revokeAsset } from '../services/web3';
 import { getAssetsByOwner, getAuditEvents, updateAlertStatus } from '../services/api';
 
@@ -226,15 +227,18 @@ export default function AdminDashboard() {
   };
 
   const handleApproveReset = async (userId) => {
-    if (!adminF3Code || adminF3Code.length !== 6) {
-      setError('Please provide your 6-digit Admin Factor 3 code to approve MFA resets.');
-      return;
-    }
+    // Factor 3: a 6-digit TOTP 3 code, or (if left empty) a Passkey 3 assertion bound to this action.
     try {
       setError('');
       setSuccess('');
+      if (!adminF3Code) {
+        await authenticateWithPasskey('factor3', 'admin.reset');
+      } else if (adminF3Code.length !== 6) {
+        setError('Enter your 6-digit Factor 3 code, or leave it empty to use your Factor 3 passkey.');
+        return;
+      }
       const res = await axios.post(`${API_BASE}/auth/reset-approve/${userId}`, {
-        totp_code: adminF3Code
+        totp_code: adminF3Code || null
       });
       setSuccess(res.data?.message || 'User MFA reset successfully.');
 
