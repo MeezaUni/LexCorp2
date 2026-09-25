@@ -83,16 +83,28 @@ def verify_totp(secret: str, provided_token: str) -> bool:
 from webauthn import generate_registration_options, verify_registration_response, generate_authentication_options, verify_authentication_response
 from webauthn.helpers.structs import PublicKeyCredentialCreationOptions, AuthenticatorSelectionCriteria, UserVerificationRequirement, PublicKeyCredentialDescriptor, PublicKeyCredentialRequestOptions
 
-def generate_webauthn_registration_options(user_id: str, username: str, rp_id: str = "localhost") -> PublicKeyCredentialCreationOptions:
+def generate_webauthn_registration_options(user_id: str, username: str, user_wallet: str, rp_id: str = "localhost", factor_scope: str = "login") -> PublicKeyCredentialCreationOptions:
     """Generate options to start WebAuthn registration."""
     # Use a secure random challenge
     challenge = generate_challenge()
+
+    factor_labels = {
+        "login": "Login (Factor 1)",
+        "factor2": "View/Submit (Factor 2)",
+        "factor3": "Mint/Approve (Factor 3)"
+    }
+    scope_label = factor_labels.get(factor_scope, factor_scope)
+
+    # Differentiate to ensure passkey managers store as distinct credentials
+    display_name = f"{username} [{scope_label}]"
+    scoped_username = f"{user_wallet} ({scope_label})"
 
     return generate_registration_options(
         rp_id=rp_id, # Dynamically determined from request
         rp_name="LexCorp SIH26125",
         user_id=user_id.encode(),
-        user_name=username,
+        user_name=scoped_username,
+        user_display_name=display_name,
         challenge=challenge,
         # Prefer the laptop's built-in platform authenticator, such as Windows Hello.
         authenticator_selection=AuthenticatorSelectionCriteria(

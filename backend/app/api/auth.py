@@ -638,9 +638,11 @@ async def get_webauthn_registration_options(
     rp_id = settings.RP_ID
 
     options = security.generate_webauthn_registration_options(
-        str(user.id),
+        f"{user.id}_{reg_req.factor_scope}",
         user.name or user.wallet_address,
-        rp_id=rp_id
+        user.wallet_address,
+        rp_id=rp_id,
+        factor_scope=reg_req.factor_scope
     )
 
     import webauthn

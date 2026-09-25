@@ -65,8 +65,12 @@ class AssetRead(AssetBase):
     owner_id: uuid.UUID
     custodian_id: Optional[uuid.UUID] = None
     owner_wallet: Optional[str] = None
+    owner_address: Optional[str] = None
+    owner_did: Optional[str] = None
     owner_name: Optional[str] = None
     custodian_name: Optional[str] = None
+    is_digital: Optional[bool] = None
+    offchain_uri: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

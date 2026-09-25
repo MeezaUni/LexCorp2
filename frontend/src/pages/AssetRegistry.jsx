@@ -60,7 +60,7 @@ export default function AssetRegistry() {
         <div style={{ marginTop: '8px', fontSize: '12px', color: '#475569', background: '#f8fafc', padding: '6px 10px', borderRadius: '4px', border: '1px solid #e2e8f0', display: 'inline-block' }}>
           <strong>Contract Address:</strong> <code style={{ userSelect: 'all' }}>{CONTRACT_ADDRESS}</code>
           <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
-            To view an NFT in MetaMask (Localhost), switch to the NFTs tab, click "Import NFT", and use this address with the Token ID.
+            Tokens are mapped to LexCorp's integrated wallet. Use this contract address and Token ID for external verfication scripts.
           </div>
         </div>
         <button onClick={fetchAssets} disabled={loading} style={{ marginTop: '12px', display: 'block', background: '#0f172a', color: '#fff', border: 'none', padding: '8px 14px', borderRadius: '6px', cursor: loading ? 'wait' : 'pointer' }}>

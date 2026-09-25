@@ -193,7 +193,7 @@ export default function AdminDashboard() {
 
   const handleRevokeInModal = async (tokenId) => {
     if (!signer) {
-      setModalError('MetaMask signer is not connected.');
+      setModalError('Integrated wallet signer is not connected.');
       return;
     }
     try {
@@ -491,7 +491,7 @@ export default function AdminDashboard() {
               </code>
             </div>
             <p style={{ fontSize: '11px', color: '#b45309', margin: '6px 0 0 0' }}>
-              Import this private key into MetaMask or hardware signer to authenticate as this user.
+              Import this private key into the LexCorp Wallet (Wallet Setup tab) to authenticate as this user.
             </p>
           </div>
         )}

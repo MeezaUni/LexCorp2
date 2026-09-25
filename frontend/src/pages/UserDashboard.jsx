@@ -21,6 +21,7 @@ import {
   recordAccessAttempt,
   updateDigitalAsset,
   mintDigitalAsset,
+  mintAsset,
   grantAssetAccess,
   revokeAssetAccess,
   revokeAsset,
@@ -56,6 +57,7 @@ export default function UserDashboard() {
   const [offchainURI, setOffchainURI] = useState('');
   const [uploading, setUploading] = useState(false);
   const [proposing, setProposing] = useState(false);
+  const [proposalStatus, setProposalStatus] = useState('');
   const [proposalResult, setProposalResult] = useState(null);
 
   // Physical Propose State (Phase 14)
@@ -70,6 +72,7 @@ export default function UserDashboard() {
   const [physRecipientAddress, setPhysRecipientAddress] = useState('');
   const [physTotpCode, setPhysTotpCode] = useState('');
   const [proposingPhys, setProposingPhys] = useState(false);
+  const [physProposalStatus, setPhysProposalStatus] = useState('');
   const [physProposalResult, setPhysProposalResult] = useState(null);
 
   // Grant Access State
@@ -167,6 +170,7 @@ export default function UserDashboard() {
     if (e) e.preventDefault();
     setError(null);
     setProposing(true);
+    setProposalStatus('Initializing...');
     setProposalResult(null);
 
     try {
@@ -189,6 +193,7 @@ export default function UserDashboard() {
       if (usePasskey) {
         try {
           const factor = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'factor3' : 'factor2';
+          setProposalStatus(`Verifying ${factor === 'factor3' ? 'Factor 3' : 'Factor 2'} Passkey...`);
           await authenticateWithPasskey(factor);
           currentTotp = '';
         } catch (pkErr) {
@@ -199,9 +204,14 @@ export default function UserDashboard() {
           const factorName = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'Factor 3' : 'Factor 2';
           throw new Error(`${factorName} TOTP code is required if passkey is not used.`);
         }
+        setProposalStatus('Verifying TOTP credentials...');
       }
 
       if (user?.role === 'ADMIN' || user?.role === 'MANAGER') {
+        if (!signer) {
+          throw new Error('No active wallet signer found. Please ensure your wallet is unlocked for on-chain execution.');
+        }
+        setProposalStatus('Preparing on-chain calldata...');
         // Direct Minting for Admin/Manager
         const tokenId = Math.floor(Math.random() * 1000000) + 1000;
         const preparePayload = {
@@ -210,20 +220,28 @@ export default function UserDashboard() {
           serial_number: digitalSerial,
           owner_did: `did:ethr:13371:${docRecipientAddress.toLowerCase()}`,
           file_hash: fileHash,
-          offchain_uri: offchainURI
+          offchain_uri: offchainURI,
+          totp_code: currentTotp || null
         };
 
-        const pre = await prepareMintDigital(preparePayload);
-        const tx = await signer.sendTransaction({
-          to: pre.calldata.to,
-          data: pre.calldata.data,
-          gasLimit: pre.calldata.gas,
-          gasPrice: pre.calldata.gasPrice,
-        });
-        await tx.wait();
-        setActionSuccessMsg(`Document mint transaction ${tx.hash.slice(0, 10)}... executed on-chain successfully!`);
+        await prepareMintDigital(preparePayload);
+
+        setProposalStatus('Signing transaction via integrated wallet...');
+
+        const tx = await mintDigitalAsset(
+            signer,
+            docRecipientAddress,
+            tokenId,
+            digitalSerial,
+            `did:ethr:13371:${docRecipientAddress.toLowerCase()}`,
+            fileHash,
+            offchainURI
+        );
+
+        setActionSuccessMsg(`Document mint transaction ${tx.txHash.slice(0, 10)}... executed on-chain successfully!`);
       } else {
         // User/Auditor Proposal Submission
+        setProposalStatus('Submitting document proposal to server...');
         const payload = {
           name: docName,
           serial_number: digitalSerial,
@@ -248,12 +266,17 @@ export default function UserDashboard() {
       setFileHash('');
       setOffchainURI('');
 
+      setProposalStatus('Refreshing dashboard...');
       setTimeout(() => fetchDashboardData(), 1500);
     } catch (err) {
       console.error('Document action error:', err);
-      setError(err.response?.data?.detail || err.message || 'Document operation failed');
+      // Immediately surface minting errors (e.g. invalid TOTP) explicitly and stop the process
+      const errorDetail = err.response?.data?.detail || err.message || 'Document operation failed';
+      setError(errorDetail);
+      setProposalResult(null);
     } finally {
       setProposing(false);
+      setProposalStatus('');
     }
   };
 
@@ -262,6 +285,7 @@ export default function UserDashboard() {
     if (e) e.preventDefault();
     setError(null);
     setProposingPhys(true);
+    setPhysProposalStatus('Initializing...');
     setPhysProposalResult(null);
 
     try {
@@ -276,6 +300,7 @@ export default function UserDashboard() {
       if (usePasskey) {
         try {
           const factor = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'factor3' : 'factor2';
+          setPhysProposalStatus(`Verifying ${factor === 'factor3' ? 'Factor 3' : 'Factor 2'} Passkey...`);
           await authenticateWithPasskey(factor);
           currentTotp = '';
         } catch (pkErr) {
@@ -286,27 +311,38 @@ export default function UserDashboard() {
           const factorName = (user?.role === 'ADMIN' || user?.role === 'MANAGER') ? 'Factor 3' : 'Factor 2';
           throw new Error(`${factorName} TOTP code is required if passkey is not used.`);
         }
+        setPhysProposalStatus('Verifying TOTP credentials...');
       }
 
       if (user?.role === 'ADMIN' || user?.role === 'MANAGER') {
+        if (!signer) {
+          throw new Error('No active wallet signer found. Please ensure your wallet is unlocked for on-chain execution.');
+        }
+        setPhysProposalStatus('Preparing on-chain calldata...');
         const tokenId = Math.floor(Math.random() * 1000000) + 1000;
         const preparePayload = {
           to_address: physRecipientAddress,
           token_id: tokenId,
           serial_number: physSerial,
-          owner_did: `did:ethr:13371:${physRecipientAddress.toLowerCase()}`
+          owner_did: `did:ethr:13371:${physRecipientAddress.toLowerCase()}`,
+          totp_code: currentTotp || null
         };
 
-        const pre = await prepareMintPhysical(preparePayload);
-        const tx = await signer.sendTransaction({
-          to: pre.calldata.to,
-          data: pre.calldata.data,
-          gasLimit: pre.calldata.gas,
-          gasPrice: pre.calldata.gasPrice,
-        });
-        await tx.wait();
-        setActionSuccessMsg(`Physical Hardware mint transaction ${tx.hash.slice(0, 10)}... executed on-chain successfully!`);
+        await prepareMintPhysical(preparePayload);
+
+        setPhysProposalStatus('Signing transaction via integrated wallet...');
+
+        const tx = await mintAsset(
+            signer,
+            physRecipientAddress,
+            tokenId,
+            physSerial,
+            `did:ethr:13371:${physRecipientAddress.toLowerCase()}`
+        );
+
+        setActionSuccessMsg(`Physical Hardware mint transaction ${tx.txHash.slice(0, 10)}... executed on-chain successfully!`);
       } else {
+        setPhysProposalStatus('Submitting physical proposal to server...');
         const payload = {
           name: physName,
           serial_number: physSerial,
@@ -335,12 +371,16 @@ export default function UserDashboard() {
       setPhysRecipientAddress('');
       setPhysTotpCode('');
 
+      setPhysProposalStatus('Refreshing dashboard...');
       setTimeout(() => fetchDashboardData(), 1500);
     } catch (err) {
       console.error('Physical proposal error:', err);
-      setError(err.response?.data?.detail || err.message || 'Physical hardware operation failed');
+      const errorDetail = err.response?.data?.detail || err.message || 'Physical hardware operation failed';
+      setError(errorDetail);
+      setPhysProposalResult(null);
     } finally {
       setProposingPhys(false);
+      setPhysProposalStatus('');
     }
   };
 
@@ -866,7 +906,7 @@ export default function UserDashboard() {
               }}
             >
               {proposing
-                ? 'Processing...'
+                ? (proposalStatus || 'Processing...')
                 : (user?.role === 'ADMIN' || user?.role === 'MANAGER'
                   ? 'Mint Document Asset on-Chain'
                   : 'Submit Document Proposal (CRT-)')
@@ -932,7 +972,12 @@ export default function UserDashboard() {
             </div>
 
             <button type="submit" disabled={proposingPhys} style={{ padding: '12px 24px', background: '#0f172a', color: '#fff', borderRadius: '6px', fontWeight: 'bold', cursor: proposingPhys ? 'not-allowed' : 'pointer' }}>
-              {proposingPhys ? 'Processing...' : (user?.role === 'ADMIN' || user?.role === 'MANAGER' ? 'Mint Hardware Asset on-Chain' : 'Submit Hardware Proposal (CRT-PHY-)')}
+              {proposingPhys
+                ? (physProposalStatus || 'Processing...')
+                : (user?.role === 'ADMIN' || user?.role === 'MANAGER'
+                  ? 'Mint Hardware Asset on-Chain'
+                  : 'Submit Hardware Proposal (CRT-PHY-)')
+              }
             </button>
           </form>
         </div>

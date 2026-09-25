@@ -65,38 +65,67 @@ export async function checkManagerRole(signer, address) {
   }
 }
 
+async function waitForReceipt(txHash, timeoutMs = 60000) {
+  const freshProvider = getRpcProvider();
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      const rcpt = await freshProvider.getTransactionReceipt(txHash);
+      if (rcpt && rcpt.status !== undefined) {
+        return rcpt;
+      }
+    } catch (e) {
+      console.warn('Polling for receipt error (retrying):', e);
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  throw new Error('Transaction confirmation timed out');
+}
+
 export async function mintAsset(signer, toAddress, tokenId, serialNumber, ownerDID) {
   const contract = await getContract(signer);
-  const tx = await contract.mint(toAddress, tokenId, serialNumber, ownerDID);
-  const receipt = await tx.wait();
-  return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
+  try {
+    const tx = await contract.mint(toAddress, tokenId, serialNumber, ownerDID, { gasLimit: 2000000 });
+    const receipt = await waitForReceipt(tx.hash);
+    return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
+  } catch (error) {
+    console.error('mintAsset failed:', error);
+    throw error;
+  }
 }
 
 export async function mintDigitalAsset(signer, toAddress, tokenId, serialNumber, ownerDID, fileHash, offchainURI) {
   const contract = await getContract(signer);
-  const tx = await contract.mintDigitalAsset(toAddress, tokenId, serialNumber, ownerDID, fileHash, offchainURI);
-  const receipt = await tx.wait();
-  return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
+  try {
+    console.log('Attempting to call mintDigitalAsset...');
+    const tx = await contract.mintDigitalAsset(toAddress, tokenId, serialNumber, ownerDID, fileHash, offchainURI, { gasLimit: 2000000 });
+    console.log('Transaction sent:', tx.hash);
+    const receipt = await waitForReceipt(tx.hash);
+    return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
+  } catch (error) {
+    console.error('mintDigitalAsset failed:', error);
+    throw error;
+  }
 }
 
 export async function updateDigitalAsset(signer, tokenId, requesterDID, newFileHash, newOffchainURI) {
   const contract = await getContract(signer);
-  const tx = await contract.updateDigitalAsset(tokenId, requesterDID, newFileHash, newOffchainURI);
-  const receipt = await tx.wait();
+  const tx = await contract.updateDigitalAsset(tokenId, requesterDID, newFileHash, newOffchainURI, { gasLimit: 2000000 });
+  const receipt = await waitForReceipt(tx.hash);
   return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
 }
 
 export async function grantAssetAccess(signer, tokenId, targetDID, level = 1) {
   const contract = await getContract(signer);
-  const tx = await contract.grantAssetAccess(tokenId, targetDID, level);
-  const receipt = await tx.wait();
+  const tx = await contract.grantAssetAccess(tokenId, targetDID, level, { gasLimit: 2000000 });
+  const receipt = await waitForReceipt(tx.hash);
   return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
 }
 
 export async function revokeAssetAccess(signer, tokenId, targetDID) {
   const contract = await getContract(signer);
-  const tx = await contract.revokeAssetAccess(tokenId, targetDID);
-  const receipt = await tx.wait();
+  const tx = await contract.revokeAssetAccess(tokenId, targetDID, { gasLimit: 2000000 });
+  const receipt = await waitForReceipt(tx.hash);
   return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
 }
 
@@ -108,22 +137,22 @@ export async function checkAssetAccess(signerOrProvider, tokenId, requesterDID, 
 
 export async function recordAccessAttempt(signer, tokenId, actorDID, granted, reason) {
   const contract = await getContract(signer);
-  const tx = await contract.recordAccessAttempt(tokenId, actorDID, granted, reason);
-  const receipt = await tx.wait();
+  const tx = await contract.recordAccessAttempt(tokenId, actorDID, granted, reason, { gasLimit: 2000000 });
+  const receipt = await waitForReceipt(tx.hash);
   return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
 }
 
 export async function transferAsset(signer, toAddress, tokenId, newOwnerDID) {
   const contract = await getContract(signer);
-  const tx = await contract.transferAsset(toAddress, tokenId, newOwnerDID);
-  const receipt = await tx.wait();
+  const tx = await contract.transferAsset(toAddress, tokenId, newOwnerDID, { gasLimit: 2000000 });
+  const receipt = await waitForReceipt(tx.hash);
   return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
 }
 
 export async function revokeAsset(signer, tokenId) {
   const contract = await getContract(signer);
-  const tx = await contract.revoke(tokenId);
-  const receipt = await tx.wait();
+  const tx = await contract.revoke(tokenId, { gasLimit: 2000000 });
+  const receipt = await waitForReceipt(tx.hash);
   return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
 }
 

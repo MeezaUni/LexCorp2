@@ -51,6 +51,7 @@ os.makedirs(OFFCHAIN_STORAGE_DIR, exist_ok=True)
 
 
 class MintRequest(BaseModel):
+    totp_code: Optional[str] = None
     to_address: str
     token_id: int
     serial_number: str
@@ -58,6 +59,7 @@ class MintRequest(BaseModel):
 
 
 class DigitalMintRequest(BaseModel):
+    totp_code: Optional[str] = None
     to_address: str
     token_id: int
     serial_number: str
@@ -243,6 +245,13 @@ async def prepare_mint(request: MintRequest, current_user: User = Depends(get_on
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Role '{current_user.role}' is not permitted to register physical defense hardware. Only Managers and Administrators can register physical assets."
         )
+
+    # Factor 3 Validation
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
+    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+
     calldata = contract_service.prepare_mint_calldata(
         request.to_address,
         request.token_id,
@@ -268,6 +277,13 @@ async def prepare_mint_digital(request: DigitalMintRequest, current_user: User =
             detail="Auditors have read-only access and cannot mint digital assets."
         )
 
+    # Factor 3 Validation
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
+    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+
+
     calldata = contract_service.prepare_mint_digital_calldata(
         request.to_address,
         request.token_id,
@@ -283,6 +299,7 @@ async def prepare_mint_digital(request: DigitalMintRequest, current_user: User =
 
 
 class UpdateDigitalAssetRequest(BaseModel):
+    totp_code: Optional[str] = None
     token_id: int
     requester_did: str
     new_file_hash: str
@@ -300,6 +317,13 @@ async def prepare_update_digital(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Auditors have read-only access and cannot update digital assets."
         )
+
+    # Factor 3 Validation
+    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
+    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
+    if not (is_totp_valid or is_passkey_valid):
+        raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+
 
     calldata = contract_service.prepare_update_digital_asset_calldata(
         request.token_id,
@@ -466,11 +490,15 @@ async def get_all_assets(db: AsyncSession = Depends(get_db)):
             "approval_status": asset.approval_status,
             "watermark_metadata": asset.watermark_metadata,
             "is_physical": asset.is_physical,
+            "is_digital": not asset.is_physical,
+            "offchain_uri": asset.metadata_cid,
             "mac_address": asset.mac_address,
             "device_unique_address": asset.device_unique_address,
             "location": asset.location,
             "department": asset.department,
             "owner_wallet": asset.owner.wallet_address if asset.owner else None,
+            "owner_address": asset.owner.wallet_address if asset.owner else None,
+            "owner_did": asset.owner.did if asset.owner else None,
             "owner_name": asset.owner.name if asset.owner else None,
             "custodian_name": asset.custodian.name if asset.custodian else None,
             "created_at": asset.created_at,
@@ -541,11 +569,15 @@ async def get_assets_by_owner(owner_address: str, db: AsyncSession = Depends(get
             "approval_status": asset.approval_status,
             "watermark_metadata": asset.watermark_metadata,
             "is_physical": asset.is_physical,
+            "is_digital": not asset.is_physical,
+            "offchain_uri": asset.metadata_cid,
             "mac_address": asset.mac_address,
             "device_unique_address": asset.device_unique_address,
             "location": asset.location,
             "department": asset.department,
             "owner_wallet": asset.owner.wallet_address if asset.owner else None,
+            "owner_address": asset.owner.wallet_address if asset.owner else None,
+            "owner_did": asset.owner.did if asset.owner else None,
             "owner_name": asset.owner.name if asset.owner else None,
             "custodian_name": asset.custodian.name if asset.custodian else None,
             "created_at": asset.created_at,

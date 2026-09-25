@@ -106,13 +106,19 @@ class EventIndexer:
                 asset_serial = args.get("serialNumber")
                 actor_address = args.get("owner")
                 if actor_address and token_id is not None:
-                    await self._create_asset_record(session, actor_address, asset_serial, token_id, args)
+                    await self._create_asset_record(session, actor_address, asset_serial, token_id, args, event_name=event_name)
+                    await session.commit()
             elif event_name == "AssetTransferred":
                 token_id = args.get("tokenId")
                 new_owner = args.get("newOwner")
                 if new_owner and token_id is not None:
-                    asset_info = self.contract.functions.getAsset(token_id).call()
-                    await self._create_asset_record(session, new_owner, asset_info[0], token_id, args)
+                    try:
+                        asset_info = self.contract.functions.getAsset(token_id).call()
+                        serial = asset_info[0]
+                    except Exception:
+                        serial = f"TOKEN-{token_id}"
+                    await self._create_asset_record(session, new_owner, serial, token_id, args, event_name=event_name)
+                    await session.commit()
             logger.debug(f"Skipping already-indexed audit tx: {tx_hash}")
             return False
 
@@ -127,7 +133,7 @@ class EventIndexer:
             target_did = args.get("ownerDID")
             token_id = args.get("tokenId")
             if actor_address and token_id is not None:
-                await self._create_asset_record(session, actor_address, asset_serial, token_id, args)
+                await self._create_asset_record(session, actor_address, asset_serial, token_id, args, event_name=event_name)
 
         elif event_name == "DigitalAssetUpdated":
             token_id = args.get("tokenId")
@@ -138,6 +144,22 @@ class EventIndexer:
                 asset_serial = asset_info[0]
             except Exception:
                 asset_serial = f"TOKEN-{token_id}"
+
+            # Sync DB asset if present
+            if token_id is not None:
+                try:
+                    res = await session.execute(select(Asset).where(Asset.token_id == token_id))
+                    asset_obj = res.scalar_one_or_none()
+                    if asset_obj:
+                        if args.get("newFileHash"):
+                            asset_obj.file_hash = args.get("newFileHash")
+                        if args.get("newOffchainURI"):
+                            asset_obj.metadata_cid = args.get("newOffchainURI")
+                        asset_obj.is_physical = False
+                        asset_obj.asset_type = "DOCUMENT"
+                        await session.flush()
+                except Exception as e:
+                    logger.warning(f"Error syncing updated digital asset token {token_id}: {e}")
 
         elif event_name == "AssetTransferred":
             token_id = args.get("tokenId")
@@ -150,7 +172,7 @@ class EventIndexer:
             actor_address = args.get("newOwner")
             target_did = args.get("toDID")
             if actor_address and token_id is not None:
-                await self._create_asset_record(session, actor_address, asset_serial, token_id, args)
+                await self._create_asset_record(session, actor_address, asset_serial, token_id, args, event_name=event_name)
 
         elif event_name == "AssetRevoked":
             asset_serial = args.get("serialNumber")
@@ -289,9 +311,11 @@ class EventIndexer:
         asset_serial: str,
         token_id: int,
         args: dict,
+        event_name: str = "AssetMinted",
     ) -> None:
         """Create or update Asset record for minted asset."""
         from sqlalchemy import or_
+        is_digital = event_name == "DigitalAssetMinted" or bool(args.get("fileHash")) or (asset_serial and asset_serial.startswith("DOC-"))
         try:
             result = await session.execute(
                 select(User).where(func.lower(User.wallet_address) == actor_address.lower())
@@ -325,15 +349,30 @@ class EventIndexer:
                 existing_asset.serial_number = asset_serial
                 if args.get("offchainURI"):
                     existing_asset.metadata_cid = args.get("offchainURI")
+                if args.get("fileHash"):
+                    existing_asset.file_hash = args.get("fileHash")
+                if is_digital:
+                    existing_asset.is_physical = False
+                    existing_asset.asset_type = "DOCUMENT"
+                    if not existing_asset.name or "Defense Equipment" in (existing_asset.name or ""):
+                        existing_asset.name = f"Digital Document {asset_serial}"
+                elif event_name == "AssetMinted":
+                    existing_asset.is_physical = True
+                    existing_asset.asset_type = "EQUIPMENT"
             else:
                 asset = Asset(
                     token_id=token_id,
                     serial_number=asset_serial,
+                    name=f"Digital Document {asset_serial}" if is_digital else f"Defense Equipment {asset_serial}",
+                    asset_type="DOCUMENT" if is_digital else "EQUIPMENT",
                     metadata_cid=args.get("offchainURI"),
+                    file_hash=args.get("fileHash") if is_digital else None,
+                    is_physical=not is_digital,
                     owner_id=owner_id
                 )
                 session.add(asset)
             await session.flush()
+            logger.info(f"Asset record added/updated to session for token {token_id}, serial {asset_serial}, owner {owner_id}, is_digital={is_digital}")
         except Exception as e:
             await session.rollback()
             logger.error(f"Failed to create Asset record: {e}")
