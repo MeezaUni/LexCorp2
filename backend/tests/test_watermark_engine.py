@@ -321,3 +321,17 @@ def test_xlsx_charts_images_and_parts_preserved_byte_for_byte():
     assert len(wb2["Data"]._charts) == 1
     control = "\n".join(str(r[0].value) for r in wb2["LexCorp Control"].iter_rows() if r[0].value)
     assert_identity(control, c)
+
+
+
+@pytest.mark.parametrize("maker,name", [("docx", "memo.docx"), ("pptx", "brief.pptx"), ("xlsx", "budget.xlsx")])
+def test_view_copy_of_office_documents_is_a_watermarked_pdf_not_the_native_file(maker, name):
+    """Viewing must never hand out a native Office file (that would be a download)."""
+    from pypdf import PdfReader
+    from app.services.watermark import render_view_copy
+    src = {"docx": sample_docx, "pptx": sample_pptx, "xlsx": sample_xlsx}[maker]()
+    c = ctx()
+    out, mime, out_name = render_view_copy(src, name, c)
+    assert mime == "application/pdf" and out_name.endswith(".pdf") and out[:5] == b"%PDF-"
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(out)).pages)
+    assert c.action_id in text

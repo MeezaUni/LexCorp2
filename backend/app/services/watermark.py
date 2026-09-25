@@ -626,3 +626,51 @@ def render_protected_copy(data: bytes, filename: str, ctx: WatermarkContext) -> 
     if kind == "xlsx":
         return watermark_xlsx(data, ctx), _MIME["xlsx"], f"{tag}.xlsx"
     raise UnsupportedDocumentType(kind)
+
+
+# ------------------------------------------------------------------ view-only representation
+
+def office_text(data: bytes, kind: str) -> str:
+    """Readable text content of an Office document (for the browser VIEW rendering)."""
+    out: List[str] = []
+    if kind == "docx":
+        import docx
+        d = docx.Document(io.BytesIO(data))
+        out.extend(p.text for p in d.paragraphs)
+        for t_i, table in enumerate(d.tables, start=1):
+            out.append(f"")
+            out.append(f"[Table {t_i}]")
+            for row in table.rows:
+                out.append(" | ".join(c.text.strip() for c in row.cells))
+    elif kind == "pptx":
+        from pptx import Presentation
+        prs = Presentation(io.BytesIO(data))
+        for i, slide in enumerate(prs.slides, start=1):
+            out.append(f"--- Slide {i} ---")
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+                    out.extend(p.text for p in shape.text_frame.paragraphs if p.text.strip())
+            out.append("")
+    elif kind == "xlsx":
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=False, read_only=True)
+        for ws in wb.worksheets:
+            out.append(f"--- Sheet: {ws.title} ---")
+            for row in ws.iter_rows(values_only=True):
+                if any(v is not None for v in row):
+                    out.append(" | ".join("" if v is None else str(v) for v in row))
+            out.append("")
+    return "\n".join(out)
+
+
+def render_view_copy(data: bytes, filename: str, ctx: WatermarkContext) -> tuple[bytes, str, str]:
+    """VIEW representation for the browser: always a watermarked PDF or image, never the
+    document's native Office format (a native copy would be a download in disguise;
+    full-fidelity copies go through the controlled download workflow). Office files are
+    rendered as a watermarked PDF of their text content; layout is not reproduced."""
+    kind = detect_type(data, filename)
+    if kind in ("docx", "pptx", "xlsx"):
+        stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+        text = f"View rendering of {filename} (text content only; layout not reproduced)\n\n" + office_text(data, kind)
+        return watermark_pdf(text_to_pdf(text.encode("utf-8"), filename), ctx), _MIME["pdf"], f"{stem}.{ctx.action_id}.pdf"
+    return render_protected_copy(data, filename, ctx)

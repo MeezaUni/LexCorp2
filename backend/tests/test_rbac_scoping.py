@@ -231,3 +231,25 @@ async def test_public_verification_is_minimal_and_authorized_detail_is_scoped(cl
                            "lifecycle_status", "approval_status", "created_at", "detail_level"}
     assert mgr["detail_level"] == "PUBLIC"  # Avionics manager, Cyber asset
     assert aud["detail_level"] == "AUTHORIZED" and aud["mac_address"] == cyber.mac_address
+
+
+@pytest.mark.asyncio
+async def test_audit_stats_are_scoped_like_events(client, db_session):
+    """A Manager's dashboard statistics count only events they may read."""
+    import hashlib
+    outsider = "did:ethr:13371:0x" + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    before_mgr = (await client.get("/api/audit/stats", headers=h(MANAGER))).json()
+    before_admin = (await client.get("/api/audit/stats", headers=h(ADMIN))).json()
+    db_session.add(AuditEvent(event_type="AuthenticationFailed", tx_hash="0x" + hashlib.sha256(outsider.encode()).hexdigest(),
+                              block_number=0, actor_did=outsider, risk_label="HIGH"))
+    await db_session.commit()
+    after_mgr = (await client.get("/api/audit/stats", headers=h(MANAGER))).json()
+    after_admin = (await client.get("/api/audit/stats", headers=h(ADMIN))).json()
+    assert after_admin["total_events"] >= before_admin["total_events"] + 1
+    assert after_admin["high_risk_7d"] >= before_admin["high_risk_7d"] + 1
+    assert after_mgr["total_events"] == before_mgr["total_events"]
+    assert after_mgr["high_risk_7d"] == before_mgr["high_risk_7d"]
+    from app.models.domain import SecurityAlert
+    for a in (await db_session.execute(select(SecurityAlert).where(SecurityAlert.state == "AUDITOR_REVIEW"))).scalars().all():
+        a.state = "DISMISSED"
+    await db_session.commit()

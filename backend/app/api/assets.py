@@ -18,7 +18,7 @@ from app.core.limiter import limiter
 from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_onboarded_user, get_optional_user, get_request_client_ip, get_step_up_token, record_audit
 from app.core.config import settings
 from app.services.contract import contract_service
-from app.services.watermark import HistoryEntry, UnsupportedDocumentType, WatermarkContext, render_protected_copy
+from app.services.watermark import HistoryEntry, UnsupportedDocumentType, WatermarkContext, render_protected_copy, render_view_copy
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_physical_card_svg
 from app.services import physical as phys
@@ -79,6 +79,8 @@ def _asset_row(asset: Asset, viewer: User) -> dict:
         "device_unique_address": asset.device_unique_address,
         "location": asset.location,
         "department": asset.department,
+        "version_number": asset.version_number,
+        "root_asset_id": asset.root_asset_id,
         "owner_wallet": asset.owner.wallet_address if asset.owner else None,
         "owner_address": asset.owner.wallet_address if asset.owner else None,
         "owner_did": asset.owner.did if asset.owner else None,
@@ -1629,7 +1631,7 @@ async def view_digital_document(
         history=await _modification_history(db, asset),
     )
     try:
-        content, mime, out_name = render_protected_copy(file_bytes, _original_filename(asset), ctx)
+        content, mime, out_name = render_view_copy(file_bytes, _original_filename(asset), ctx)
     except UnsupportedDocumentType as e:
         await db.rollback()
         raise HTTPException(status_code=415, detail=f"This document type cannot be served as a protected copy: {e}")

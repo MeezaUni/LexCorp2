@@ -36,19 +36,30 @@ async def _scoped_events_query(db: AsyncSession, user: User):
 
 @router.get("/stats")
 async def get_audit_stats(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_onboarded_user)):
-    """Return the compact risk summary consumed by the executive dashboard."""
+    """Risk summary for the dashboard, computed over the SAME scope the caller may read
+    in /audit/events (Managers see their departments only)."""
+    from datetime import timedelta, UTC
     if current_user.role == "USER":
         raise HTTPException(status_code=403, detail="Not authorized to view audit statistics.")
-    total_result = await db.execute(select(func.count(AuditEvent.id)))
-    latest_result = await db.execute(
-        select(AuditEvent.risk_label)
-        .where(AuditEvent.risk_label.is_not(None))
-        .order_by(desc(AuditEvent.created_at))
-        .limit(1)
-    )
+    scoped = (await _scoped_events_query(db, current_user)).subquery()
+    now = datetime.now(UTC)
+    denied = or_(*[scoped.c.event_type.contains(m) for m in _DENIED_MARKERS])
+
+    async def count(*conds):
+        q = select(func.count()).select_from(scoped)
+        for c in conds:
+            q = q.where(c)
+        return (await db.execute(q)).scalar_one() or 0
+
+    latest = (await db.execute(select(scoped.c.risk_label).where(scoped.c.risk_label.is_not(None))
+                               .order_by(desc(scoped.c.created_at)).limit(1))).scalar_one_or_none()
     return {
-        "total_events": total_result.scalar_one() or 0,
-        "latest_risk": latest_result.scalar_one_or_none() or "LOW",
+        "total_events": await count(),
+        "events_24h": await count(scoped.c.created_at >= now - timedelta(hours=24)),
+        "high_risk_7d": await count(scoped.c.created_at >= now - timedelta(days=7),
+                                    func.upper(scoped.c.risk_label).in_(("HIGH", "CRITICAL"))),
+        "denied_7d": await count(scoped.c.created_at >= now - timedelta(days=7), denied),
+        "latest_risk": latest or "LOW",
     }
 
 
@@ -70,6 +81,9 @@ CATEGORIES = {
              "LOGIN_RESET_REQUESTED", "ADMIN_LOGIN_RESET_APPROVED", "TOTP_ENROLLED", "TOTP_RESET",
              "PASSKEY_REGISTERED", "PASSKEY_DISABLED", "IDENTITY_REVOKED"),
     "ALERT": ("ALERT_FORWARDED_TO_MANAGER", "ALERT_FORWARDED_TO_ADMIN", "ALERT_DISMISSED", "ALERT_IDENTITY_REVOKED"),
+    "CHAIN": ("CHAIN_ROLES_UPDATED", "CHAIN_ROLE_SYNC_FAILED", "CHAIN_ROLES_RECONCILED", "CHAIN_ROLES_REVOKED_UNREGISTERED",
+              "CHAIN_RELAY_REJECTED", "RoleGranted", "RoleRevoked", "INDEXER_RESCAN"),
+    "IDENTITY": ("USER_PROVISIONED", "ROLE_CHANGED", "IDENTITY_REVOKED", "PROVISIONING_PIN_REISSUED"),
 }
 _DENIED_MARKERS = ("DENIED", "FAILED", "DUPLICATE", "EXPIRED", "LIMIT_REACHED", "NOT_PERMITTED", "TAMPER",
                    "TERMINATED", "REJECTED", "Rejected")
