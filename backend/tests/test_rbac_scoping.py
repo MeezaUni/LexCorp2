@@ -27,6 +27,11 @@ def h(wallet: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def hf3(wallet: str, action: str = "identity.provision") -> dict:
+    from tests.conftest import step_up_header
+    return {**h(wallet), **(await step_up_header(wallet, action))}
+
+
 async def uid(db, wallet):
     return (await db.execute(select(User).where(User.wallet_address == wallet))).scalar_one()
 
@@ -150,14 +155,14 @@ async def test_user_creation_department_validated_server_side(client, db_session
     assert (await client.get("/api/users/departments", headers=h(USER))).json()["departments"] == []
 
     # Manager manipulates department_id -> rejected
-    assert (await client.post("/api/users", headers=h(MANAGER), json=body("Cyber"))).status_code == 403
-    assert (await client.post("/api/users", headers=h(MANAGER), json=body("Invented Dept"))).status_code == 400
-    ok = await client.post("/api/users", headers=h(MANAGER), json=body("Avionics"))
+    assert (await client.post("/api/users", headers=await hf3(MANAGER), json=body("Cyber"))).status_code == 403
+    assert (await client.post("/api/users", headers=await hf3(MANAGER), json=body("Invented Dept"))).status_code == 400
+    ok = await client.post("/api/users", headers=await hf3(MANAGER), json=body("Avionics"))
     assert ok.status_code == 200 and ok.json()["department"] == "Avionics"
     # Admin: any active department, but not unknown ones
-    assert (await client.post("/api/users", headers=h(ADMIN), json=body("Radar"))).status_code == 200
-    assert (await client.post("/api/users", headers=h(ADMIN), json=body("Invented Dept"))).status_code == 400
-    assert (await client.post("/api/users", headers=h(ADMIN), json=body(None))).status_code == 400
+    assert (await client.post("/api/users", headers=await hf3(ADMIN), json=body("Radar"))).status_code == 200
+    assert (await client.post("/api/users", headers=await hf3(ADMIN), json=body("Invented Dept"))).status_code == 400
+    assert (await client.post("/api/users", headers=await hf3(ADMIN), json=body(None))).status_code == 400
     # USER / AUDITOR cannot create users
     assert (await client.post("/api/users", headers=h(USER), json=body("Avionics"))).status_code == 403
     assert (await client.post("/api/users", headers=h(AUDITOR), json=body("Cyber"))).status_code == 403

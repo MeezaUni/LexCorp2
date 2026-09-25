@@ -8,99 +8,136 @@ from sqlalchemy import select
 from app.models.domain import AuditEvent, Asset, User
 from app.indexer.event_indexer import EventIndexer
 
-@pytest.mark.asyncio
-async def test_event_indexer_mint_digital_asset(db_session, seed_test_users):
-    """Test EventIndexer correctly processes DigitalAssetMinted and writes AuditEvent and Asset."""
-    indexer = EventIndexer()
-    indexer.w3 = MagicMock()
-    indexer.contract = MagicMock()
+OWNER = "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72"
+LOW = {"risk_score": 0.1, "risk_label": "LOW", "anomaly_score": 0.05, "features": {}}
 
-    raw_hash = uuid.uuid4().hex + uuid.uuid4().hex
-    block_num = random.randint(1000, 9999)
 
-    token_id = random.randint(1000000, 9999999)
-    serial = f"DOC-TEST-{uuid.uuid4().hex[:6].upper()}"
-    owner_wallet = "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72"
+def _indexer():
+    ix = EventIndexer()
+    ix.w3 = MagicMock()
+    ix.contract = MagicMock()
+    return ix
 
-    log = {
-        "transactionHash": bytes.fromhex(raw_hash),
-        "blockNumber": block_num,
-        "args": {
-            "tokenId": token_id,
-            "serialNumber": serial,
-            "owner": owner_wallet,
-            "ownerDID": f"did:ethr:13371:{owner_wallet}",
-            "fileHash": "QmTestHash...",
-            "offchainURI": "ipfs://QmTestHash..."
-        }
-    }
 
-    event_name = "DigitalAssetMinted"
+def _mint_log(token_id, serial, owner=OWNER, file_hash="ab" * 32):
+    raw = uuid.uuid4().hex + uuid.uuid4().hex
+    return raw, {"transactionHash": bytes.fromhex(raw), "blockNumber": random.randint(1000, 9999),
+                 "args": {"tokenId": token_id, "serialNumber": serial, "owner": owner,
+                          "ownerDID": f"did:ethr:13371:{owner}", "fileHash": file_hash, "offchainURI": "vault://x"}}
 
-    # Mock AI risk engine
-    with patch("app.indexer.event_indexer.ai_engine.analyze_event", return_value={"risk_score": 0.1, "risk_label": "LOW", "anomaly_score": 0.05, "features": {}}), \
+
+async def _registered_doc(db, token_id, serial, file_hash="ab" * 32, status="APPROVED"):
+    owner = (await db.execute(select(User).where(User.wallet_address == OWNER))).scalar_one()
+    a = Asset(token_id=token_id, serial_number=serial, owner_id=owner.id, is_physical=False, asset_type="DOCUMENT",
+              file_hash=file_hash, approval_status=status, department="Avionics")
+    db.add(a)
+    await db.commit()
+    return a
+
+
+async def _write(ix, db, name, log):
+    with patch("app.indexer.event_indexer.ai_engine.analyze_event", return_value=dict(LOW)), \
          patch("app.indexer.event_indexer.ai_engine.record_event"):
-        success = await indexer._write_event(db_session, event_name, log, block_num)
+        return await ix._write_event(db, name, log, log["blockNumber"])
 
-    assert success is True
 
-    # Verify AuditEvent
-    audit_res = await db_session.execute(select(AuditEvent).where(AuditEvent.tx_hash == raw_hash))
-    audit = audit_res.scalar_one_or_none()
-    assert audit is not None
-    assert audit.event_type == "DigitalAssetMinted"
-    assert audit.asset_serial == serial
-    assert audit.risk_label == "LOW"
+async def _audit(db, raw):
+    return (await db.execute(select(AuditEvent).where(AuditEvent.tx_hash == raw))).scalar_one()
 
-    # Verify Asset Projection
-    asset_res = await db_session.execute(select(Asset).where(Asset.serial_number == serial))
-    asset = asset_res.scalar_one_or_none()
-    assert asset is not None
-    assert asset.token_id == token_id
-    assert asset.metadata_cid == "ipfs://QmTestHash..."
+
+@pytest.mark.asyncio
+async def test_registered_mint_matching_registry_is_low_and_changes_nothing(db_session, seed_test_users):
+    token_id, serial = random.randint(10**6, 10**7), f"DOC-TEST-{uuid.uuid4().hex[:6].upper()}"
+    asset = await _registered_doc(db_session, token_id, serial)
+    users_before = len((await db_session.execute(select(User))).scalars().all())
+    raw, log = _mint_log(token_id, serial)
+    assert await _write(_indexer(), db_session, "DigitalAssetMinted", log) is True
+    audit = await _audit(db_session, raw)
+    assert audit.event_type == "DigitalAssetMinted" and audit.asset_serial == serial and audit.risk_label == "LOW"
+    await db_session.refresh(asset)
+    assert asset.file_hash == "ab" * 32
+    assert len((await db_session.execute(select(User))).scalars().all()) == users_before
+
+
+@pytest.mark.asyncio
+async def test_unregistered_mint_raises_integrity_alert_and_creates_no_identity(db_session, seed_test_users):
+    stranger = "0x" + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    token_id, serial = random.randint(10**7, 10**8), f"DOC-ROGUE-{uuid.uuid4().hex[:6].upper()}"
+    raw, log = _mint_log(token_id, serial, owner=stranger)
+    assert await _write(_indexer(), db_session, "DigitalAssetMinted", log) is True
+    audit = await _audit(db_session, raw)
+    assert audit.risk_label == "HIGH"
+    assert audit.risk_factors["integrity_anomaly"]["rule"] == "UNREGISTERED_MINT"
+    assert (await db_session.execute(select(User).where(User.wallet_address == stranger))).scalar_one_or_none() is None
+    assert (await db_session.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one_or_none() is None
+    from app.models.domain import SecurityAlert
+    alert = (await db_session.execute(select(SecurityAlert).where(SecurityAlert.source_event_id == audit.id))).scalar_one()
+    assert alert.source == "RULE"
+    alert.state = "DISMISSED"
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_mint_with_mismatched_hash_is_flagged_not_copied(db_session, seed_test_users):
+    token_id, serial = random.randint(10**8, 10**9), f"DOC-MM-{uuid.uuid4().hex[:6].upper()}"
+    asset = await _registered_doc(db_session, token_id, serial, file_hash="cd" * 32)
+    raw, log = _mint_log(token_id, serial, file_hash="ef" * 32)
+    await _write(_indexer(), db_session, "DigitalAssetMinted", log)
+    audit = await _audit(db_session, raw)
+    assert audit.risk_label == "HIGH" and "file_hash" in audit.risk_factors["integrity_anomaly"]["fields"]
+    await db_session.refresh(asset)
+    assert asset.file_hash == "cd" * 32  # the registry is never overwritten from chain data
 
 
 @pytest.mark.asyncio
 async def test_event_indexer_idempotent_duplicate(db_session, seed_test_users):
-    """Test EventIndexer skips writing duplicate AuditEvent but updates Asset projection."""
-    indexer = EventIndexer()
-    indexer.w3 = MagicMock()
-    indexer.contract = MagicMock()
+    """A re-delivered event is skipped entirely: no second audit row, no projection change."""
+    token_id, serial = random.randint(10**6, 10**7), f"DOC-DUP-{uuid.uuid4().hex[:6].upper()}"
+    asset = await _registered_doc(db_session, token_id, serial)
+    raw, log = _mint_log(token_id, serial)
+    ix = _indexer()
+    assert await _write(ix, db_session, "DigitalAssetMinted", log) is True
+    assert await _write(ix, db_session, "DigitalAssetMinted", log) is False
+    rows = (await db_session.execute(select(AuditEvent).where(AuditEvent.tx_hash == raw))).scalars().all()
+    assert len(rows) == 1
 
-    raw_hash = uuid.uuid4().hex + uuid.uuid4().hex
-    block_num = random.randint(1000, 9999)
 
-    token_id = random.randint(1000000, 9999999)
-    serial = f"DOC-DUP-{uuid.uuid4().hex[:6].upper()}"
-    owner_wallet = "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72"
-
-    log = {
-        "transactionHash": bytes.fromhex(raw_hash),
-        "blockNumber": block_num,
-        "args": {
-            "tokenId": token_id,
-            "serialNumber": serial,
-            "owner": owner_wallet,
-            "ownerDID": f"did:ethr:13371:{owner_wallet}"
-        }
-    }
-
-    event_name = "DigitalAssetMinted"
-
-    # Insert AuditEvent manually to mimic already processed
-    audit_event = AuditEvent(
-        event_type=event_name,
-        tx_hash=raw_hash,
-        block_number=block_num,
-        asset_serial=serial
-    )
-    db_session.add(audit_event)
+@pytest.mark.asyncio
+async def test_revision_anchor_must_match_an_approved_version(db_session, seed_test_users):
+    token_id, serial = random.randint(10**6, 10**7), f"DOC-ANC-{uuid.uuid4().hex[:6].upper()}"
+    root = await _registered_doc(db_session, token_id, serial, file_hash="01" * 32)
+    rev = Asset(token_id=random.randint(10**9, 2*10**9), serial_number=f"{serial}-V2", owner_id=root.owner_id, is_physical=False, asset_type="DOCUMENT",
+                file_hash="02" * 32, approval_status="APPROVED", root_asset_id=root.id, parent_asset_id=root.id, version_number=2)
+    db_session.add(rev)
     await db_session.commit()
+    ix = _indexer()
+    ix.contract.functions.getDigitalAsset.return_value.call.return_value = (serial, "d", "02" * 32, "u", True)
+    for new_hash, expect in (("02" * 32, "LOW"), ("99" * 32, "HIGH")):
+        raw = uuid.uuid4().hex + uuid.uuid4().hex
+        log = {"transactionHash": bytes.fromhex(raw), "blockNumber": 5,
+               "args": {"tokenId": token_id, "oldFileHash": "01" * 32, "newFileHash": new_hash,
+                        "newOffchainURI": "u", "updater": "0x049dd1327d3bf40ab2dd8d70086304770e841fca"}}
+        await _write(ix, db_session, "DigitalAssetUpdated", log)
+        assert (await _audit(db_session, raw)).risk_label == expect
+    await db_session.refresh(root)
+    assert root.file_hash == "01" * 32  # v1's integrity record is never rewritten
 
-    with patch.object(indexer, '_create_asset_record', new_callable=AsyncMock) as mock_create:
-        success = await indexer._write_event(db_session, event_name, log, block_num)
-        assert success is False  # Duplicate event returns False
-        assert mock_create.called
+
+@pytest.mark.asyncio
+async def test_unexpected_onchain_role_grant_is_flagged(db_session, seed_test_users):
+    ix = _indexer()
+    minter = b"\x01" * 32
+    ix.contract.functions.MINTER_ROLE.return_value.call.return_value = minter
+    for name in ("ANCHOR_ROLE", "MANAGER_ROLE", "AUDITOR_ROLE", "REGISTRAR_ROLE", "DEFAULT_ADMIN_ROLE"):
+        getattr(ix.contract.functions, name).return_value.call.return_value = name.encode().ljust(32, b"\0")
+    cases = (("0x049dd1327d3bf40ab2dd8d70086304770e841fca", "LOW"),   # active MANAGER -> expected
+             (OWNER, "HIGH"))                                          # plain USER -> never a minter
+    for account, expect in cases:
+        raw = uuid.uuid4().hex + uuid.uuid4().hex
+        log = {"transactionHash": bytes.fromhex(raw), "blockNumber": 7,
+               "args": {"role": minter, "account": account, "sender": "0x" + "33" * 20}}
+        await _write(ix, db_session, "RoleGranted", log)
+        assert (await _audit(db_session, raw)).risk_label == expect
 
 
 @pytest.mark.asyncio

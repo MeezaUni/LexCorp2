@@ -45,7 +45,8 @@ def admin_token() -> str:
 async def new_identity(client, role: str = "USER") -> tuple:
     """Admin provisions a fresh identity; returns (account, pin)."""
     acct = Account.create()
-    res = await client.post("/api/users", headers=bearer(admin_token()), json={
+    from tests.conftest import step_up_header
+    res = await client.post("/api/users", headers=bearer(admin_token(), **(await step_up_header(ADMIN_WALLET, "identity.provision"))), json={
         "wallet_address": acct.address, "role": role, "department": "Avionics", "name": f"Matrix {role}",
     })
     assert res.status_code == 200, res.text

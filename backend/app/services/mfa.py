@@ -47,6 +47,8 @@ ACTION_PURPOSE = {
     "document.download": "factor3",
     "admin.reset": "factor3",
     "identity.revoke": "factor3",
+    "identity.provision": "factor3",
+    "identity.role": "factor3",
     "asset.manage": "factor3",
     # Adding/removing a credential for an already-protected purpose requires
     # proving an existing factor of that same purpose.
@@ -115,9 +117,6 @@ def verify_totp_code(user: User, purpose: str, code: Optional[str], *, require_e
                 logger.warning("TOTP replay rejected (purpose=%s)", purpose)
                 return False
             setattr(user, step_field, step)
-            # Opportunistically migrate a legacy plaintext secret to encrypted storage.
-            if not getattr(user, secret_field).startswith("enc:"):
-                setattr(user, secret_field, encrypt_secret(secret))
             return True
     return False
 

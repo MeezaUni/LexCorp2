@@ -150,30 +150,11 @@ class EventIndexer:
         args = log.get("args", {})
         already_indexed = await self._is_indexed(session, tx_hash)
 
-        # Audit rows are immutable, but asset projections may need rebuilding
-        # after a database reset or schema repair.
         if already_indexed:
-            if event_name in ["AssetMinted", "DigitalAssetMinted"]:
-                token_id = args.get("tokenId")
-                asset_serial = args.get("serialNumber")
-                actor_address = args.get("owner")
-                if actor_address and token_id is not None:
-                    await self._create_asset_record(session, actor_address, asset_serial, token_id, args, event_name=event_name)
-                    await session.commit()
-            elif event_name == "AssetTransferred":
-                token_id = args.get("tokenId")
-                new_owner = args.get("newOwner")
-                if new_owner and token_id is not None:
-                    try:
-                        asset_info = self.contract.functions.getAsset(token_id).call()
-                        serial = asset_info[0]
-                    except Exception:
-                        serial = f"TOKEN-{token_id}"
-                    await self._create_asset_record(session, new_owner, serial, token_id, args, event_name=event_name)
-                    await session.commit()
             logger.debug(f"Skipping already-indexed audit tx: {tx_hash}")
             return False
 
+        anomaly: Optional[dict] = None
         actor_did: Optional[str] = None
         target_did: Optional[str] = None
         asset_serial: Optional[str] = None
@@ -184,8 +165,7 @@ class EventIndexer:
             actor_address = args.get("owner")
             target_did = args.get("ownerDID")
             token_id = args.get("tokenId")
-            if actor_address and token_id is not None:
-                await self._create_asset_record(session, actor_address, asset_serial, token_id, args, event_name=event_name)
+            anomaly = await self._reconcile_mint(session, event_name, args)
 
         elif event_name == "DigitalAssetUpdated":
             token_id = args.get("tokenId")
@@ -197,21 +177,7 @@ class EventIndexer:
             except Exception:
                 asset_serial = f"TOKEN-{token_id}"
 
-            # Sync DB asset if present
-            if token_id is not None:
-                try:
-                    res = await session.execute(select(Asset).where(Asset.token_id == token_id))
-                    asset_obj = res.scalar_one_or_none()
-                    if asset_obj:
-                        if args.get("newFileHash"):
-                            asset_obj.file_hash = args.get("newFileHash")
-                        if args.get("newOffchainURI"):
-                            asset_obj.metadata_cid = args.get("newOffchainURI")
-                        asset_obj.is_physical = False
-                        asset_obj.asset_type = "DOCUMENT"
-                        await session.flush()
-                except Exception as e:
-                    logger.warning(f"Error syncing updated digital asset token {token_id}: {e}")
+            anomaly = await self._reconcile_anchor(session, token_id, args.get("newFileHash"))
 
         elif event_name == "AssetTransferred":
             token_id = args.get("tokenId")
@@ -221,10 +187,9 @@ class EventIndexer:
                     asset_serial = asset_info[0]
                 except Exception:
                     asset_serial = None
-            actor_address = args.get("newOwner")
+            actor_address = None  # the signer is resolved from the transaction below
             target_did = args.get("toDID")
-            if actor_address and token_id is not None:
-                await self._create_asset_record(session, actor_address, asset_serial, token_id, args, event_name=event_name)
+            anomaly = await self._reconcile_transfer(session, token_id, args.get("newOwner"))
 
         elif event_name == "AssetRevoked":
             asset_serial = args.get("serialNumber")
@@ -253,6 +218,12 @@ class EventIndexer:
                 asset_serial = asset_info[0]
             except Exception:
                 asset_serial = f"TOKEN-{token_id}"
+
+        elif event_name in ("RoleGranted", "RoleRevoked"):
+            account = args.get("account")
+            actor_address = args.get("sender")
+            target_did = f"did:ethr:{settings.CHAIN_ID}:{account.lower()}" if account else None
+            anomaly = await self._reconcile_role_event(session, event_name, args)
 
         elif event_name == "AccessAttempted":
             token_id = args.get("tokenId")
@@ -333,6 +304,14 @@ class EventIndexer:
             logger.error(f"AI Risk Engine failed: {e}")
             risk_score, risk_label, risk_factors = None, None, None
 
+        if anomaly:
+            # Deterministic integrity rule (not an AI judgement): the chain disagrees with
+            # the LexCorp2 registry. Raised as HIGH so humans triage it.
+            risk_label = "HIGH"
+            risk_score = max(risk_score or 0.0, 0.9)
+            risk_factors = {**(risk_factors or {}), "integrity_anomaly": anomaly}
+            logger.warning(f"Chain/registry integrity anomaly on {event_name} tx={tx_hash}: {anomaly}")
+
         audit_event = AuditEvent(
             event_type=event_name,
             tx_hash=tx_hash,
@@ -348,7 +327,7 @@ class EventIndexer:
             session.add(audit_event)
             if (risk_label or "").upper() in ("HIGH", "CRITICAL"):
                 from app.services.alerts import raise_alert
-                await raise_alert(session, audit_event, source="AI")
+                await raise_alert(session, audit_event, source="RULE" if anomaly else "AI")
             await session.commit()
             logger.info(
                 f"[{event_name}] tx={tx_hash} block={block_number} "
@@ -360,78 +339,86 @@ class EventIndexer:
             logger.error(f"Failed to commit audit event {event_name} ({tx_hash}): {e}")
             return False
 
-    async def _create_asset_record(
-        self,
-        session: AsyncSession,
-        actor_address: str,
-        asset_serial: str,
-        token_id: int,
-        args: dict,
-        event_name: str = "AssetMinted",
-    ) -> None:
-        """Create or update Asset record for minted asset."""
-        from sqlalchemy import or_
-        is_digital = event_name == "DigitalAssetMinted" or bool(args.get("fileHash")) or (asset_serial and asset_serial.startswith("DOC-"))
-        try:
-            result = await session.execute(
-                select(User).where(func.lower(User.wallet_address) == actor_address.lower())
-            )
-            user_obj = result.scalar_one_or_none()
-            if not user_obj:
-                user_obj = User(
-                    wallet_address=actor_address.lower(),
-                    name=args.get("ownerName", "Unknown"),
-                    contact_number=args.get("contactNumber", None),
-                    did=f"did:ethr:{settings.CHAIN_ID}:{actor_address.lower()}",
-                    role="USER",
-                    is_active=True
-                )
-                session.add(user_obj)
-                await session.flush()
-            owner_id = user_obj.id
+    async def _user_by_wallet(self, session: AsyncSession, wallet: Optional[str]):
+        if not wallet:
+            return None
+        return (await session.execute(select(User).where(func.lower(User.wallet_address) == wallet.lower()))).scalar_one_or_none()
 
-            result = await session.execute(
-                select(Asset).where(
-                    or_(
-                        Asset.token_id == token_id,
-                        func.lower(Asset.serial_number) == asset_serial.lower()
-                    )
-                )
-            )
-            existing_asset = result.scalar_one_or_none()
-            if existing_asset:
-                existing_asset.owner_id = owner_id
-                existing_asset.token_id = token_id
-                existing_asset.serial_number = asset_serial
-                if args.get("offchainURI"):
-                    existing_asset.metadata_cid = args.get("offchainURI")
-                if args.get("fileHash"):
-                    existing_asset.file_hash = args.get("fileHash")
-                if is_digital:
-                    existing_asset.is_physical = False
-                    existing_asset.asset_type = "DOCUMENT"
-                    if not existing_asset.name or "Defense Equipment" in (existing_asset.name or ""):
-                        existing_asset.name = f"Digital Document {asset_serial}"
-                elif event_name == "AssetMinted":
-                    existing_asset.is_physical = True
-                    existing_asset.asset_type = "EQUIPMENT"
-            else:
-                asset = Asset(
-                    token_id=token_id,
-                    serial_number=asset_serial,
-                    name=f"Digital Document {asset_serial}" if is_digital else f"Defense Equipment {asset_serial}",
-                    asset_type="DOCUMENT" if is_digital else "EQUIPMENT",
-                    metadata_cid=args.get("offchainURI"),
-                    file_hash=args.get("fileHash") if is_digital else None,
-                    is_physical=not is_digital,
-                    owner_id=owner_id
-                )
-                session.add(asset)
-            await session.flush()
-            logger.info(f"Asset record added/updated to session for token {token_id}, serial {asset_serial}, owner {owner_id}, is_digital={is_digital}")
-        except Exception as e:
-            await session.rollback()
-            logger.error(f"Failed to create Asset record: {e}")
+    async def _reconcile_mint(self, session: AsyncSession, event_name: str, args: dict) -> Optional[dict]:
+        """A mint must correspond to an approved LexCorp2 registry record with the same
+        token ID, serial, owner and (digital) file hash. The registry is never rewritten
+        from chain data and no identity is ever created here."""
+        token_id, serial = args.get("tokenId"), args.get("serialNumber")
+        asset = (await session.execute(select(Asset).where(Asset.token_id == token_id))).scalars().first()
+        if asset is None:
+            return {"rule": "UNREGISTERED_MINT", "token_id": token_id, "serial": serial, "owner": args.get("owner")}
+        problems = []
+        if (asset.serial_number or "") != (serial or ""):
+            problems.append("serial")
+        if event_name == "DigitalAssetMinted" and (asset.file_hash or "") != (args.get("fileHash") or ""):
+            problems.append("file_hash")
+        if (event_name == "DigitalAssetMinted") == bool(asset.is_physical):
+            problems.append("asset_kind")
+        if asset.approval_status not in ("APPROVED", "ACTIVE"):
+            problems.append("not_approved")
+        owner = await session.get(User, asset.owner_id) if asset.owner_id else None
+        if not owner or (owner.wallet_address or "").lower() != (args.get("owner") or "").lower():
+            problems.append("owner")
+        if problems:
+            return {"rule": "MINT_MISMATCH", "token_id": token_id, "serial": serial, "fields": problems}
+        return None
+
+    async def _reconcile_anchor(self, session: AsyncSession, token_id, new_hash: Optional[str]) -> Optional[dict]:
+        """An anchored hash must equal an APPROVED version in the token's lineage."""
+        root = (await session.execute(select(Asset).where(Asset.token_id == token_id))).scalars().first()
+        if root is None:
+            return {"rule": "ANCHOR_UNKNOWN_TOKEN", "token_id": token_id}
+        root_id = root.root_asset_id or root.id
+        match = (await session.execute(select(Asset).where(
+            ((Asset.id == root_id) | (Asset.root_asset_id == root_id)) & (Asset.file_hash == new_hash)
+        ))).scalars().first()
+        if match is None or match.approval_status not in ("APPROVED", "ACTIVE"):
+            return {"rule": "ANCHOR_HASH_NOT_APPROVED", "token_id": token_id, "new_hash": new_hash}
+        return None
+
+    async def _reconcile_transfer(self, session: AsyncSession, token_id, new_owner: Optional[str]) -> Optional[dict]:
+        """Custody may only move to an active LexCorp2 identity; the registry follows it."""
+        user = await self._user_by_wallet(session, new_owner)
+        if user is None or not user.is_active:
+            return {"rule": "TRANSFER_TO_UNKNOWN_IDENTITY", "token_id": token_id, "new_owner": new_owner}
+        asset = (await session.execute(select(Asset).where(Asset.token_id == token_id))).scalars().first()
+        if asset is None:
+            return {"rule": "TRANSFER_OF_UNREGISTERED_TOKEN", "token_id": token_id}
+        asset.owner_id = user.id
+        await session.flush()
+        return None
+
+    async def _reconcile_role_event(self, session: AsyncSession, event_name: str, args: dict) -> Optional[dict]:
+        """On-chain roles must match the LexCorp2 identity (see services/chain.py)."""
+        from app.services.chain import desired_roles
+        role_names = {}
+        for name in ("MINTER_ROLE", "ANCHOR_ROLE", "MANAGER_ROLE", "AUDITOR_ROLE", "REGISTRAR_ROLE", "DEFAULT_ADMIN_ROLE"):
+            try:
+                role_names[getattr(self.contract.functions, name)().call()] = name
+            except Exception:
+                pass
+        role = role_names.get(args.get("role"), "UNKNOWN_ROLE")
+        if event_name == "RoleRevoked" or role in ("REGISTRAR_ROLE", "DEFAULT_ADMIN_ROLE"):
+            if role in ("REGISTRAR_ROLE", "DEFAULT_ADMIN_ROLE") and event_name == "RoleGranted":
+                try:
+                    from app.services.chain import load_deployment
+                    d = load_deployment()
+                    expected = {d.get("admin", "").lower(), d.get("registrar", "").lower()}
+                except Exception:
+                    expected = set()
+                if (args.get("account") or "").lower() not in expected:
+                    return {"rule": "UNEXPECTED_GOVERNANCE_GRANT", "role": role, "account": args.get("account")}
+            return None
+        user = await self._user_by_wallet(session, args.get("account"))
+        if user is None or role not in desired_roles(user.role, bool(user.is_active)):
+            return {"rule": "UNEXPECTED_ROLE_GRANT", "role": role, "account": args.get("account"),
+                    "identity_role": user.role if user else None}
+        return None
 
     async def _index_block(self, from_block: int, to_block: Optional[int] = None) -> int:
         """Index all events from a range of blocks. Returns count of newly-written events."""
@@ -449,6 +436,8 @@ class EventIndexer:
             ("AccessPermissionGranted", self.contract.events.AccessPermissionGranted),
             ("AccessPermissionRevoked", self.contract.events.AccessPermissionRevoked),
             ("AccessAttempted", self.contract.events.AccessAttempted),
+            ("RoleGranted", self.contract.events.RoleGranted),
+            ("RoleRevoked", self.contract.events.RoleRevoked),
         ]
 
         failed = False

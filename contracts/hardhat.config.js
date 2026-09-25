@@ -1,41 +1,39 @@
 require("@nomicfoundation/hardhat-toolbox");
+const fs = require("fs");
+const path = require("path");
+
+// Deployment credentials come ONLY from the environment or from the git-ignored
+// ../secrets/chain.env (created by `python scripts/init_secrets.py`). No private key
+// is ever written in this file. The in-process `hardhat` network used by unit tests
+// runs on Hardhat's throw-away accounts and never touches Besu.
+function loadSecretsFile() {
+  const file = path.join(__dirname, "..", "secrets", "chain.env");
+  if (!fs.existsSync(file)) return;
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
+  }
+}
+loadSecretsFile();
+
+const deployerKey = process.env.DEPLOYER_PRIVATE_KEY;
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
     version: "0.8.24",
     settings: {
-      optimizer: {
-        enabled: true,
-        runs: 200,
-      },
+      optimizer: { enabled: true, runs: 200 },
       evmVersion: "london",
     },
   },
   networks: {
-    hardhat: {
+    hardhat: { chainId: 13371 },
+    besu: {
+      url: process.env.BESU_RPC_URL || "http://127.0.0.1:8545",
       chainId: 13371,
-    },
-    localhost: {
-      url: "http://127.0.0.1:8545",
-      chainId: 13371,
-      accounts: [
-        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // Admin (f39Fd6e51aad88F6F4ce6aB8827279cffFb92266)
-        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", // User1
-        "0x5de4111afa1a4b94908f83103eb2f9580842109d94c804602564c00f8b45479a", // User2
-      ],
-      gasPrice: "auto",
-    },
-    besu_consortium: {
-      url: "http://127.0.0.1:8545",
-      chainId: 13371,
-      accounts: [
-        // Standard pre-funded development validator/admin keys
-        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // Admin
-        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", // User1
-        "0x5de4111afa1a4b94908f83103eb2f9580842109d94c804602564c00f8b45479a", // User2
-      ],
-      gasPrice: "auto",
+      accounts: deployerKey ? [deployerKey] : [],
+      gasPrice: 0,
     },
   },
 };

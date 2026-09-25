@@ -84,9 +84,8 @@ def create_kyc_vc(
         },
     }
 
-    # Sign the JWT (in production, the issuer's wallet would sign this)
-    # For prototype: use a symmetric key derived from JWT_SECRET
-    vc_jwt = jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM, headers=header)
+    # Signed with a dedicated credential key (never the session-token key).
+    vc_jwt = jwt.encode(payload, settings.VC_SIGNING_SECRET, algorithm=settings.JWT_ALGORITHM, headers=header)
 
     # Create DB model for storage (not for verification — verification is done via JWT)
     db_model = VerifiableCredential(
@@ -114,7 +113,7 @@ def verify_vc_jwt(vc_jwt: str) -> Optional[dict]:
         # For prototype, we verify with our signing key (one-way trust)
         payload = jwt.decode(
             vc_jwt,
-            settings.JWT_SECRET,
+            settings.VC_SIGNING_SECRET,
             algorithms=[settings.JWT_ALGORITHM],
             audience="lexcorp-sih-platform",
         )

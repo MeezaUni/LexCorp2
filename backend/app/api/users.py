@@ -2,8 +2,6 @@
 
 from typing import List, Optional
 import uuid
-import subprocess
-import os
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -13,7 +11,9 @@ from web3 import Web3
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.api.dependencies import get_onboarded_user, get_manager_user, get_admin_user, get_request_client_ip, record_audit
+from app.api.dependencies import get_onboarded_user, get_manager_user, get_admin_user, get_request_client_ip, get_step_up_token, record_audit
+from app.services import mfa
+from app.services.chain import sync_user_chain_roles
 from app.services import access
 from app.models.domain import Department
 from fastapi import Request
@@ -23,38 +23,6 @@ from app.core.crypto import hash_pin
 from datetime import UTC
 
 router = APIRouter(prefix="/users", tags=["users"])
-
-
-def auto_fund_wallet(wallet_address: str):
-    """Automatically fund the newly provisioned wallet with 1000 ETH on the local Hardhat network."""
-    try:
-        contracts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../contracts"))
-
-        # Use shell=True for npx to resolve correctly on Windows
-        import platform
-        use_shell = platform.system() == "Windows"
-
-        env = os.environ.copy()
-        env["FUND_RECIPIENT"] = wallet_address
-
-        # The command to run
-        cmd = ["npx", "hardhat", "run", "scripts/fund_user.js", "--network", "localhost"]
-
-        result = subprocess.run(
-            cmd,
-            cwd=contracts_dir,
-            env=env,
-            check=True,
-            capture_output=True,
-            shell=use_shell
-        )
-    except subprocess.CalledProcessError as e:
-        err_msg = e.stderr.decode()
-        print(f"Warning: Failed to auto-fund {wallet_address}. {err_msg}")
-        raise RuntimeError(f"Faucet failed: {err_msg}")
-    except Exception as e:
-        print(f"Warning: Failed to auto-fund {wallet_address}. {e}")
-        raise RuntimeError(f"Faucet execution failed: {str(e)}")
 
 
 class UserResponse(BaseModel):
@@ -70,7 +38,7 @@ class UserResponse(BaseModel):
     one_time_pin: Optional[str] = None
     pin_expires_at: Optional[datetime] = None
     reset_requested: Optional[bool] = None
-    funding_warning: Optional[str] = None
+    chain_roles: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -82,10 +50,12 @@ class CreateUserRequest(BaseModel):
     contact_number: Optional[str] = None
     department: Optional[str] = None
     role: str = "USER"  # ADMIN, MANAGER, AUDITOR, USER
+    totp_code: Optional[str] = None  # Factor 3 (or X-Step-Up-Token header)
 
 
 class UpdateRoleRequest(BaseModel):
     role: str
+    totp_code: Optional[str] = None  # Factor 3 (or X-Step-Up-Token header)
 
 
 @router.get("", response_model=List[UserResponse])
@@ -135,6 +105,7 @@ async def create_or_register_user(
     http_request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_onboarded_user),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Create or pre-seed a user with a specific role, enforcing strict role hierarchy.
 
@@ -198,6 +169,9 @@ async def create_or_register_user(
         target_department = current_user.department
     target_department = await access.require_assignable_department(db, current_user, target_department)
 
+    # Provisioning an identity (and its on-chain role) requires Factor 3.
+    await mfa.require_factor(db, current_user, "identity.provision", totp_code=request.totp_code, step_up_token=step_up_token)
+
     # Issue DID and create new record
     did = f"did:ethr:{settings.CHAIN_ID}:{checksummed.lower()}"
     # The PIN is returned once in this response and stored only as a scrypt hash.
@@ -224,13 +198,11 @@ async def create_or_register_user(
     await db.commit()
     await db.refresh(new_user)
 
-    # Fund the wallet for gas. A funding failure must not lose the one-time PIN,
-    # which exists only in this response, so it is reported rather than raised.
-    funding_warning = None
-    try:
-        auto_fund_wallet(new_user.wallet_address)
-    except Exception as e:
-        funding_warning = f"Wallet funding failed; use the Fund action later. ({str(e)[:200]})"
+    # Grant the on-chain roles that match this identity (no funding is needed on the
+    # zero-fee network). A failure is audited and retried by the reconciler; the
+    # one-time PIN, which exists only in this response, is still returned.
+    chain_roles = await sync_user_chain_roles(db, new_user, actor_did=current_user.did,
+                                              client_ip=get_request_client_ip(http_request))
 
     return UserResponse(
         id=str(new_user.id),
@@ -245,7 +217,7 @@ async def create_or_register_user(
         one_time_pin=pin,
         pin_expires_at=new_user.pin_expires_at,
         reset_requested=new_user.reset_requested,
-        funding_warning=funding_warning,
+        chain_roles=chain_roles,
     )
 
 
@@ -253,8 +225,10 @@ async def create_or_register_user(
 async def update_user_role(
     user_id: str,
     request: UpdateRoleRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_onboarded_user),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Update role for an existing user enforcing strict hierarchy."""
     if current_user.role in ("USER", "AUDITOR"):
@@ -309,9 +283,18 @@ async def update_user_role(
             detail="Insufficient permissions to modify this user",
         )
 
+    if user.id == current_user.id:
+        raise HTTPException(status_code=403, detail="You cannot change your own role.")
+    await mfa.require_factor(db, current_user, "identity.role", totp_code=request.totp_code, step_up_token=step_up_token)
+    previous = user.role
     user.role = role_clean
+    user.session_version = (user.session_version or 0) + 1  # new privileges require a new session
+    await record_audit(db, "ROLE_CHANGED", actor_did=current_user.did, target_did=user.did,
+                       client_ip=get_request_client_ip(http_request), details={"from": previous, "to": role_clean})
     await db.commit()
     await db.refresh(user)
+    chain_roles = await sync_user_chain_roles(db, user, actor_did=current_user.did,
+                                              client_ip=get_request_client_ip(http_request))
     return UserResponse(
         id=str(user.id),
         wallet_address=user.wallet_address,
@@ -320,14 +303,17 @@ async def update_user_role(
         did=user.did,
         role=user.role,
         is_active=user.is_active,
+        chain_roles=chain_roles,
     )
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: str,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_manager_user),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Revoke a user's identity by setting is_active=False (soft delete).
 
@@ -357,48 +343,13 @@ async def delete_user(
         )
 
     from app.services.identity import revoke_identity
-    await revoke_identity(db, current_user, user, "Revoked by administrator", require_no_owned_assets=True)
+    await mfa.require_factor(db, current_user, "identity.revoke", step_up_token=step_up_token)
+    await revoke_identity(db, current_user, user, "Revoked by administrator", require_no_owned_assets=True,
+                          client_ip=get_request_client_ip(http_request))
     await db.commit()
-
+    # Remove any on-chain operational role the identity held.
+    await sync_user_chain_roles(db, user, actor_did=current_user.did, client_ip=get_request_client_ip(http_request))
     return None
-
-@router.post("/{user_id}/fund")
-async def fund_user_wallet(
-    user_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_manager_user),
-):
-    """Fund an existing user's wallet address with 10 ETH."""
-    try:
-        uid = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user ID format"
-        )
-
-    result = await db.execute(select(User).where(User.id == uid))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
-
-    # Department restriction for funding
-    if not access.can_see_user(current_user, user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Managers can only fund users in their own department ({current_user.department}).",
-        )
-
-    try:
-        auto_fund_wallet(user.wallet_address)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    return {"message": f"Successfully funded {user.wallet_address} with 1000 LEX"}
-
-
 
 # ---------------------------------------------------------------- Departments
 

@@ -106,4 +106,8 @@ async def revoke_from_alert(alert_id: str, request: Request, body: AlertDecision
     await mfa.require_factor(db, current_user, "identity.revoke", totp_code=body.totp_code, step_up_token=step_up_token)
     await svc.revoke_subject(db, alert, current_user, body.note, get_request_client_ip(request))
     await db.commit()
-    return {"alert_id": alert.alert_id, "state": alert.state}
+    # Remove the revoked identity's on-chain operational roles (audited; retried if it fails).
+    from app.services.chain import sync_user_chain_roles
+    subject = (await db.execute(select(User).where(User.id == alert.subject_user_id))).scalar_one()
+    chain_roles = await sync_user_chain_roles(db, subject, actor_did=current_user.did, client_ip=get_request_client_ip(request))
+    return {"alert_id": alert.alert_id, "state": alert.state, "chain_roles_ok": chain_roles.get("ok")}

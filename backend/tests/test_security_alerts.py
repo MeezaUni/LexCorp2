@@ -198,7 +198,13 @@ async def test_legacy_triage_endpoint_retired(client, db_session):
 async def test_user_delete_endpoint_uses_same_revocation(client, db_session):
     sam = await new_user(db_session)
     user = (await db_session.execute(select(User).where(User.wallet_address == sam))).scalar_one()
+    # Without Factor 3 the revocation is refused and nothing changes.
     r = await client.delete(f"/api/users/{user.id}", headers=h(ADMIN))
+    assert r.status_code == 401
+    await db_session.refresh(user)
+    assert user.is_active is True
+    from tests.conftest import step_up_header
+    r = await client.delete(f"/api/users/{user.id}", headers={**h(ADMIN), **(await step_up_header(ADMIN, "identity.revoke"))})
     assert r.status_code == 204
     await db_session.refresh(user)
     assert user.is_active is False and user.revoked_at is not None and user.session_version == 2

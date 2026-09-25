@@ -282,29 +282,7 @@ async def test_audit_events_list(client):
     assert response.status_code == 200
     assert isinstance(response.json(), list)
 
-# ==============================================================================
-# 6. Production Security Constraints (Phase 12)
-# ==============================================================================
-from app.core.config import Settings
-
-@pytest.mark.asyncio
-async def test_production_jwt_secret_validation():
-    """In production, weak JWT_SECRET strings are rejected."""
-    # Ensure a weak secret throws ValueError when DEBUG=False
-    with pytest.raises(ValueError, match="In production, JWT_SECRET must be set to a secure value"):
-        Settings(DEBUG=False, JWT_SECRET="weak", CORS_ORIGINS=["http://localhost:5173"], WEBAUTHN_ORIGINS=["https://localhost"])
-
-@pytest.mark.asyncio
-async def test_production_cors_wildcard_validation():
-    """In production, wildcard '*' CORS origin is rejected."""
-    with pytest.raises(ValueError, match=r"Wildcard '\*' is not allowed in CORS_ORIGINS in production."):
-        Settings(DEBUG=False, JWT_SECRET="x" * 32, CORS_ORIGINS=["*", "http://localhost"], WEBAUTHN_ORIGINS=["https://localhost"])
-
-@pytest.mark.asyncio
-async def test_production_webauthn_insecure_validation():
-    """In production, insecure HTTP WebAuthn origins (except localhost) are rejected."""
-    with pytest.raises(ValueError, match="Insecure origin http://malicious.com not allowed for WebAuthn in production. Use HTTPS."):
-        Settings(DEBUG=False, JWT_SECRET="x" * 32, CORS_ORIGINS=["https://test.com"], WEBAUTHN_ORIGINS=["https://test.com", "http://malicious.com"])
+# 6. Production security constraints: moved to tests/test_secret_config.py (stricter).
 
 # ==============================================================================
 # 7. DID Migration & Auto-Repair (Phase 12)

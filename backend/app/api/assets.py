@@ -429,7 +429,6 @@ async def prepare_mint_digital(request: DigitalMintRequest, current_user: User =
 class UpdateDigitalAssetRequest(BaseModel):
     totp_code: Optional[str] = None
     token_id: int
-    requester_did: str
     new_file_hash: str
     new_offchain_uri: str
 
@@ -453,8 +452,11 @@ async def prepare_update_digital(
         Asset.root_asset_id == root.id, Asset.version_number > 1, Asset.file_hash == request.new_file_hash,
         Asset.approval_status == "APPROVED",
     ))).scalars().first()
-    if not revision or not (access.can_manage_asset(current_user, root) or root.owner_id == current_user.id):
+    if not revision:
         raise HTTPException(status_code=409, detail="No approved revision with this hash exists for this token.")
+    # Anchoring is signed by an approver wallet (ANCHOR_ROLE on-chain); holders cannot anchor.
+    if current_user.role not in ("ADMIN", "MANAGER") or not access.can_manage_asset(current_user, root):
+        raise HTTPException(status_code=403, detail="Only a Manager/Admin of this department can anchor a revision.")
 
     # Factor 3 Validation
     await mfa.require_factor(db, current_user, "document.modify", totp_code=request.totp_code, step_up_token=step_up_token)
@@ -462,7 +464,6 @@ async def prepare_update_digital(
 
     calldata = contract_service.prepare_update_digital_asset_calldata(
         request.token_id,
-        request.requester_did,
         request.new_file_hash,
         request.new_offchain_uri,
     )
@@ -1426,24 +1427,15 @@ async def approve_document(
                 if parent_asset:
                     parent_asset.lifecycle_status = "OBSOLETE"
 
-            owner_address = action.actor_did.split(":")[-1]
             root = (await db.execute(select(Asset).where(Asset.id == (asset.root_asset_id or asset.id)))).scalar_one_or_none()
-            try:
-                calldata = contract_service.prepare_update_digital_asset_calldata(
-                    token_id=root.token_id if root else asset.token_id,
-                    requester_did=action.actor_did,
-                    new_file_hash=asset.file_hash or "",
-                    new_offchain_uri=asset.metadata_cid or ""
-                )
-            except Exception:
-                calldata = contract_service.prepare_mint_digital_calldata(
-                    to_address=owner_address,
-                    token_id=asset.token_id,
-                    serial_number=asset.serial_number,
-                    owner_did=action.actor_did,
-                    file_hash=asset.file_hash or "",
-                    offchain_uri=asset.metadata_cid or ""
-                )
+            if root is None or root.token_id is None:
+                raise HTTPException(status_code=409, detail="The revision's lineage root has no token to anchor to.")
+            # A revision is ANCHORED on the root token (never minted as a new token).
+            calldata = contract_service.prepare_update_digital_asset_calldata(
+                token_id=root.token_id,
+                new_file_hash=asset.file_hash or "",
+                new_offchain_uri=asset.metadata_cid or "",
+            )
         elif action.action_type == "DOWNLOAD":
             # (owner consent verified above, before any state change)
             # No bearer token: only the requester can fetch, with their own Factor 3, before expiry.

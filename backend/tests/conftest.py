@@ -1,4 +1,13 @@
 import os
+import base64 as _b64
+import secrets as _secrets
+
+# Tests run with ENVIRONMENT=test and freshly generated random secrets per run; the
+# application has no built-in secret defaults to fall back on.
+os.environ.setdefault("ENVIRONMENT", "test")
+os.environ.setdefault("JWT_SECRET", _secrets.token_urlsafe(48))
+os.environ.setdefault("VC_SIGNING_SECRET", _secrets.token_urlsafe(48))
+os.environ.setdefault("DATA_ENCRYPTION_KEYS", _b64.urlsafe_b64encode(_secrets.token_bytes(32)).decode())
 
 # Tests must never touch the live lexcorp_sih database. Point the app at an
 # isolated *_test database before app modules create their engines.
@@ -12,6 +21,23 @@ os.environ.setdefault(
 os.environ.setdefault(
     "OFFCHAIN_STORAGE_DIR", os.path.join(os.path.dirname(__file__), ".test_storage")
 )
+# Contract calldata is built against an isolated deployment record generated from the
+# compiled AssetNFT v3 ABI (a placeholder address; tests never send live transactions).
+def _write_test_deployment() -> str:
+    import json
+    here = os.path.dirname(os.path.abspath(__file__))
+    artifact = os.path.join(here, "..", "..", "contracts", "artifacts", "contracts", "AssetNFT.sol", "AssetNFT.json")
+    with open(artifact, encoding="utf-8") as f:
+        abi = json.load(f)["abi"]
+    path = os.path.join(here, ".test_deployment.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"address": "0x" + "11" * 20, "chainId": 13371, "contractVersion": 3, "abi": abi,
+                   "admin": "0x" + "22" * 20, "registrar": "0x" + "33" * 20}, f)
+    return path
+
+
+os.environ.setdefault("CONTRACT_DEPLOYMENT_PATH", _write_test_deployment())
+
 if not os.environ["DATABASE_URL"].rstrip("/").endswith("_test"):
     raise RuntimeError("Refusing to run tests: DATABASE_URL must point at a *_test database.")
 
@@ -54,6 +80,17 @@ async def step_up_token(db, wallet: str, action: str) -> str:
     await db.commit()
     return grant["step_up_token"]
 
+async def step_up_header(wallet: str, action: str) -> dict:
+    """{'X-Step-Up-Token': ...} for one action, minted on a private connection."""
+    from sqlalchemy.pool import NullPool
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as db:
+            return {"X-Step-Up-Token": await step_up_token(db, wallet, action)}
+    finally:
+        await engine.dispose()
+
+
 # Vault files referenced by test proposals. Their recorded hashes must be the real
 # SHA-256 of these bytes (the API recomputes it), so each file holds exactly the
 # content its test declares (empty = e3b0c442..., "Hello World" = a591a6d4...).
@@ -82,11 +119,29 @@ def reset_rate_limits():
     yield
 
 
+class FakeRoleSync:
+    """In-memory stand-in for the chain-operator transport (services.chain.RoleSync).
+    It applies exactly the same role mapping, so tests assert WHICH on-chain roles the
+    backend grants/revokes; live-Besu behaviour is covered by tests/test_besu_live.py."""
+    roles: dict = {}
+
+    def __init__(self):
+        pass
+
+    def sync(self, wallet, role, is_active):
+        from app.services.chain import desired_roles
+        want, have = desired_roles(role, is_active), FakeRoleSync.roles.get(wallet.lower(), set())
+        FakeRoleSync.roles[wallet.lower()] = set(want)
+        return {"wallet": wallet, "granted": sorted(want - have), "revoked": sorted(have - want),
+                "roles": sorted(want), "tx_hashes": []}
+
+
 @pytest.fixture(autouse=True)
-def no_live_chain_funding():
-    """User creation funds wallets on Besu; tests must not send live transactions."""
-    with patch("app.api.users.auto_fund_wallet", return_value=None):
-        yield
+def fake_chain_roles():
+    """Tests never send live transactions from the app; they observe intended role changes."""
+    FakeRoleSync.roles = {}
+    with patch("app.services.chain.RoleSync", FakeRoleSync):
+        yield FakeRoleSync.roles
 
 
 TEST_USERS = [

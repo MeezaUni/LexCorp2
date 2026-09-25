@@ -26,25 +26,62 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Application startup")
 
-    # Ensure tables exist
-    from app.core.database import engine
-    from app.models.base import Base
-    import app.models.domain  # Register models
-
+    # Schema is owned by Alembic migrations; the app never creates tables itself.
+    from app.core.database import async_session_factory
+    from sqlalchemy import text
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables verified/created successfully.")
-
-        # DID format check is report-only; historical DIDs are never rewritten silently.
-        from app.core.database import async_session_factory
+        from alembic.config import Config as _AlembicConfig
+        from alembic.script import ScriptDirectory
+        import os as _os
+        cfg = _AlembicConfig(_os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "alembic.ini"))
+        cfg.set_main_option("script_location", _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "migrations"))
+        head = ScriptDirectory.from_config(cfg).get_current_head()
+        async with async_session_factory() as db:
+            current = (await db.execute(text("SELECT version_num FROM alembic_version"))).scalar_one_or_none()
+        if current != head:
+            msg = f"Database schema is at {current}, expected {head}. Run: alembic upgrade head"
+            if settings.is_production:
+                raise RuntimeError(msg)
+            logger.error(msg)
         from app.services.auth import report_legacy_dids
         async with async_session_factory() as db:
             legacy = await report_legacy_dids(db)
             if legacy:
                 logger.warning(f"{legacy} user DID(s) do not match did:ethr:{settings.CHAIN_ID}:<wallet>; review before any migration.")
+    except RuntimeError:
+        raise
     except Exception as e:
-        logger.error(f"Failed to initialize database tables or check DIDs: {e}")
+        if settings.is_production:
+            raise
+        logger.error(f"Database check failed: {e}")
+
+    # Verify the configured chain and contract (chain id, bytecode, registrar role).
+    import asyncio
+    from app.services import chain as chain_service
+    status = await asyncio.to_thread(chain_service.verify_deployment)
+    app.state.chain_status = status
+    if status.ok:
+        logger.info(f"Chain verified: chain {status.chain_id}, AssetNFT v3 at {status.address}, head {status.head}")
+    else:
+        msg = f"Chain/contract verification FAILED: {status.checks}"
+        if settings.is_production:
+            raise RuntimeError(msg)
+        logger.error(msg)
+
+    # Periodic safety net: on-chain roles always converge to the identity registry.
+    reconciler_task = None
+    if settings.CHAIN_OPERATOR_PRIVATE_KEY and settings.ENVIRONMENT != "test":
+        async def _reconcile_loop():
+            while True:
+                try:
+                    async with async_session_factory() as db:
+                        result = await chain_service.reconcile_all(db)
+                    if result["failed"]:
+                        logger.error(f"On-chain role reconciliation: {result}")
+                except Exception as e:
+                    logger.error(f"On-chain role reconciliation error: {e}")
+                await asyncio.sleep(300)
+        reconciler_task = asyncio.create_task(_reconcile_loop())
 
     # Initialize AI Risk Engine model
     from app.services.ai import ai_engine
@@ -66,6 +103,8 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Application shutdown")
+    if reconciler_task:
+        reconciler_task.cancel()
     from app.indexer.event_indexer import get_indexer
     try:
         indexer = await get_indexer()
@@ -79,12 +118,17 @@ from app.api.audit import router as audit_router
 from app.api.indexer import router as indexer_router
 from app.api.verify import router as verify_router
 from app.api.alerts import router as alerts_router
+from app.api.chain import router as chain_router
 
 app = FastAPI(
-    title="LexCorp SIH 2026 - Blockchain Identity & Asset Platform",
-    description="Decentralized identity, NFT asset management, and RBAC",
-    version="1.0.0",
+    title="LexCorp2 - Digital & Physical Asset Management",
+    description="Wallet identity, purpose-bound MFA, RBAC, controlled documents, physical asset registry, Besu anchoring",
+    version=settings.APP_VERSION,
     lifespan=lifespan,
+    # Interactive API docs only outside production.
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None,
+    openapi_url=None if settings.is_production else "/openapi.json",
 )
 
 app.state.limiter = limiter
@@ -99,10 +143,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/api/auth/test")
-async def test_auth():
-    return {"message": "auth router test"}
-
 # API Routers
 app.include_router(auth.router, prefix="/api")
 
@@ -112,25 +152,28 @@ app.include_router(audit_router, prefix="/api")
 app.include_router(indexer_router, prefix="/api")
 app.include_router(verify_router, prefix="/api")
 app.include_router(alerts_router, prefix="/api")
+app.include_router(chain_router, prefix="/api")
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check():
-    """Health check endpoint."""
+    """Liveness plus coarse integrity flags (no configuration details)."""
     from app.indexer.event_indexer import get_indexer
     try:
         indexer = await get_indexer()
         indexer_status = "running" if indexer and indexer._running else "stopped"
     except Exception:
         indexer_status = "unavailable"
-
+    chain = getattr(app.state, "chain_status", None)
     return {
         "status": "ok",
-        "version": "1.0.0",
+        "version": settings.APP_VERSION,
+        "environment": settings.ENVIRONMENT,
         "indexer": indexer_status,
+        "chain_verified": bool(chain and chain.ok),
     }
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -62,9 +62,10 @@ async def test_admin_creates_user_with_onboarding_pending(client, db_session):
     admin_token = get_token(ADMIN_WALLET, "ADMIN", ADMIN_VERSION)
     new_wallet = f"0x{uuid.uuid4().hex}{uuid.uuid4().hex[:8]}".lower()
 
+    from tests.conftest import step_up_header
     create_res = await client.post(
         "/api/users",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {admin_token}", **(await step_up_header(ADMIN_WALLET, "identity.provision"))},
         json={
             "wallet_address": new_wallet,
             "role": "USER",

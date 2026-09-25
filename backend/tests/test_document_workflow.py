@@ -202,7 +202,8 @@ async def test_approval_factor3_totp_enforcement(client, db_session):
     res = await db_session.execute(select(User).where(User.wallet_address == MANAGER_WALLET))
     mgr_user = res.scalar_one()
     secret = pyotp.random_base32()
-    mgr_user.totp_factor3_secret = secret
+    from app.core.crypto import encrypt_secret
+    mgr_user.totp_factor3_secret = encrypt_secret(secret)  # secrets are only ever stored encrypted
     mgr_user.is_totp_factor3_enabled = True
     await db_session.commit()
 

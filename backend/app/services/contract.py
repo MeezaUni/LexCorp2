@@ -1,7 +1,9 @@
-"""Web3 contract integration — read contract state and prepare calldata.
+"""Web3 contract integration - read contract state and prepare calldata.
 
-The backend NEVER holds a private key capable of minting, transferring, or revoking.
-It only reads on-chain state and prepares unsigned transaction data for the frontend.
+The backend holds NO key that can mint, anchor, transfer or revoke: those calls are
+signed in the browser by the approving Manager/Admin wallet, and AssetNFT v3 itself
+rejects them from any wallet without MINTER/ANCHOR/MANAGER_ROLE. (The backend's
+chain-operator key holds only REGISTRAR_ROLE; see services/chain.py.)
 """
 
 from typing import Optional
@@ -26,7 +28,7 @@ class ContractService:
         self._ensure_loaded()
 
     def _ensure_loaded(self):
-        """Reload contract ABI & address if localhost.json has been updated on disk."""
+        """Reload contract ABI & address if the deployment record changed on disk."""
         try:
             if not os.path.exists(self.deployment_path):
                 return
@@ -154,14 +156,12 @@ class ContractService:
     def prepare_update_digital_asset_calldata(
         self,
         token_id: int,
-        requester_did: str,
         new_file_hash: str,
         new_offchain_uri: str
     ) -> dict:
-        """Prepare unsigned updateDigitalAsset transaction for frontend signing."""
+        """Prepare unsigned updateDigitalAsset (revision anchor) for an ANCHOR_ROLE signer."""
         tx_data = self.contract.functions.updateDigitalAsset(
             token_id,
-            requester_did,
             new_file_hash,
             new_offchain_uri
         ).build_transaction({
@@ -258,31 +258,6 @@ class ContractService:
             "value": "0x0",
             "gas": hex(tx_data["gas"]),
             "gasPrice": hex(tx_data["gasPrice"]),
-        }
-
-    def prepare_record_access_attempt_calldata(
-        self,
-        token_id: int,
-        actor_did: str,
-        granted: bool,
-        reason: str
-    ) -> dict:
-        tx_data = self.contract.functions.recordAccessAttempt(
-            token_id,
-            actor_did,
-            granted,
-            reason
-        ).build_transaction({
-            "from": "0x0000000000000000000000000000000000000000",
-            "gas": 150000,
-            "gasPrice": self._get_gas_price(),
-            "nonce": 0,
-            "chainId": settings.CHAIN_ID,
-        })
-        return {
-            "to": self.contract_address,
-            "data": tx_data["data"],
-            "value": "0x0"
         }
 
     def prepare_grant_access_calldata(
