@@ -1,3 +1,16 @@
+import os
+
+# Tests must never touch the live lexcorp_sih database. Point the app at an
+# isolated *_test database before app modules create their engines.
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql+asyncpg://lexcorp:lexcorp_dev@localhost:5432/lexcorp_sih_test"
+)
+os.environ.setdefault(
+    "DATABASE_URL_SYNC", "postgresql://lexcorp:lexcorp_dev@localhost:5432/lexcorp_sih_test"
+)
+if not os.environ["DATABASE_URL"].rstrip("/").endswith("_test"):
+    raise RuntimeError("Refusing to run tests: DATABASE_URL must point at a *_test database.")
+
 import pytest
 import pytest_asyncio
 import httpx
@@ -63,19 +76,27 @@ TEST_USERS = [
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def setup_database():
-    """Ensure tables exist and have latest columns."""
+    """Rebuild the isolated *_test schema from Alembic migrations (not create_all),
+    so every test run also proves the migration chain produces the model schema."""
+    import subprocess
+    import sys
+    from pathlib import Path
     from app.core.database import engine
-    from app.models.base import Base
-    import app.models.domain  # Register models
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Ensure alert_status column exists
-        await conn.execute(text("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS alert_status VARCHAR DEFAULT 'OPEN';"))
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
     await engine.dispose()
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=os.environ.copy(),
+        check=True,
+        capture_output=True,
+    )
     yield
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
-async def seed_test_users():
+async def seed_test_users(setup_database):
     """Ensure test users required for regression tests exist in the database."""
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
