@@ -1,3 +1,4 @@
+import io
 import pytest
 from tests.conftest import mfa_headers
 import uuid
@@ -98,7 +99,12 @@ async def test_download_workflow_success(client, db_session):
         assert download_res.status_code == 200
         # Note: apply_watermark will modify content, so checking exact bytes won't work.
         # This is fine for testing.
-        assert b"sensitive content" in download_res.content
+        # Text is delivered as a protected rendered PDF carrying the download watermark
+        from pypdf import PdfReader
+        assert download_res.headers["content-type"] == "application/pdf"
+        text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(download_res.content)).pages)
+        assert "sensitive content" in text
+        assert f"Download ID: {action_id}" in text and "Downloaded by:" in text
         
         # 5. Token expired/consumed
         download_res_2 = await client.get(f"/api/assets/document/download-token/{token}")

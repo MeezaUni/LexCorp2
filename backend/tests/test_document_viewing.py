@@ -64,11 +64,13 @@ async def test_view_digital_document_success(client, db_session):
         headers=await mfa_headers(db_session, token, USER_WALLET, "document.view")
     )
     assert view_res.status_code == 200
-    assert view_res.headers["content-type"] == "application/octet-stream"
+    assert view_res.headers["content-type"] == "image/png"
+    assert view_res.headers["x-lexcorp-action-id"].startswith("VW-")
 
-    # Can we open the returned bytes as an image?
+    # A derived, watermarked copy: same width, footer band added, original never returned
     returned_img = Image.open(io.BytesIO(view_res.content))
     assert returned_img.format == "PNG"
+    assert returned_img.width == 800 and returned_img.height > 600
 
 @pytest.mark.asyncio
 async def test_view_digital_document_unauthorized(client, db_session):

@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, Form, status, Request
 from fastapi.responses import FileResponse
@@ -17,7 +18,7 @@ from app.core.limiter import limiter
 from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_onboarded_user, get_optional_user, get_request_client_ip, get_step_up_token, record_audit
 from app.core.config import settings
 from app.services.contract import contract_service
-from app.services.watermark import apply_watermark
+from app.services.watermark import HistoryEntry, UnsupportedDocumentType, WatermarkContext, render_protected_copy
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent, AssetAccessGrant
@@ -81,6 +82,56 @@ def _asset_row(asset: Asset, viewer: User) -> dict:
         "updated_at": asset.updated_at,
     }
     return access.redact_asset_dict(data, viewer, asset)
+
+
+def _verify_url(action_id: str) -> str:
+    """QR payload: a verification reference only (no sensitive data in the QR itself)."""
+    return f"{settings.PUBLIC_BASE_URL.rstrip('/')}/verify/action/{action_id}"
+
+
+def _original_filename(asset: Asset) -> str:
+    base = os.path.basename((asset.metadata_cid or "document").replace("secure-vault://", ""))
+    # vault files are stored as <sha256>_<original name>
+    return base.split("_", 1)[1] if re.match(r"^[0-9a-f]{64}_", base) else base
+
+
+async def _modification_history(db: AsyncSession, asset: Asset) -> list[HistoryEntry]:
+    """Authoritative cumulative history for this version: every MODIFICATION on the
+    path root -> ... -> asset, from the database (never from the file's own text)."""
+    chain = []
+    node, seen = asset, set()
+    while node is not None and node.id not in seen:
+        seen.add(node.id)
+        chain.append(node)
+        node = (await db.execute(select(Asset).where(Asset.id == node.parent_asset_id))).scalar_one_or_none() if node.parent_asset_id else None
+    history = []
+    for version in reversed(chain):
+        if version.action_type != "MODIFICATION" or not version.action_id:
+            continue
+        mod = (await db.execute(select(DocumentAction).where(DocumentAction.action_id == version.action_id))).scalar_one_or_none()
+        if not mod:
+            continue
+        actor = (await db.execute(select(User).where(User.id == mod.actor_id))).scalar_one_or_none()
+        history.append(HistoryEntry(
+            modification_id=mod.action_id,
+            modifier_wallet=actor.wallet_address if actor else mod.actor_did.split(":")[-1],
+            modifier_name=actor.name if actor else None,
+            when=mod.created_at,
+            version=version.version_number,
+        ))
+    return history
+
+
+def _read_vault_file(asset: Asset) -> bytes:
+    offchain_uri = (asset.metadata_cid or "").replace("secure-vault://", "").replace("ipfs://", "").lstrip("/\\")
+    storage_root = os.path.abspath(OFFCHAIN_STORAGE_DIR)
+    filepath = os.path.abspath(os.path.join(storage_root, offchain_uri))
+    if not os.path.exists(filepath):
+        filepath = os.path.abspath(os.path.join(storage_root, os.path.basename(offchain_uri)))
+    if not asset.metadata_cid or not filepath.startswith(storage_root + os.sep) or not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="Document file is not available in the vault.")
+    with open(filepath, "rb") as f:
+        return f.read()
 
 
 async def _visible_asset_or_404(db: AsyncSession, user: User, *, serial: Optional[str] = None, token_id: Optional[int] = None) -> Asset:
@@ -1565,18 +1616,7 @@ async def view_digital_document(
     if asset.approval_status in ("PENDING_APPROVAL", "REJECTED") and not (is_holder or access.can_manage_asset(current_user, asset)):
         raise HTTPException(status_code=403, detail="This document is not approved for viewing.")
 
-    if not asset.metadata_cid:
-        raise HTTPException(status_code=404, detail="No offchain URI stored for this document.")
-
-    offchain_uri = asset.metadata_cid.replace("secure-vault://", "").replace("ipfs://", "").lstrip("/\\")
-    storage_root = os.path.abspath(OFFCHAIN_STORAGE_DIR)
-    filepath = os.path.abspath(os.path.join(storage_root, offchain_uri))
-    if not os.path.exists(filepath):
-        filepath = os.path.abspath(os.path.join(storage_root, os.path.basename(offchain_uri)))
-    if not filepath.startswith(storage_root + os.sep) or not os.path.isfile(filepath):
-        raise HTTPException(status_code=404, detail="Document file is not available in the vault.")
-    with open(filepath, "rb") as f:
-        file_bytes = f.read()
+    file_bytes = _read_vault_file(asset)
 
     # 4. Count this successful view atomically (only grants are metered).
     if grant is not None:
@@ -1590,16 +1630,22 @@ async def view_digital_document(
             await db.commit()
             raise HTTPException(status_code=403, detail=message)
 
-    watermarked_bytes = await apply_watermark(
-        file_bytes,
-        user_did=current_user.did,
-        department=current_user.department or "ALL"
+    # 5. Derived, watermarked copy identifying the VIEWER (never the owner). Nothing is
+    #    committed until the copy exists, so a failed render never consumes a view.
+    view_id = await next_action_id(db, "VW")
+    ctx = WatermarkContext(
+        kind="VIEW", actor_name=current_user.name or "Unnamed", actor_wallet=current_user.wallet_address,
+        client_ip=client_ip, action_id=view_id, verify_url=_verify_url(view_id),
+        history=await _modification_history(db, asset),
     )
+    try:
+        content, mime, out_name = render_protected_copy(file_bytes, _original_filename(asset), ctx)
+    except UnsupportedDocumentType as e:
+        await db.rollback()
+        raise HTTPException(status_code=415, detail=f"This document type cannot be served as a protected copy: {e}")
 
-    # Log the view action
-    # For Phase 5 we reuse DocumentAction with action_type=VIEW
-    log_action = DocumentAction(
-        action_id=await next_action_id(db, "VW"),
+    db.add(DocumentAction(
+        action_id=view_id,
         action_type="VIEW",
         asset_id=asset.id,
         asset_serial=asset.serial_number,
@@ -1609,12 +1655,13 @@ async def view_digital_document(
         status="COMPLETED",
         purpose="View Document",
         client_ip=client_ip,
+        watermark_text="\n".join(ctx.all_lines()),
         details={"grant_id": str(grant.id)} if grant is not None else None,
-    )
-    db.add(log_action)
+    ))
     await db.commit()
-
-    return Response(content=watermarked_bytes, media_type="application/octet-stream")
+    return Response(content=content, media_type=mime, headers={
+        "Content-Disposition": f'inline; filename="{out_name}"', "X-LexCorp-Action-Id": view_id, "Cache-Control": "no-store",
+    })
 
 
 @router.get("/document/logs/{asset_serial}", response_model=list[DocumentActionRead])
@@ -1965,44 +2012,30 @@ async def download_document_with_token(
 
     await db.commit()
 
-    # Resolve file path
-    vault_uri = asset.metadata_cid
-    # Format: secure-vault://documents/file.pdf
-    if not vault_uri.startswith("secure-vault://"):
-        raise HTTPException(status_code=500, detail="Invalid storage URI scheme")
-
-    file_rel_path = vault_uri.replace("secure-vault://", "")
-    file_path = os.path.join(OFFCHAIN_STORAGE_DIR, file_rel_path)
-
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Document file missing in vault")
-
-    # 4. Load file, apply dynamic watermark (DID + Dept + Purpose + Token tracking + Time)
-    try:
-        with open(file_path, "rb") as f:
-            file_bytes = f.read()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
-
-    watermark_dept = asset.department or "GENERAL"
-
-    # In a real system, the watermark schema here might be more detailed for downloads
-    # but we can reuse the generic dynamic watermarker which takes (bytes, DID, Dept).
-    # Since we want it robust, we'll call apply_watermark.
-    watermarked_bytes = await apply_watermark(file_bytes, action.actor_did, watermark_dept)
-
-    # Note: A bespoke download watermark could include purpose and token.
-    # We will just stream back what apply_watermark outputs.
-
-    filename = os.path.basename(file_path)
-    # If the watermark converted a PDF to PNG, we'd need to adjust name/mime, but for PoC we keep it simple.
-
-    return Response(
-        content=watermarked_bytes,
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    file_bytes = _read_vault_file(asset)
+    downloader = (await db.execute(select(User).where(User.id == action.actor_id))).scalar_one_or_none()
+    owner = (await db.execute(select(User).where(User.id == asset.owner_id))).scalar_one_or_none()
+    client_ip = get_request_client_ip(req)
+    ctx = WatermarkContext(
+        kind="DOWNLOAD",
+        actor_name=(downloader.name if downloader else None) or "Unnamed",
+        actor_wallet=downloader.wallet_address if downloader else action.actor_did.split(":")[-1],
+        client_ip=client_ip, action_id=action.action_id, verify_url=_verify_url(action.action_id),
+        owner_name=owner.name if owner else None, owner_wallet=owner.wallet_address if owner else None,
+        history=await _modification_history(db, asset),
     )
-
+    try:
+        content, mime, out_name = render_protected_copy(file_bytes, _original_filename(asset), ctx)
+    except UnsupportedDocumentType as e:
+        raise HTTPException(status_code=415, detail=f"This document type cannot be served as a protected copy: {e}")
+    action.watermark_text = "\n".join(ctx.all_lines())
+    details = dict(action.details or {})
+    details["downloaded_from_ip"] = client_ip
+    action.details = details
+    await db.commit()
+    return Response(content=content, media_type=mime, headers={
+        "Content-Disposition": f'attachment; filename="{out_name}"', "X-LexCorp-Action-Id": action.action_id, "Cache-Control": "no-store",
+    })
 
 
 def _grant_row(g: AssetAccessGrant) -> dict:

@@ -22,3 +22,9 @@ pytest-asyncio>=0.24.0
 httpx>=0.28.0
 pyotp>=2.9.0
 webauthn>=3.0.0
+# Protected-copy watermarking (PDF, DOCX, PPTX, XLSX)
+pypdf>=5.0
+reportlab>=4.2
+python-docx>=1.1
+python-pptx>=1.0
+openpyxl>=3.1

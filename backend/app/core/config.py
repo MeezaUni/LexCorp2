@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     CHAIN_ID: int = 13371
     CONTRACT_DEPLOYMENT_PATH: str = str(BASE_DIR.parent / "contracts" / "deployments" / "localhost.json")
 
+    # Public base URL of the LexCorp web app; QR codes point to its /verify pages.
+    PUBLIC_BASE_URL: str = "http://localhost:5173"
+
     # Off-chain document vault (original uploads are immutable; derived copies are generated per action)
     OFFCHAIN_STORAGE_DIR: str = str(BASE_DIR / "offchain_storage")
 
