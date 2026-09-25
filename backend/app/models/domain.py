@@ -345,3 +345,13 @@ class SecurityAlertAction(Base, TimestampMixin):
     to_state: Mapped[str] = mapped_column(String(20))
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+
+class IndexerState(Base, TimestampMixin):
+    """Single-row indexer cursor. The block hash detects a replaced chain/contract."""
+    __tablename__ = "indexer_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    contract_address: Mapped[str] = mapped_column(String(42))
+    last_block: Mapped[int] = mapped_column(Integer)
+    last_block_hash: Mapped[str] = mapped_column(String(66))
+

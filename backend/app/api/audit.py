@@ -52,67 +52,128 @@ async def get_audit_stats(db: AsyncSession = Depends(get_db), current_user: User
     }
 
 
+# Event-type families for the audit filters (spec 44).
+CATEGORIES = {
+    "VIEW": ("DOCUMENT_VIEWED", "VIEW_NOT_PERMITTED"),
+    "DOWNLOAD": ("DOCUMENT_DOWNLOADED", "DOWNLOAD_OWNER_APPROVED", "DOWNLOAD_OWNER_REJECTED", "DOWNLOAD_NOT_PERMITTED"),
+    "MODIFICATION": ("REVISION_SUBMITTED", "DOCUMENT_REVISION_ANCHORED", "DigitalAssetUpdated"),
+    "PHYSICAL": ("PHYSICAL_ASSET_CREATED", "PHYSICAL_ASSET_APPROVED", "PHYSICAL_ASSET_MINTED", "PhysicalAssetProposed",
+                 "DUPLICATE_PHYSICAL_ASSET_ATTEMPT", "DUPLICATE_SERIAL_ATTEMPT", "DUPLICATE_MAC_ATTEMPT",
+                 "DUPLICATE_UNIQUE_ADDRESS_ATTEMPT", "ASSET_TRANSFERRED", "AssetTransferred", "ASSET_CUSTODIAN_CHANGED",
+                 "ASSET_STATUS_CHANGED", "ASSET_MAINTENANCE_RECORDED", "ASSET_VERIFIED", "AssetMinted"),
+    "DIGITAL": ("DocumentProposed", "DOCUMENT_VIEWED", "DOCUMENT_DOWNLOADED", "REVISION_SUBMITTED", "DOCUMENT_MINTED",
+                "DOCUMENT_REVISION_ANCHORED", "DigitalAssetMinted", "DigitalAssetUpdated", "WATERMARK_TAMPER_DETECTED"),
+    "ACCESS": ("ACCESS_GRANTED", "ACCESS_REVOKED", "ACCESS_DENIED_NO_GRANT", "ACCESS_DENIED_REVOKED", "ACCESS_EXPIRED",
+               "ACCESS_LIMIT_REACHED", "AccessPermissionGranted", "AccessPermissionRevoked", "AccessAttempted"),
+    "AUTH": ("AuthenticationSucceeded", "AuthenticationFailed", "WALLET_PROVISIONED", "WALLET_PROVISIONING_FAILED",
+             "STEP_UP_FAILED", "LOGOUT", "SESSION_TERMINATED_IP_CHANGE", "SESSION_EXPIRED_INACTIVITY",
+             "LOGIN_RESET_REQUESTED", "ADMIN_LOGIN_RESET_APPROVED", "TOTP_ENROLLED", "TOTP_RESET",
+             "PASSKEY_REGISTERED", "PASSKEY_DISABLED", "IDENTITY_REVOKED"),
+    "ALERT": ("ALERT_FORWARDED_TO_MANAGER", "ALERT_FORWARDED_TO_ADMIN", "ALERT_DISMISSED", "ALERT_IDENTITY_REVOKED"),
+}
+_DENIED_MARKERS = ("DENIED", "FAILED", "DUPLICATE", "EXPIRED", "LIMIT_REACHED", "NOT_PERMITTED", "TAMPER",
+                   "TERMINATED", "REJECTED", "Rejected")
+
+
+def _parse_dt(value: str, name: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{name} must be an ISO 8601 date or datetime.")
+
+
+def _parse_time(value: str, name: str):
+    try:
+        return datetime.strptime(value.strip(), "%H:%M").time()
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{name} must be HH:MM (UTC).")
+
+
 @router.get("/events", response_model=List[AuditEventRead])
 async def list_events(
-    event_type: Optional[str] = Query(None, description="Filter by event type (AssetMinted, etc.)"),
-    actor_did: Optional[str] = Query(None, description="Filter by actor DID or wallet address"),
-    asset_serial: Optional[str] = Query(None, description="Filter by asset serial"),
-    risk_label: Optional[str] = Query(None, description="Filter by risk label (LOW, MEDIUM, HIGH, CRITICAL)"),
-    alert_status: Optional[str] = Query(None, description="Filter by alert status (OPEN, FORWARDED_TO_MANAGER, ESCALATED_TO_ADMIN, etc.)"),
-    role: Optional[str] = Query(None, description="Filter by actor role (USER, MANAGER, ADMIN, AUDITOR)"),
-    from_date: Optional[str] = Query(None, description="Filter events created on or after ISO datetime/date"),
-    to_date: Optional[str] = Query(None, description="Filter events created on or before ISO datetime/date"),
+    event_type: Optional[str] = Query(None, description="Event type, or several separated by commas"),
+    category: Optional[str] = Query(None, description="VIEW, DOWNLOAD, MODIFICATION, PHYSICAL, DIGITAL, ACCESS, AUTH, ALERT"),
+    actor_did: Optional[str] = Query(None, description="Actor/target DID or wallet address (substring)"),
+    identity: Optional[str] = Query(None, description="Actor name (substring)"),
+    department: Optional[str] = Query(None, description="Actor's department"),
+    asset_serial: Optional[str] = Query(None, description="Asset serial"),
+    risk_label: Optional[str] = Query(None, description="LOW, MEDIUM, HIGH, CRITICAL"),
+    result: Optional[str] = Query(None, description="SUCCESS or DENIED (denied/failed/duplicate/expired/tamper...)"),
+    alert_status: Optional[str] = Query(None, description="Legacy alert status on the event (OPEN, FORWARDED_TO_MANAGER, ...)"),
+    escalation_state: Optional[str] = Query(None, description="Alert state: AUDITOR_REVIEW, MANAGER_REVIEW, ADMIN_REVIEW, DISMISSED, IDENTITY_REVOKED"),
+    role: Optional[str] = Query(None, description="Actor role (USER, MANAGER, ADMIN, AUDITOR)"),
+    from_date: Optional[str] = Query(None, description="On/after this ISO date or datetime"),
+    to_date: Optional[str] = Query(None, description="On/before this ISO date or datetime"),
+    from_time: Optional[str] = Query(None, description="Time-of-day window start HH:MM (UTC)"),
+    to_time: Optional[str] = Query(None, description="Time-of-day window end HH:MM (UTC)"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_onboarded_user),
 ):
-    """List audit events with extensive filters for wallet, role, risk label, alert status, and time/date range.
+    """Server-side filtered audit trail (scoped by role before any filter is applied).
 
-    These rows are written exclusively by the on-chain event indexer, never
-    by API call handlers. They are the canonical, immutable audit trail.
-    """
+    Rows come from the on-chain event indexer (block_number > 0) and from API
+    security events recorded by the backend (block_number = 0)."""
+    from sqlalchemy import cast, Time, and_
+    from app.models.domain import SecurityAlert
+
     query = (await _scoped_events_query(db, current_user)).order_by(desc(AuditEvent.created_at))
 
-    if role:
-        query = query.join(User, AuditEvent.actor_did == User.did, isouter=True).filter(
-            func.upper(User.role) == role.strip().upper()
-        )
+    if role or identity or department:
+        query = query.join(User, AuditEvent.actor_did == User.did, isouter=True)
+        if role:
+            query = query.filter(func.upper(User.role) == role.strip().upper())
+        if identity:
+            query = query.filter(User.name.ilike(f"%{identity.strip()}%"))
+        if department:
+            query = query.filter(User.department == department.strip())
 
     if event_type:
-        query = query.filter(AuditEvent.event_type == event_type.strip())
+        types = [t.strip() for t in event_type.split(",") if t.strip()]
+        query = query.filter(AuditEvent.event_type.in_(types))
+    if category:
+        cat = category.strip().upper()
+        if cat not in CATEGORIES:
+            raise HTTPException(status_code=400, detail=f"category must be one of {sorted(CATEGORIES)}")
+        query = query.filter(AuditEvent.event_type.in_(CATEGORIES[cat]))
     if actor_did:
         clean_actor = actor_did.strip()
-        query = query.filter(
-            or_(
-                AuditEvent.actor_did.ilike(f"%{clean_actor}%"),
-                AuditEvent.target_did.ilike(f"%{clean_actor}%"),
-            )
-        )
+        query = query.filter(or_(AuditEvent.actor_did.ilike(f"%{clean_actor}%"), AuditEvent.target_did.ilike(f"%{clean_actor}%")))
     if asset_serial:
         query = query.filter(AuditEvent.asset_serial == asset_serial.strip())
     if risk_label:
         query = query.filter(func.upper(AuditEvent.risk_label) == risk_label.strip().upper())
+    if result:
+        denied = or_(*[AuditEvent.event_type.contains(m) for m in _DENIED_MARKERS])
+        r = result.strip().upper()
+        if r not in ("SUCCESS", "DENIED"):
+            raise HTTPException(status_code=400, detail="result must be SUCCESS or DENIED")
+        query = query.filter(denied if r == "DENIED" else ~denied)
     if alert_status:
         query = query.filter(func.upper(AuditEvent.alert_status) == alert_status.strip().upper())
+    if escalation_state:
+        query = query.join(SecurityAlert, SecurityAlert.source_event_id == AuditEvent.id).filter(
+            SecurityAlert.state == escalation_state.strip().upper())
 
     if from_date:
-        try:
-            dt_from = datetime.fromisoformat(from_date.strip().replace("Z", "+00:00"))
-            query = query.filter(AuditEvent.created_at >= dt_from)
-        except Exception as e:
-            logger.warning(f"Invalid from_date '{from_date}': {e}")
-
+        query = query.filter(AuditEvent.created_at >= _parse_dt(from_date, "from_date"))
     if to_date:
-        try:
-            dt_to = datetime.fromisoformat(to_date.strip().replace("Z", "+00:00"))
-            query = query.filter(AuditEvent.created_at <= dt_to)
-        except Exception as e:
-            logger.warning(f"Invalid to_date '{to_date}': {e}")
+        query = query.filter(AuditEvent.created_at <= _parse_dt(to_date, "to_date"))
+    if from_time or to_time:
+        tod = cast(func.timezone("UTC", AuditEvent.created_at), Time)
+        t1 = _parse_time(from_time, "from_time") if from_time else None
+        t2 = _parse_time(to_time, "to_time") if to_time else None
+        if t1 and t2 and t1 > t2:  # window across midnight, e.g. 22:00-06:00
+            query = query.filter(or_(tod >= t1, tod <= t2))
+        else:
+            if t1:
+                query = query.filter(tod >= t1)
+            if t2:
+                query = query.filter(tod <= t2)
 
     query = query.offset(offset).limit(limit)
-    result = await db.execute(query)
-    return result.scalars().all()
+    return (await db.execute(query)).scalars().all()
 
 
 @router.patch("/alerts/{event_id}/status")

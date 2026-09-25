@@ -113,8 +113,27 @@ export default function AuditorDashboard() {
             <option value="HIGH">HIGH</option>
             <option value="CRITICAL">CRITICAL</option>
         </select>
-        <input type="datetime-local" onChange={(e) => setFilters({...filters, from_date: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
-        <input type="datetime-local" onChange={(e) => setFilters({...filters, to_date: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
+        {/* datetime-local is the auditor's local time: send an absolute instant */}
+        <input type="datetime-local" title="From" onChange={(e) => setFilters({...filters, from_date: e.target.value ? new Date(e.target.value).toISOString() : ''})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
+        <input type="datetime-local" title="To" onChange={(e) => setFilters({...filters, to_date: e.target.value ? new Date(e.target.value).toISOString() : ''})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
+        <input type="time" title="Time of day from (UTC)" onChange={(e) => setFilters({...filters, from_time: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
+        <input type="time" title="Time of day to (UTC)" onChange={(e) => setFilters({...filters, to_time: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
+        <input placeholder="Identity name" onChange={(e) => setFilters({...filters, identity: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
+        <input placeholder="Department" onChange={(e) => setFilters({...filters, department: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
+        <input placeholder="Asset serial" onChange={(e) => setFilters({...filters, asset_serial: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }} />
+        <select onChange={(e) => setFilters({...filters, category: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
+            <option value="">All event categories</option>
+            {['VIEW', 'DOWNLOAD', 'MODIFICATION', 'PHYSICAL', 'DIGITAL', 'ACCESS', 'AUTH', 'ALERT'].map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select onChange={(e) => setFilters({...filters, result: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
+            <option value="">Any result</option>
+            <option value="SUCCESS">SUCCESS</option>
+            <option value="DENIED">DENIED / FAILED</option>
+        </select>
+        <select onChange={(e) => setFilters({...filters, escalation_state: e.target.value})} style={{ padding: '8px', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
+            <option value="">Any alert state</option>
+            {['AUDITOR_REVIEW', 'MANAGER_REVIEW', 'ADMIN_REVIEW', 'DISMISSED', 'IDENTITY_REVOKED'].map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
       </div>
 
       {/* HIGH RISK ALERTS: dedicated escalation queue (Auditor stage) */}

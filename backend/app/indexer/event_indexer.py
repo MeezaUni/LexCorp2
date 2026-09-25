@@ -13,7 +13,7 @@ import logging
 from typing import Optional
 from datetime import datetime
 
-from sqlalchemy import delete, select, func
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from web3 import Web3
 
@@ -67,16 +67,68 @@ class EventIndexer:
         finally:
             await session.close()
 
-    async def _clear_stale_chain_data(self) -> None:
-        """Remove indexed rows from a replaced local chain before re-indexing."""
+    def _block_hash(self, block: int) -> str:
+        """Block hash via raw JSON-RPC (web3's get_block rejects QBFT's long extraData)."""
+        resp = self.w3.provider.make_request("eth_getBlockByNumber", [hex(block), False])
+        result = resp.get("result") if isinstance(resp, dict) else None
+        if not result:
+            raise ConnectionError(f"Block {block} not available from RPC")
+        return result["hash"]
+
+    async def _load_state(self):
+        from app.models.domain import IndexerState
         session = await self._get_session()
         try:
-            await session.execute(delete(AuditEvent))
-            await session.execute(delete(Asset))
-            await session.commit()
-            logger.warning("Cleared audit and asset rows from the previous chain")
+            return (await session.execute(select(IndexerState).where(IndexerState.id == 1))).scalar_one_or_none()
         finally:
             await session.close()
+
+    async def _save_state(self, block: int) -> None:
+        """Persist the cursor with the block hash so a replaced chain is detectable."""
+        from app.models.domain import IndexerState
+        block_hash = self._block_hash(block) if block > 0 else "genesis"
+        session = await self._get_session()
+        try:
+            state = (await session.execute(select(IndexerState).where(IndexerState.id == 1))).scalar_one_or_none()
+            if state is None:
+                session.add(IndexerState(id=1, contract_address=self.contract.address, last_block=block, last_block_hash=block_hash))
+            else:
+                state.contract_address, state.last_block, state.last_block_hash = self.contract.address, block, block_hash
+            await session.commit()
+        finally:
+            await session.close()
+
+    async def _validated_cursor(self) -> int:
+        """Resume point on THIS chain and contract. A different contract, a cursor beyond the
+        head, or a block-hash mismatch means the chain was replaced: rescan from block 0.
+        Nothing is ever deleted (events are de-duplicated by tx hash; pre-reset history stays)."""
+        state = await self._load_state()
+        head = self.w3.eth.block_number
+        if state is None:
+            return 0
+        reason = None
+        if state.contract_address.lower() != self.contract.address.lower():
+            reason = "contract changed"
+        elif state.last_block > head:
+            reason = f"cursor {state.last_block} is beyond chain head {head}"
+        elif state.last_block > 0 and self._block_hash(state.last_block) != state.last_block_hash:
+            reason = f"block {state.last_block} hash differs"
+        if reason is None:
+            return state.last_block
+        logger.warning(f"Indexer cursor invalid ({reason}); rescanning from block 0 without deleting any rows")
+        session = await self._get_session()
+        try:
+            import hashlib, time
+            session.add(AuditEvent(
+                event_type="INDEXER_RESCAN", block_number=0,
+                tx_hash="0x" + hashlib.sha256(f"rescan:{time.time_ns()}".encode()).hexdigest(),
+                risk_factors={"reason": reason, "previous_cursor": state.last_block, "head": head,
+                              "contract": self.contract.address},
+            ))
+            await session.commit()
+        finally:
+            await session.close()
+        return 0
 
     async def _is_indexed(self, session: AsyncSession, tx_hash: str) -> bool:
         """Check if a tx_hash is already in the audit trail."""
@@ -185,8 +237,9 @@ class EventIndexer:
                     if asset_row:
                         owner_res = await session.execute(select(User.did).filter(User.id == asset_row.owner_id))
                         target_did = owner_res.scalar_one_or_none()
-                        # Remove the DB Asset record since the NFT is burned on-chain
-                        await session.delete(asset_row)
+                        # The NFT is burned on-chain: keep the registry record and its history,
+                        # mark it revoked (a hard delete destroyed versions, actions and audit links).
+                        asset_row.lifecycle_status = "REVOKED"
                         await session.flush()
             except Exception:
                 pass
@@ -398,6 +451,7 @@ class EventIndexer:
             ("AccessAttempted", self.contract.events.AccessAttempted),
         ]
 
+        failed = False
         try:
             for event_name, event_type in events:
                 try:
@@ -407,6 +461,7 @@ class EventIndexer:
                         entries = event_type().get_logs(fromBlock=from_block, toBlock=to_block)
                     except Exception as e:
                         logger.warning(f"Error fetching {event_name} logs from {from_block} to {to_block}: {e}")
+                        failed = True
                         continue
 
                 for log in entries:
@@ -414,6 +469,8 @@ class EventIndexer:
                     if await self._write_event(session, event_name, log, block_num):
                         written += 1
 
+            if failed:
+                raise ConnectionError(f"Log fetch failed for blocks {from_block}-{to_block}; cursor not advanced")
             self._last_indexed_block = max(self._last_indexed_block, to_block)
         finally:
             await session.close()
@@ -437,14 +494,7 @@ class EventIndexer:
         self._load_contract()
         self._running = True
 
-        current_head = self.w3.eth.block_number
-        if self._last_indexed_block > current_head:
-            logger.info(
-                f"Chain reset detected (last indexed block {self._last_indexed_block} > current head {current_head}). "
-                f"Resetting indexer to block 0."
-            )
-            await self._clear_stale_chain_data()
-            self._last_indexed_block = 0
+        self._last_indexed_block = await self._validated_cursor()
 
         logger.info(
             f"EventIndexer polling started from block {self._last_indexed_block + 1}, "
@@ -459,11 +509,11 @@ class EventIndexer:
                 current_head = self.w3.eth.block_number
                 if current_head > self._last_indexed_block:
                     target_block = min(current_head, self._last_indexed_block + 500)
-                    written = await self._index_block(self._last_indexed_block + 1, target_block)
+                    first = self._last_indexed_block + 1
+                    written = await self._index_block(first, target_block)
+                    await self._save_state(self._last_indexed_block)
                     if written > 0:
-                        logger.info(f"Indexed blocks {self._last_indexed_block + 1} to {target_block}: {written} new event(s)")
-                    else:
-                        self._last_indexed_block = target_block
+                        logger.info(f"Indexed blocks {first} to {target_block}: {written} new event(s)")
 
             except ConnectionError as e:
                 logger.error(f"RPC connection error: {e}")
@@ -479,11 +529,7 @@ class EventIndexer:
         logger.info("EventIndexer polling stopped")
 
     async def start_background(self) -> None:
-        try:
-            self._last_indexed_block = await self._fetch_last_indexed_block()
-        except Exception as e:
-            logger.warning(f"Could not restore last indexed block from DB: {e}")
-            self._last_indexed_block = 0
+        self._last_indexed_block = 0  # validated against the chain in run()
 
         self._task = asyncio.create_task(self.run())
         logger.info(f"Indexer background task started (last indexed block: {self._last_indexed_block})")
