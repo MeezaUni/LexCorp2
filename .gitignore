@@ -29,3 +29,8 @@ build/
 
 # Docker
 postgres_data/
+
+# Besu Data
+network/besu/data/*/database/
+network/besu/data/*/caches/
+.pids.json
