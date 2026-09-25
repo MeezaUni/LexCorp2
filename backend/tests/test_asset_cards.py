@@ -51,7 +51,9 @@ async def test_asset_certificate_svg_card_success(client, db_session):
              "owner_did": f"did:ethr:13371:{ADMIN_WALLET}",
              "is_digital": False
          }):
-        response = await client.get(f"/api/assets/serial/{serial}/card")
+        anon = await client.get(f"/api/assets/serial/{serial}/card")
+        assert anon.status_code == 401
+        response = await client.get(f"/api/assets/serial/{serial}/card", headers={"Authorization": f"Bearer {get_token(ADMIN_WALLET, 'ADMIN', 5)}"})
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/svg+xml")
@@ -69,19 +71,23 @@ async def test_asset_certificate_svg_card_success(client, db_session):
 async def test_asset_certificate_svg_card_not_found(client):
     """Requesting SVG certificate for non-existent serial returns 404."""
     with patch("app.services.contract.contract_service.get_token_by_serial", return_value=None):
-        response = await client.get("/api/assets/serial/NON-EXISTENT-SERIAL/card")
+        response = await client.get("/api/assets/serial/NON-EXISTENT-SERIAL/card", headers={"Authorization": f"Bearer {get_token(ADMIN_WALLET, 'ADMIN', 5)}"})
     assert response.status_code == 404
-    assert "Asset with this serial not found on chain" in response.json()["detail"]
+    assert "not found" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
-async def test_serial_qr_code_generation(client):
-    """QR code endpoint generates PNG image for serial verification URL."""
+async def test_serial_qr_code_generation(client, db_session):
+    """QR code endpoint generates PNG image for a registered asset's verification URL."""
     serial = f"BEL-HW-OPTIC-{uuid.uuid4().hex[:6].upper()}"
     token_id = random.randint(1000000, 9999999)
+    admin_user = (await db_session.execute(select(User).where(User.wallet_address == ADMIN_WALLET))).scalar_one()
+    db_session.add(Asset(token_id=token_id, serial_number=serial, is_physical=True, department="Avionics", owner_id=admin_user.id))
+    await db_session.commit()
 
     with patch("app.services.contract.contract_service.get_token_by_serial", return_value=token_id):
-        response = await client.get(f"/api/assets/serial/{serial}/qr")
+        assert (await client.get(f"/api/assets/serial/{serial}/qr")).status_code == 401
+        response = await client.get(f"/api/assets/serial/{serial}/qr", headers={"Authorization": f"Bearer {get_token(ADMIN_WALLET, 'ADMIN', 5)}"})
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
@@ -89,12 +95,15 @@ async def test_serial_qr_code_generation(client):
 
 
 @pytest.mark.asyncio
-async def test_token_id_qr_code_generation(client):
+async def test_token_id_qr_code_generation(client, db_session):
     """QR code endpoint generates PNG image for token ID verification URL."""
     token_id = random.randint(1000000, 9999999)
+    admin_user = (await db_session.execute(select(User).where(User.wallet_address == ADMIN_WALLET))).scalar_one()
+    db_session.add(Asset(token_id=token_id, serial_number=f"QR-TOK-{token_id}", is_physical=True, department="Avionics", owner_id=admin_user.id))
+    await db_session.commit()
 
     with patch("app.services.contract.contract_service.get_asset", return_value={"token_id": token_id, "is_digital": False}):
-        response = await client.get(f"/api/assets/token/{token_id}/qr")
+        response = await client.get(f"/api/assets/token/{token_id}/qr", headers={"Authorization": f"Bearer {get_token(ADMIN_WALLET, 'ADMIN', 5)}"})
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
@@ -106,9 +115,9 @@ async def test_token_id_qr_code_not_found(client):
     """QR code for unknown token ID returns 404."""
     with patch("app.services.contract.contract_service.get_digital_asset", return_value=None), \
          patch("app.services.contract.contract_service.get_asset", return_value=None):
-        response = await client.get("/api/assets/token/99999999/qr")
+        response = await client.get("/api/assets/token/99999999/qr", headers={"Authorization": f"Bearer {get_token(ADMIN_WALLET, 'ADMIN', 5)}"})
     assert response.status_code == 404
-    assert "Asset not found on chain" in response.json()["detail"]
+    assert "Asset not found" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -152,9 +161,17 @@ async def test_verify_data_endpoints(client, db_session):
          }), \
          patch("app.services.contract.ContractService.contract_address", new_callable=PropertyMock, return_value="0xContract"), \
          patch("web3.eth.Eth.chain_id", new_callable=PropertyMock, return_value=13371):
-        res_serial = await client.get(f"/api/assets/serial/{serial}/verify-data")
+        # Anyone scanning the QR: public fields only
+        public = (await client.get(f"/api/assets/serial/{serial}/verify-data")).json()
+        assert public["detail_level"] == "PUBLIC"
+        assert public["serial_number"] == serial and public["token_id"] == token_id and public["department"] == "Avionics"
+        for hidden in ("name", "owner_address", "owner_did", "maintenance_history", "mac_address", "device_unique_address", "file_hash"):
+            assert hidden not in public, hidden
+
+        res_serial = await client.get(f"/api/assets/serial/{serial}/verify-data", headers={"Authorization": f"Bearer {get_token(ADMIN_WALLET, 'ADMIN', 5)}"})
         assert res_serial.status_code == 200
         data = res_serial.json()
+        assert data["detail_level"] == "AUTHORIZED"
         assert data["serial_number"] == serial
         assert data["token_id"] == token_id
         assert data["on_chain_verified"] is True
@@ -163,7 +180,7 @@ async def test_verify_data_endpoints(client, db_session):
         assert data["maintenance_history"][0]["action_description"] == "Annual Firmware Calibration & Cryptographic Key Re-seed"
 
         # Also test by token ID
-        res_token = await client.get(f"/api/assets/token/{token_id}/verify-data")
+        res_token = await client.get(f"/api/assets/token/{token_id}/verify-data", headers={"Authorization": f"Bearer {get_token(ADMIN_WALLET, 'ADMIN', 5)}"})
         assert res_token.status_code == 200
         token_data = res_token.json()
         assert token_data["serial_number"] == serial

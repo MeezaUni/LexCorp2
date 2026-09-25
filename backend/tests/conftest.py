@@ -139,6 +139,10 @@ async def seed_test_users(setup_database):
     engine = create_async_engine(settings.DATABASE_URL, echo=False)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
+        from app.models.domain import Department
+        for name in ("Avionics", "Cyber", "Radar", "Radar Dept"):
+            if not (await session.execute(select(Department).where(Department.name == name))).scalar_one_or_none():
+                session.add(Department(name=name, is_active=True))
         for u_data in TEST_USERS:
             res = await session.execute(
                 select(User).where(User.wallet_address == u_data["wallet_address"])

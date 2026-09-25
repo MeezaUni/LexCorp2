@@ -19,6 +19,8 @@ class User(Base, TimestampMixin):
     contact_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     organization: Mapped[str] = mapped_column(String(255), default="Bharat Electronics Limited (BEL)")
     department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # MANAGER only: departments managed in addition to `department`.
+    managed_departments: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     did: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, nullable=True)
     role: Mapped[str] = mapped_column(String(20), default="USER")  # ADMIN, MANAGER, AUDITOR, USER
     is_active: Mapped[bool] = mapped_column(default=True)
@@ -83,6 +85,14 @@ class WebAuthnCredential(Base, TimestampMixin):
     factor_scope: Mapped[str] = mapped_column(String(20), default="login")
 
     user: Mapped[User] = relationship(back_populates="webauthn_credentials")
+
+
+class Department(Base, TimestampMixin):
+    __tablename__ = "departments"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class AuthChallenge(Base, TimestampMixin):

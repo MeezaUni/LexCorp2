@@ -246,8 +246,12 @@ async def test_unauthorized_document_download_blocked(client):
 
 @pytest.mark.asyncio
 async def test_audit_stats_endpoint(client):
-    """Audit summary endpoint returns valid aggregate statistics from PostgreSQL."""
-    response = await client.get("/api/audit/stats")
+    """Audit summary requires a session and a non-USER role."""
+    assert (await client.get("/api/audit/stats")).status_code == 401
+    user = get_token("0xe1ced2305c7c75618eeb1450e18e2099c15b7d72", "USER", 1)
+    assert (await client.get("/api/audit/stats", headers={"Authorization": f"Bearer {user}"})).status_code == 403
+    auditor = get_token("0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "AUDITOR", 1)
+    response = await client.get("/api/audit/stats", headers={"Authorization": f"Bearer {auditor}"})
     assert response.status_code == 200
     data = response.json()
     assert "total_events" in data
@@ -256,8 +260,10 @@ async def test_audit_stats_endpoint(client):
 
 @pytest.mark.asyncio
 async def test_audit_events_list(client):
-    """Audit events list endpoint returns immutable trail data."""
-    response = await client.get("/api/audit/events?limit=5")
+    """Audit events require a session; results are scoped by role."""
+    assert (await client.get("/api/audit/events?limit=5")).status_code == 401
+    auditor = get_token("0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "AUDITOR", 1)
+    response = await client.get("/api/audit/events?limit=5", headers={"Authorization": f"Bearer {auditor}"})
     assert response.status_code == 200
     assert isinstance(response.json(), list)
 

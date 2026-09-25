@@ -281,8 +281,12 @@ async def test_rejection_workflow(client, db_session):
 
 @pytest.mark.asyncio
 async def test_get_assets_by_owner_endpoint(client, db_session):
-    """Ensure GET /api/assets/by-owner/{owner_address} retrieves assets without 500 errors."""
-    res = await client.get(f"/api/assets/by-owner/{USER_WALLET}")
+    """by-owner requires a session; a USER may list their own assets only."""
+    assert (await client.get(f"/api/assets/by-owner/{USER_WALLET}")).status_code == 401
+    token = get_token(USER_WALLET, "USER", 1)
+    res = await client.get(f"/api/assets/by-owner/{USER_WALLET}", headers={"Authorization": f"Bearer {token}"})
     assert res.status_code == 200
     assert isinstance(res.json(), list)
+    other = await client.get(f"/api/assets/by-owner/{ADMIN_WALLET}", headers={"Authorization": f"Bearer {token}"})
+    assert other.status_code == 403
 

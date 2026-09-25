@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "get_db", "get_current_user", "get_current_active_user", "get_setup_user",
     "get_admin_user", "get_manager_user", "get_onboarded_user", "get_request_client_ip",
-    "get_step_up_token", "record_audit",
+    "get_step_up_token", "record_audit", "get_optional_user",
 ]
 
 # Throttle last-activity writes; the inactivity timeout is minutes, not seconds.
@@ -207,6 +207,25 @@ def _require_active(user: User) -> None:
     # Checked again here (not only in _authenticate) as defence in depth.
     if not user.is_active or user.revoked_at is not None:
         raise HTTPException(status_code=403, detail="Account is disabled or identity has been revoked")
+
+
+async def get_optional_user(
+    request: Request,
+    session: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """For public pages (QR verification): the onboarded user if a valid full session
+    is presented, otherwise None. Never raises for missing/invalid credentials."""
+    if not session and not (authorization and authorization.startswith("Bearer ")):
+        return None
+    try:
+        user, payload = await _authenticate(request, session, authorization, db)
+    except HTTPException:
+        return None
+    if payload.get("scope", SCOPE_FULL) != SCOPE_FULL or user.onboarding_pending:
+        return None
+    return user
 
 
 async def get_current_active_user(user: User = Depends(get_current_user)) -> User:

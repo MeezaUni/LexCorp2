@@ -13,7 +13,10 @@ from web3 import Web3
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.api.dependencies import get_current_active_user, get_manager_user, get_admin_user
+from app.api.dependencies import get_onboarded_user, get_manager_user, get_admin_user, get_request_client_ip, record_audit
+from app.services import access
+from app.models.domain import Department
+from fastapi import Request
 from app.models.domain import User, Asset, VerifiableCredential
 from app.services.security import generate_one_time_pin
 from app.core.crypto import hash_pin
@@ -88,16 +91,13 @@ class UpdateRoleRequest(BaseModel):
 @router.get("", response_model=List[UserResponse])
 async def list_users(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_onboarded_user)
 ):
-    """List all registered users and their current roles."""
+    """Users visible to the caller: ADMIN/AUDITOR all, MANAGER their departments, USER self."""
     query = select(User).where(User.is_active == True)
-
-    # Department scoping: Managers can only see users in their department
-    if current_user.role == "MANAGER":
-        if not current_user.department:
-            return [] # Manager with no department sees no one
-        query = query.where(User.department == current_user.department)
+    clause = access.user_scope_clause(current_user)
+    if clause is not None:
+        query = query.where(clause)
 
     result = await db.execute(query.order_by(User.created_at.desc()))
     users = result.scalars().all()
@@ -132,8 +132,9 @@ ROLE_HIERARCHY = {
 @router.post("", response_model=UserResponse)
 async def create_or_register_user(
     request: CreateUserRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
 ):
     """Create or pre-seed a user with a specific role, enforcing strict role hierarchy.
 
@@ -190,20 +191,12 @@ async def create_or_register_user(
             detail="User already exists for this wallet address. Use the role update action instead of registering it again.",
         )
 
-    # Department Enforcement: Managers can only create users in their own department
+    # Department enforcement: the submitted department must be one this actor is
+    # authorized for (server-side list), regardless of what the UI offered.
     target_department = request.department
-    if current_user.role == "MANAGER":
-        if not current_user.department:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Manager has no assigned department and cannot create users.",
-            )
-        if target_department and target_department != current_user.department:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Managers can only create users in their own department ({current_user.department}).",
-            )
+    if current_user.role == "MANAGER" and not target_department:
         target_department = current_user.department
+    target_department = await access.require_assignable_department(db, current_user, target_department)
 
     # Issue DID and create new record
     did = f"did:ethr:{settings.CHAIN_ID}:{checksummed.lower()}"
@@ -225,6 +218,9 @@ async def create_or_register_user(
         pin_used=False
     )
     db.add(new_user)
+    await record_audit(db, "USER_PROVISIONED", actor_did=current_user.did, target_did=did,
+                       client_ip=get_request_client_ip(http_request),
+                       details={"role": role_clean, "department": target_department})
     await db.commit()
     await db.refresh(new_user)
 
@@ -258,7 +254,7 @@ async def update_user_role(
     user_id: str,
     request: UpdateRoleRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
 ):
     """Update role for an existing user enforcing strict hierarchy."""
     if current_user.role in ("USER", "AUDITOR"):
@@ -300,7 +296,7 @@ async def update_user_role(
         )
 
     # Department restriction for modifications
-    if current_user.role == "MANAGER" and user.department != current_user.department:
+    if not access.can_see_user(current_user, user) or current_user.role == "AUDITOR":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Managers can only modify users in their own department ({current_user.department}).",
@@ -354,7 +350,7 @@ async def delete_user(
         )
 
     # Department restriction for revocation
-    if current_user.role == "MANAGER" and user.department != current_user.department:
+    if not access.can_see_user(current_user, user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Managers can only revoke users in their own department ({current_user.department}).",
@@ -406,7 +402,7 @@ async def fund_user_wallet(
         )
 
     # Department restriction for funding
-    if current_user.role == "MANAGER" and user.department != current_user.department:
+    if not access.can_see_user(current_user, user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Managers can only fund users in their own department ({current_user.department}).",
@@ -419,3 +415,73 @@ async def fund_user_wallet(
 
     return {"message": f"Successfully funded {user.wallet_address} with 1000 LEX"}
 
+
+
+# ---------------------------------------------------------------- Departments
+
+class DepartmentCreateRequest(BaseModel):
+    name: str
+
+
+class ManagedDepartmentsRequest(BaseModel):
+    departments: List[str]
+
+
+@router.get("/departments")
+async def list_assignable_departments(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_onboarded_user),
+):
+    """Departments the caller may assign (drives the create-user dropdown; the
+    backend re-validates every submission independently)."""
+    return {"departments": await access.assignable_departments(db, current_user)}
+
+
+@router.post("/departments")
+async def create_department(
+    req: DepartmentCreateRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    name = req.name.strip()
+    if not name or len(name) > 255:
+        raise HTTPException(status_code=400, detail="Department name is required (max 255 characters).")
+    exists = (await db.execute(select(Department).where(func.lower(Department.name) == name.lower()))).scalar_one_or_none()
+    if exists:
+        raise HTTPException(status_code=409, detail="Department already exists.")
+    db.add(Department(name=name, is_active=True))
+    await record_audit(db, "DEPARTMENT_CREATED", actor_did=admin.did, client_ip=get_request_client_ip(http_request),
+                       details={"department": name})
+    await db.commit()
+    return {"name": name}
+
+
+@router.put("/{user_id}/managed-departments")
+async def set_managed_departments(
+    user_id: str,
+    req: ManagedDepartmentsRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """ADMIN grants a MANAGER authority over additional departments."""
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    target = (await db.execute(select(User).where(User.id == uid))).scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.role != "MANAGER":
+        raise HTTPException(status_code=400, detail="Managed departments apply to MANAGER accounts only.")
+    active = set(await access.active_department_names(db))
+    unknown = [d for d in req.departments if d not in active]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown or inactive departments: {unknown}")
+    target.managed_departments = sorted(set(req.departments))
+    await record_audit(db, "MANAGER_DEPARTMENTS_UPDATED", actor_did=admin.did, target_did=target.did,
+                       client_ip=get_request_client_ip(http_request),
+                       details={"managed_departments": target.managed_departments})
+    await db.commit()
+    return {"user_id": str(target.id), "managed_departments": target.managed_departments}

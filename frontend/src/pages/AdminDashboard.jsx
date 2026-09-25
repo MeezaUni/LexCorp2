@@ -62,6 +62,13 @@ export default function AdminDashboard() {
 
   const availableRoles = getAvailableRoles();
 
+  const [departments, setDepartments] = useState([]);
+  useEffect(() => {
+    axios.get(`${API_BASE}/users/departments`)
+      .then((res) => setDepartments(res.data.departments || []))
+      .catch(() => setDepartments([]));
+  }, []);
+
   const fetchUsers = async () => {
     try {
       setLoading(true);
@@ -538,18 +545,17 @@ export default function AdminDashboard() {
             </div>
             <div>
               <label style={labelStyle}>Department</label>
-              <input
-                type="text"
-                placeholder={user?.role === 'MANAGER' ? (user.department || 'Your Department') : 'e.g. Avionics, Cyber, R&D'}
-                value={user?.role === 'MANAGER' ? (user.department || '') : formData.department}
+              {/* Options come from the server's list of departments this actor may assign;
+                  the backend re-validates the submitted value independently. */}
+              <select
+                value={formData.department}
                 onChange={e => setFormData({ ...formData, department: e.target.value })}
-                disabled={user?.role === 'MANAGER'}
-                style={{
-                  ...inputStyle,
-                  background: user?.role === 'MANAGER' ? '#f1f5f9' : '#fff',
-                  cursor: user?.role === 'MANAGER' ? 'not-allowed' : 'text'
-                }}
-              />
+                required
+                style={{ ...inputStyle, background: '#fff' }}
+              >
+                <option value="">Select department</option>
+                {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
             </div>
             <div>
               <label style={labelStyle}>Assign Role</label>

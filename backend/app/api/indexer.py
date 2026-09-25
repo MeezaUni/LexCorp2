@@ -6,7 +6,10 @@ an indexer restart or for the initial sync from a freshly-deployed contract.
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.api.dependencies import get_admin_user, get_onboarded_user
+from app.models.domain import User
 
 from app.indexer.event_indexer import get_indexer
 
@@ -15,7 +18,7 @@ router = APIRouter(prefix="/indexer", tags=["indexer"])
 
 
 @router.get("/status")
-async def indexer_status():
+async def indexer_status(current_user: User = Depends(get_onboarded_user)):
     """Report indexer state."""
     indexer = await get_indexer()
     return {
@@ -29,6 +32,7 @@ async def indexer_status():
 async def catch_up(
     from_block: int = Query(0, ge=0, description="Block to start indexing from (inclusive)"),
     to_block: int = Query(0, ge=0, description="Block to stop at (inclusive, 0 = chain head)"),
+    admin: User = Depends(get_admin_user),
 ):
     """Trigger an on-demand backfill of events from `from_block` to `to_block` (or chain head).
 

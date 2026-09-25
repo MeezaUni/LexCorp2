@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, UTC
 
 
 from app.core.limiter import limiter
-from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_onboarded_user, get_request_client_ip, get_step_up_token, record_audit
+from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_onboarded_user, get_optional_user, get_request_client_ip, get_step_up_token, record_audit
 from app.core.config import settings
 from app.services.contract import contract_service
 from app.services.watermark import apply_watermark
@@ -22,8 +22,8 @@ from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent, AssetAccessGrant
 from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead
-from app.services import mfa
-from sqlalchemy import select, desc, func, or_
+from app.services import access, mfa
+from sqlalchemy import select, desc, false, func, or_
 
 # Simple in-memory TTL cache (60 seconds) for registry queries
 _CACHE = {}
@@ -43,6 +43,62 @@ def _set_cache(key: str, value):
     _CACHE[key] = (time.time(), value)
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+
+def _asset_row(asset: Asset, viewer: User) -> dict:
+    data = {
+        "id": asset.id,
+        "token_id": asset.token_id,
+        "serial_number": asset.serial_number,
+        "name": asset.name,
+        "asset_type": asset.asset_type,
+        "metadata_cid": asset.metadata_cid,
+        "file_hash": asset.file_hash,
+        "owner_id": asset.owner_id,
+        "custodian_id": asset.custodian_id,
+        "custodian_did": asset.custodian_did,
+        "custodian_department": asset.custodian_department,
+        "lifecycle_status": asset.lifecycle_status,
+        "parent_asset_id": asset.parent_asset_id,
+        "action_id": asset.action_id,
+        "action_type": asset.action_type,
+        "approval_status": asset.approval_status,
+        "watermark_metadata": asset.watermark_metadata,
+        "is_physical": asset.is_physical,
+        "is_digital": not asset.is_physical,
+        "offchain_uri": asset.metadata_cid,
+        "mac_address": asset.mac_address,
+        "device_unique_address": asset.device_unique_address,
+        "location": asset.location,
+        "department": asset.department,
+        "owner_wallet": asset.owner.wallet_address if asset.owner else None,
+        "owner_address": asset.owner.wallet_address if asset.owner else None,
+        "owner_did": asset.owner.did if asset.owner else None,
+        "owner_name": asset.owner.name if asset.owner else None,
+        "custodian_name": asset.custodian.name if asset.custodian else None,
+        "created_at": asset.created_at,
+        "updated_at": asset.updated_at,
+    }
+    return access.redact_asset_dict(data, viewer, asset)
+
+
+async def _visible_asset_or_404(db: AsyncSession, user: User, *, serial: Optional[str] = None, token_id: Optional[int] = None) -> Asset:
+    """Load a registry asset the caller may see. Out-of-scope and unknown look identical (404)."""
+    query = select(Asset)
+    query = query.where(Asset.serial_number == serial) if serial is not None else query.where(Asset.token_id == token_id)
+    asset = (await db.execute(query)).scalar_one_or_none()
+    if not asset or not await access.can_see_asset(db, user, asset):
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return asset
+
+
+async def _managed_asset_or_403(db: AsyncSession, user: User, token_id: int) -> Asset:
+    asset = (await db.execute(select(Asset).where(Asset.token_id == token_id))).scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset is not in the LexCorp registry.")
+    if not access.can_manage_asset(user, asset):
+        raise HTTPException(status_code=403, detail="This asset is outside your authorized departments.")
+    return asset
 
 # Storage directory for off-chain encrypted documents
 OFFCHAIN_STORAGE_DIR = settings.OFFCHAIN_STORAGE_DIR
@@ -108,14 +164,7 @@ async def prepare_transfer(request: TransferRequest, current_user: User = Depend
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Managers are not permitted to transfer DIGITAL assets. Managers can only transfer PHYSICAL defense hardware."
             )
-        res = await db.execute(select(Asset).filter(Asset.token_id == request.token_id))
-        asset_db = res.scalar_one_or_none()
-        if asset_db and asset_db.department and current_user.department:
-            if asset_db.department != current_user.department:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Managers can only transfer assets within their own department ({current_user.department})."
-                )
+        await _managed_asset_or_403(db, current_user, request.token_id)
 
     # AI Risk Check: Block HIGH-risk actors from sensitive transfer operations
     from app.services.ai import check_actor_risk_level
@@ -195,15 +244,7 @@ async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depen
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Managers are not permitted to revoke DIGITAL assets. Managers can only revoke PHYSICAL defense hardware. Digital assets can only be revoked by their owner or an Administrator."
             )
-        # Department check
-        res = await db.execute(select(Asset).filter(Asset.token_id == token_id))
-        asset_db = res.scalar_one_or_none()
-        if asset_db and asset_db.department and current_user.department:
-            if asset_db.department != current_user.department:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Managers can only revoke assets within their own department ({current_user.department})."
-                )
+        await _managed_asset_or_403(db, current_user, token_id)
 
     # ADMIN: no restrictions (can revoke both types)
 
@@ -431,19 +472,17 @@ async def download_document(
 
 
 @router.post("/check-access")
-async def check_access(request: AccessCheckRequest):
-    """
-    Verify Asset-Level Access Control against the on-chain Smart Contract.
-    Enforces authorization on the blockchain layer.
-    """
-    result = contract_service.check_asset_access(
-        request.token_id,
-        request.requester_did,
-        request.caller_address
-    )
+async def check_access(
+    request: AccessCheckRequest,
+    current_user: User = Depends(get_onboarded_user),
+):
+    """Check the CALLER's on-chain access to a token. Requester identity comes from the
+    session; client-supplied requester_did / caller_address are ignored."""
+    requester_did = current_user.did or f"did:ethr:13371:{current_user.wallet_address.lower()}"
+    result = contract_service.check_asset_access(request.token_id, requester_did, current_user.wallet_address)
     return {
         "token_id": request.token_id,
-        "requester_did": request.requester_did,
+        "requester_did": requester_did,
         "authorized": result["authorized"],
         "permission_level": result["level"],
         "message": "Access Granted" if result["authorized"] else "Access Denied by Smart Contract"
@@ -451,147 +490,64 @@ async def check_access(request: AccessCheckRequest):
 
 
 @router.get("/registry", response_model=List[AssetRead])
-async def get_all_assets(db: AsyncSession = Depends(get_db)):
-    """Fetch all minted and active assets from the synchronized database index."""
+async def get_all_assets(
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Registry filtered in the database by the caller's role and departments."""
     from sqlalchemy.orm import selectinload
-    from app.models.domain import Asset
 
     query = select(Asset).options(selectinload(Asset.owner), selectinload(Asset.custodian))
-    result = await db.execute(query)
-    assets = result.scalars().all()
+    clause = await access.asset_scope_clause(db, current_user)
+    if clause is not None:
+        query = query.where(clause)
+    assets = (await db.execute(query.order_by(desc(Asset.created_at)))).scalars().all()
+    return [AssetRead.model_validate(_asset_row(a, current_user)) for a in assets]
 
-    # Map ORM objects to Pydantic schemas, filling in owner/custodian fields for AssetRead
-    asset_schemas = []
-    for asset in assets:
-        asset_dict = {
-            "id": asset.id,
-            "token_id": asset.token_id,
-            "serial_number": asset.serial_number,
-            "name": asset.name,
-            "asset_type": asset.asset_type,
-            "metadata_cid": asset.metadata_cid,
-            "file_hash": asset.file_hash,
-            "owner_id": asset.owner_id,
-            "custodian_id": asset.custodian_id,
-            "custodian_did": asset.custodian_did,
-            "custodian_department": asset.custodian_department,
-            "lifecycle_status": asset.lifecycle_status,
-            "parent_asset_id": asset.parent_asset_id,
-            "action_id": asset.action_id,
-            "action_type": asset.action_type,
-            "approval_status": asset.approval_status,
-            "watermark_metadata": asset.watermark_metadata,
-            "is_physical": asset.is_physical,
-            "is_digital": not asset.is_physical,
-            "offchain_uri": asset.metadata_cid,
-            "mac_address": asset.mac_address,
-            "device_unique_address": asset.device_unique_address,
-            "location": asset.location,
-            "department": asset.department,
-            "owner_wallet": asset.owner.wallet_address if asset.owner else None,
-            "owner_address": asset.owner.wallet_address if asset.owner else None,
-            "owner_did": asset.owner.did if asset.owner else None,
-            "owner_name": asset.owner.name if asset.owner else None,
-            "custodian_name": asset.custodian.name if asset.custodian else None,
-            "created_at": asset.created_at,
-            "updated_at": asset.updated_at,
-        }
-        asset_schemas.append(AssetRead.model_validate(asset_dict))
-
-    return asset_schemas
 
 @router.get("/by-owner/{owner_address}", response_model=List[AssetRead])
-async def get_assets_by_owner(owner_address: str, db: AsyncSession = Depends(get_db)):
-    """Fetch all assets owned by OR explicitly granted to a specific wallet address/DID."""
+async def get_assets_by_owner(
+    owner_address: str,
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Assets owned by, in custody of, or granted to one identity - only if the caller
+    may see that identity, and only the assets the caller may see."""
     from web3 import Web3
     from sqlalchemy.orm import selectinload
-    from app.models.domain import Asset, User, AssetAccessGrant
 
     try:
         clean_address = Web3.to_checksum_address(owner_address).lower()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid wallet address")
+    target = (await db.execute(select(User).where(func.lower(User.wallet_address) == clean_address))).scalar_one_or_none()
+    if not target or not access.can_see_user(current_user, target):
+        raise HTTPException(status_code=403, detail="You are not authorized to view this identity's assets.")
 
-    # 1. Find user by address to get ID and DID
-    user_res = await db.execute(select(User).filter(func.lower(User.wallet_address) == clean_address))
-    user = user_res.scalars().first()
-
-    # 2. Get assets where user is owner or custodian, or has active access grant
-    query = select(Asset).options(selectinload(Asset.owner), selectinload(Asset.custodian))
-
-    if user:
-        # Get active access grants serially first
-        grant_res = await db.execute(select(AssetAccessGrant.asset_serial).filter(AssetAccessGrant.grantee_did == user.did, AssetAccessGrant.is_active == True))
-        granted_serials = grant_res.scalars().all()
-
-        query = query.filter(
-            or_(
-                Asset.owner_id == user.id,
-                Asset.custodian_id == user.id,
-                Asset.serial_number.in_(granted_serials)
-            )
-        )
-    else:
-        # Fallback to direct owner join if user not found in DB
-        query = query.join(User, Asset.owner_id == User.id).filter(func.lower(User.wallet_address) == clean_address)
-
-    result = await db.execute(query)
-    assets = result.scalars().unique().all()
-
-    asset_schemas = []
-
-    # 3. Helper to safe-map assets to schema
-    for asset in assets:
-        asset_dict = {
-            "id": asset.id,
-            "token_id": asset.token_id,
-            "serial_number": asset.serial_number,
-            "name": asset.name,
-            "asset_type": asset.asset_type,
-            "metadata_cid": asset.metadata_cid,
-            "file_hash": asset.file_hash,
-            "owner_id": asset.owner_id,
-            "custodian_id": asset.custodian_id,
-            "custodian_did": asset.custodian_did,
-            "custodian_department": asset.custodian_department,
-            "lifecycle_status": asset.lifecycle_status,
-            "parent_asset_id": asset.parent_asset_id,
-            "action_id": asset.action_id,
-            "action_type": asset.action_type,
-            "approval_status": asset.approval_status,
-            "watermark_metadata": asset.watermark_metadata,
-            "is_physical": asset.is_physical,
-            "is_digital": not asset.is_physical,
-            "offchain_uri": asset.metadata_cid,
-            "mac_address": asset.mac_address,
-            "device_unique_address": asset.device_unique_address,
-            "location": asset.location,
-            "department": asset.department,
-            "owner_wallet": asset.owner.wallet_address if asset.owner else None,
-            "owner_address": asset.owner.wallet_address if asset.owner else None,
-            "owner_did": asset.owner.did if asset.owner else None,
-            "owner_name": asset.owner.name if asset.owner else None,
-            "custodian_name": asset.custodian.name if asset.custodian else None,
-            "created_at": asset.created_at,
-            "updated_at": asset.updated_at,
-        }
-        asset_schemas.append(AssetRead.model_validate(asset_dict))
-
-    return asset_schemas
+    target_grants = await access.granted_serials(db, target)
+    target_clause = or_(Asset.owner_id == target.id, Asset.custodian_id == target.id,
+                        Asset.serial_number.in_(target_grants) if target_grants else false())
+    query = select(Asset).options(selectinload(Asset.owner), selectinload(Asset.custodian)).where(target_clause)
+    viewer_clause = await access.asset_scope_clause(db, current_user)
+    if viewer_clause is not None:
+        query = query.where(viewer_clause)
+    assets = (await db.execute(query)).scalars().unique().all()
+    return [AssetRead.model_validate(_asset_row(a, current_user)) for a in assets]
 
 
 @router.get("/serial/{serial}")
-async def get_asset_by_serial(serial: str):
-    """Look up asset by serial number."""
+async def get_asset_by_serial(serial: str, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
+    """On-chain metadata for a registry asset the caller may see."""
+    asset = await _visible_asset_or_404(db, current_user, serial=serial)
     token_id = contract_service.get_token_by_serial(serial)
     if token_id is None:
-        raise HTTPException(status_code=404, detail="Serial not found")
-    asset = contract_service.get_digital_asset(token_id)
-    if not asset or not asset.get("is_digital"):
-        asset = contract_service.get_asset(token_id)
-    if not asset:
+        raise HTTPException(status_code=404, detail="Serial not found on chain")
+    on_chain = contract_service.get_digital_asset(token_id)
+    if not on_chain or not on_chain.get("is_digital"):
+        on_chain = contract_service.get_asset(token_id)
+    if not on_chain:
         raise HTTPException(status_code=404, detail="Asset metadata not found")
-    return asset
+    return on_chain
 
 
 import socket
@@ -611,10 +567,11 @@ def get_lan_ip() -> str:
 
 
 @router.get("/serial/{serial}/qr")
-async def get_asset_qr(serial: str, host: Optional[str] = "localhost:5173"):
+async def get_asset_qr(serial: str, host: Optional[str] = "localhost:5173", current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
     """Generate and return a QR code PNG pointing to the frontend verify URL for this asset.
     Automatically resolves localhost/127.0.0.1 to the LAN IP so mobile devices can scan and view it.
     """
+    await _visible_asset_or_404(db, current_user, serial=serial)
     token_id = contract_service.get_token_by_serial(serial)
     if token_id is None:
         raise HTTPException(status_code=404, detail="Asset with this serial not found on chain")
@@ -635,8 +592,9 @@ async def get_asset_qr(serial: str, host: Optional[str] = "localhost:5173"):
 
 
 @router.get("/token/{token_id}/qr")
-async def get_asset_qr_by_token(token_id: int, host: Optional[str] = "localhost:5173"):
+async def get_asset_qr_by_token(token_id: int, host: Optional[str] = "localhost:5173", current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
     """Generate a QR code for the stable token-ID verification URL."""
+    await _visible_asset_or_404(db, current_user, token_id=token_id)
     asset = contract_service.get_digital_asset(token_id) or contract_service.get_asset(token_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found on chain")
@@ -648,14 +606,15 @@ async def get_asset_qr_by_token(token_id: int, host: Optional[str] = "localhost:
 
 
 @router.get("/{token_id}")
-async def get_asset(token_id: int):
-    """Fetch on-chain asset metadata."""
-    asset = contract_service.get_digital_asset(token_id)
-    if not asset or not asset.get("is_digital"):
-        asset = contract_service.get_asset(token_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
-    return asset
+async def get_asset(token_id: int, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
+    """On-chain metadata for a registry asset the caller may see."""
+    await _visible_asset_or_404(db, current_user, token_id=token_id)
+    on_chain = contract_service.get_digital_asset(token_id)
+    if not on_chain or not on_chain.get("is_digital"):
+        on_chain = contract_service.get_asset(token_id)
+    if not on_chain:
+        raise HTTPException(status_code=404, detail="Asset not found on chain")
+    return on_chain
 
 
 class AssignCustodianRequest(BaseModel):
@@ -676,9 +635,11 @@ class MaintenanceRecordRequest(BaseModel):
 async def get_asset_certificate_card(
     serial: str,
     host: Optional[str] = "localhost:5173",
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Generate and return a high-resolution printable SVG Defense Asset Certificate for the given asset."""
+    await _visible_asset_or_404(db, current_user, serial=serial)
     token_id = contract_service.get_token_by_serial(serial)
     if token_id is None:
         raise HTTPException(status_code=404, detail="Asset with this serial not found on chain")
@@ -748,11 +709,10 @@ async def assign_asset_custodian(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Manager has no assigned department and cannot reassign asset custody."
             )
-        # If target department is specified, it must match manager's department
-        if req.custodian_department and req.custodian_department != current_user.department:
+        if req.custodian_department and req.custodian_department not in access.manager_departments(current_user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Managers can only assign custody to their own department ({current_user.department})."
+                detail="Managers can only assign custody within their authorized departments."
             )
 
     token_id = contract_service.get_token_by_serial(serial)
@@ -765,8 +725,8 @@ async def assign_asset_custodian(
     if not asset_db:
         # Never fabricate a registry record (previously created one owned by the caller).
         raise HTTPException(status_code=404, detail="Asset is not in the LexCorp registry.")
-    if current_user.role == "MANAGER" and asset_db.department and asset_db.department != current_user.department:
-        raise HTTPException(status_code=403, detail="Managers can only reassign custody of assets in their own department.")
+    if not access.can_manage_asset(current_user, asset_db):
+        raise HTTPException(status_code=403, detail="Managers can only reassign custody of assets in their authorized departments.")
     asset_db.custodian_did = req.custodian_did
     asset_db.custodian_department = req.custodian_department
     asset_db.lifecycle_status = req.lifecycle_status or "ASSIGNED"
@@ -806,8 +766,12 @@ async def record_asset_maintenance(
     # Derive performer DID strictly from the authenticated session
     performed_by_did = current_user.did or f"did:ethr:13371:{current_user.wallet_address.lower()}"
 
-    # Verify authorization: ADMIN/MANAGER can maintain any asset, USER must be owner or granted access
-    if current_user.role not in ("ADMIN", "MANAGER"):
+    # Verify authorization: ADMIN any asset, MANAGER within departments, USER must be owner or granted on-chain access
+    if current_user.role == "MANAGER":
+        asset_scope = (await db.execute(select(Asset).filter(Asset.serial_number == serial))).scalar_one_or_none()
+        if not asset_scope or not access.can_manage_asset(current_user, asset_scope):
+            raise HTTPException(status_code=403, detail="This asset is outside your authorized departments.")
+    elif current_user.role != "ADMIN":
         access = contract_service.check_asset_access(
             token_id=token_id,
             requester_did=performed_by_did,
@@ -857,9 +821,11 @@ async def record_asset_maintenance(
 @router.get("/serial/{serial}/maintenance")
 async def get_asset_maintenance_history(
     serial: str,
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Retrieve full chronological maintenance logs for an asset."""
+    """Retrieve full chronological maintenance logs for an asset the caller may see."""
+    await _visible_asset_or_404(db, current_user, serial=serial)
     res = await db.execute(
         select(MaintenanceRecord)
         .filter(MaintenanceRecord.asset_serial == serial)
@@ -884,92 +850,99 @@ async def get_asset_maintenance_history(
 @router.get("/serial/{serial}/verify-data")
 async def get_asset_full_verification_data(
     serial: str,
+    current_user: Optional[User] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Comprehensive on-chain and database verification payload for QR verification page."""
+    """QR verification payload. Anyone scanning a QR gets only public fields; signed-in
+    employees get the details their role and departments allow."""
+    asset_db = (await db.execute(select(Asset).filter(Asset.serial_number == serial))).scalar_one_or_none()
     token_id = contract_service.get_token_by_serial(serial)
-    if token_id is None:
-        raise HTTPException(status_code=404, detail="Asset not found on Hyperledger Besu blockchain")
+    if token_id is None and not asset_db:
+        raise HTTPException(status_code=404, detail="Asset not found")
 
-    # 1. On-Chain Smart Contract State
-    on_chain = contract_service.get_digital_asset(token_id)
-    if not on_chain or not on_chain.get("is_digital"):
-        on_chain = contract_service.get_asset(token_id)
+    on_chain = None
+    if token_id is not None:
+        on_chain = contract_service.get_digital_asset(token_id)
+        if not on_chain or not on_chain.get("is_digital"):
+            on_chain = contract_service.get_asset(token_id)
 
-    # 2. Database Metadata & Custody
-    res = await db.execute(select(Asset).filter(Asset.serial_number == serial))
-    asset_db = res.scalar_one_or_none()
-
-    # 3. Maintenance History
-    maint_res = await db.execute(
-        select(MaintenanceRecord)
-        .filter(MaintenanceRecord.asset_serial == serial)
-        .order_by(desc(MaintenanceRecord.created_at))
-    )
-    maintenance_records = [
-        {
-            "id": str(r.id),
-            "performed_by_did": r.performed_by_did,
-            "action_description": r.action_description,
-            "notes": r.notes,
-            "log_hash": r.log_hash,
-            "created_at": r.created_at.isoformat() if r.created_at else None
-        }
-        for r in maint_res.scalars().all()
-    ]
-
-    return {
+    public = {
         "serial_number": serial,
         "token_id": token_id,
-        "on_chain_verified": True,
-        "contract_address": contract_service.contract_address,
-        "chain_id": contract_service.w3.eth.chain_id,
-        "name": asset_db.name if asset_db and asset_db.name else f"BEL Defense Hardware {serial}",
-        "asset_type": asset_db.asset_type if asset_db and asset_db.asset_type else "EQUIPMENT",
-        "owner_address": on_chain.get("owner_address") if on_chain else None,
-        "owner_did": on_chain.get("owner_did") if on_chain else "did:ethr:13371:unknown",
-        "custodian_did": asset_db.custodian_did if asset_db else None,
-        "custodian_department": asset_db.custodian_department if asset_db else "BEL Radar Division",
-        "file_hash": (on_chain.get("file_hash") if on_chain else None) or (asset_db.file_hash if asset_db else None),
-        "offchain_uri": on_chain.get("offchain_uri") if on_chain else None,
-        "lifecycle_status": asset_db.lifecycle_status if asset_db else "VERIFIED",
-        "is_digital": on_chain.get("is_digital", False) if on_chain else False,
-        "maintenance_history": maintenance_records
+        "on_chain_verified": token_id is not None,
+        "chain_id": settings.CHAIN_ID,
+        "is_digital": bool(on_chain.get("is_digital")) if on_chain else (not asset_db.is_physical if asset_db else False),
+        "department": asset_db.department if asset_db else None,
+        "lifecycle_status": asset_db.lifecycle_status if asset_db else None,
+        "approval_status": asset_db.approval_status if asset_db else None,
+        "created_at": asset_db.created_at.isoformat() if asset_db and asset_db.created_at else None,
+        "detail_level": "PUBLIC",
     }
+    if not current_user or not asset_db or not await access.can_see_asset(db, current_user, asset_db):
+        return public
+
+    maint = (await db.execute(
+        select(MaintenanceRecord).filter(MaintenanceRecord.asset_serial == serial).order_by(desc(MaintenanceRecord.created_at))
+    )).scalars().all()
+    detail = {
+        **public,
+        "detail_level": "AUTHORIZED",
+        "contract_address": contract_service.contract_address,
+        "name": asset_db.name,
+        "asset_type": asset_db.asset_type,
+        "owner_address": on_chain.get("owner_address") if on_chain else None,
+        "owner_did": on_chain.get("owner_did") if on_chain else None,
+        "custodian_did": asset_db.custodian_did,
+        "custodian_department": asset_db.custodian_department,
+        "file_hash": (on_chain.get("file_hash") if on_chain else None) or asset_db.file_hash,
+        "offchain_uri": on_chain.get("offchain_uri") if on_chain else None,
+        "action_id": asset_db.action_id,
+        "maintenance_history": [{
+            "id": str(r.id), "performed_by_did": r.performed_by_did, "action_description": r.action_description,
+            "notes": r.notes, "log_hash": r.log_hash, "created_at": r.created_at.isoformat() if r.created_at else None,
+        } for r in maint],
+    }
+    if access.can_see_sensitive_physical(current_user, asset_db):
+        detail["mac_address"] = asset_db.mac_address
+        detail["device_unique_address"] = asset_db.device_unique_address
+        detail["location"] = asset_db.location
+    return detail
 
 
 @router.get("/token/{token_id}/verify-data")
 async def get_asset_full_verification_data_by_token(
     token_id: int,
+    current_user: Optional[User] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Resolve verification by stable token ID instead of a serial string."""
-    on_chain = contract_service.get_digital_asset(token_id)
-    if not on_chain or not on_chain.get("is_digital"):
-        on_chain = contract_service.get_asset(token_id)
-    if not on_chain:
-        raise HTTPException(status_code=404, detail="Asset not found on Hyperledger Besu blockchain")
-    return await get_asset_full_verification_data(on_chain["serial_number"], db)
+    asset_db = (await db.execute(select(Asset).where(Asset.token_id == token_id))).scalar_one_or_none()
+    serial = asset_db.serial_number if asset_db else None
+    if serial is None:
+        on_chain = contract_service.get_digital_asset(token_id)
+        if not on_chain or not on_chain.get("is_digital"):
+            on_chain = contract_service.get_asset(token_id)
+        if not on_chain:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        serial = on_chain["serial_number"]
+    return await get_asset_full_verification_data(serial, current_user, db)
 
 
-@router.delete("/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{token_id}", status_code=status.HTTP_200_OK)
 async def delete_asset(
     token_id: int,
     current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Revoke (burn) an asset NFT on-chain."""
-    if current_user.role == "AUDITOR":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Auditors cannot revoke assets.")
-    try:
-        asset = contract_service.get_asset(token_id)
-        if not asset:
-            raise HTTPException(status_code=404, detail="Token not found on chain")
-    except Exception:
-        raise HTTPException(status_code=404, detail="Token not found")
-
+    """Prepare revoke (burn) calldata. ADMIN, or MANAGER within their departments."""
+    if current_user.role not in ("ADMIN", "MANAGER"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Managers and Administrators can revoke assets.")
+    await _managed_asset_or_403(db, current_user, token_id)
+    if not contract_service.get_asset(token_id):
+        raise HTTPException(status_code=404, detail="Token not found on chain")
     calldata = contract_service.prepare_revoke_calldata(token_id)
     return {"message": "Prepare revocation calldata", "calldata": calldata, "token_id": token_id}
+
 
 @router.post("/document/propose", response_model=DocumentActionRead)
 async def propose_document_creation(
@@ -1127,8 +1100,9 @@ async def propose_physical_asset_creation(
         raise HTTPException(status_code=403, detail="Only Managers and Administrators can propose physical assets.")
 
     dept = request.department or current_user.department
-    if current_user.role == "MANAGER" and dept != current_user.department:
+    if current_user.role == "MANAGER" and dept not in access.manager_departments(current_user):
         raise HTTPException(status_code=403, detail="Managers can only propose physical assets for their assigned department.")
+    await access.require_assignable_department(db, current_user, dept)
 
 
     await mfa.require_factor(db, current_user, "document.submit", totp_code=request.totp_code, step_up_token=step_up_token)
@@ -1267,7 +1241,7 @@ async def get_pending_documents(
     if current_user.role == "USER":
         query = query.filter(DocumentAction.actor_id == current_user.id)
     elif current_user.role == "MANAGER":
-        query = query.join(Asset, DocumentAction.asset_id == Asset.id).filter(Asset.department == current_user.department)
+        query = query.join(Asset, DocumentAction.asset_id == Asset.id).filter(Asset.department.in_(access.manager_departments(current_user)))
         
     result = await db.execute(query.order_by(desc(DocumentAction.created_at)))
     return result.scalars().all()
@@ -1290,7 +1264,7 @@ async def get_pending_physical_assets(
     if current_user.role == "USER":
         query = query.filter(DocumentAction.actor_id == current_user.id)
     elif current_user.role == "MANAGER":
-        query = query.filter(Asset.department == current_user.department)
+        query = query.filter(Asset.department.in_(access.manager_departments(current_user)))
 
     result = await db.execute(query.order_by(desc(DocumentAction.created_at)))
     return result.scalars().all()
@@ -1330,9 +1304,8 @@ async def approve_document(
     if not asset:
         raise HTTPException(status_code=404, detail="Associated asset not found.")
 
-    if current_user.role == "MANAGER":
-        if asset.department != current_user.department:
-            raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
+    if not access.can_manage_asset(current_user, asset):
+        raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
 
 
     await mfa.require_factor(db, current_user, "asset.approve", totp_code=request.totp_code, step_up_token=step_up_token)
@@ -1573,7 +1546,7 @@ async def view_digital_document(
                 asset.department != current_user.department):
                 raise HTTPException(status_code=403, detail="Users can only view their own or department documents.")
     elif current_user.role == "MANAGER":
-        if asset.department != current_user.department:
+        if not access.can_manage_asset(current_user, asset) and asset.owner_id != current_user.id:
             raise HTTPException(status_code=403, detail="Managers can only view documents in their own department.")
 
     if not asset.metadata_cid:
@@ -1643,7 +1616,7 @@ async def get_document_view_logs(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found.")
 
-    if current_user.role == "MANAGER" and asset.department != current_user.department:
+    if current_user.role == "MANAGER" and not access.can_manage_asset(current_user, asset):
         raise HTTPException(status_code=403, detail="Managers can only view logs for their own department.")
 
     # Retrieve all VIEW actions for this asset
@@ -1816,11 +1789,8 @@ async def get_document_lineage(
     current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Fetch complete revision tree/history for a document."""
-    res = await db.execute(select(Asset).filter(Asset.serial_number == asset_serial))
-    asset = res.scalar_one_or_none()
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found.")
+    """Fetch complete revision tree/history for a document the caller may see."""
+    asset = await _visible_asset_or_404(db, current_user, serial=asset_serial)
 
     # Find root asset
     current = asset
@@ -1898,10 +1868,7 @@ async def verify_asset(
         str(asset.owner_id) == str(current_user.id) or
         (asset.custodian_id and str(asset.custodian_id) == str(current_user.id))
     )
-    is_in_department = (
-        asset.department and current_user.department and
-        asset.department == current_user.department
-    )
+    is_in_department = access.can_manage_asset(current_user, asset)
 
     # Detailed info visibility:
     # - ADMIN / AUDITOR: Always see full details
@@ -1920,8 +1887,8 @@ async def verify_asset(
             "department": asset.department,
             "file_hash": asset.file_hash,
             "metadata_cid": asset.metadata_cid,
-            "mac_address": asset.mac_address,
-            "device_unique_address": asset.device_unique_address,
+            "mac_address": asset.mac_address if access.can_see_sensitive_physical(current_user, asset) else None,
+            "device_unique_address": asset.device_unique_address if access.can_see_sensitive_physical(current_user, asset) else None,
             "location": asset.location,
             "owner_id": str(asset.owner_id),
             "custodian_id": str(asset.custodian_id) if asset.custodian_id else None,

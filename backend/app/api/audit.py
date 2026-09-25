@@ -12,15 +12,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.domain import AuditEvent, User
 from app.schemas.domain import AuditEventRead, AlertStatusUpdateRequest
-from app.api.dependencies import get_current_active_user
+from app.api.dependencies import get_onboarded_user
+from app.services import access
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/audit", tags=["audit"])
 
 
+async def _scoped_events_query(db: AsyncSession, user: User):
+    """AuditEvent query limited to what this role may read."""
+    query = select(AuditEvent)
+    if user.role in access.UNRESTRICTED_ROLES:
+        return query
+    own = or_(AuditEvent.actor_did == user.did, AuditEvent.target_did == user.did)
+    if user.role == "MANAGER":
+        depts = access.manager_departments(user)
+        dept_dids = select(User.did).where(User.department.in_(depts))
+        from app.models.domain import Asset
+        dept_serials = select(Asset.serial_number).where(Asset.department.in_(depts))
+        return query.where(or_(own, AuditEvent.actor_did.in_(dept_dids), AuditEvent.asset_serial.in_(dept_serials)))
+    return query.where(own)
+
+
 @router.get("/stats")
-async def get_audit_stats(db: AsyncSession = Depends(get_db)):
+async def get_audit_stats(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_onboarded_user)):
     """Return the compact risk summary consumed by the executive dashboard."""
+    if current_user.role == "USER":
+        raise HTTPException(status_code=403, detail="Not authorized to view audit statistics.")
     total_result = await db.execute(select(func.count(AuditEvent.id)))
     latest_result = await db.execute(
         select(AuditEvent.risk_label)
@@ -47,13 +65,14 @@ async def list_events(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_onboarded_user),
 ):
     """List audit events with extensive filters for wallet, role, risk label, alert status, and time/date range.
 
     These rows are written exclusively by the on-chain event indexer, never
     by API call handlers. They are the canonical, immutable audit trail.
     """
-    query = select(AuditEvent).order_by(desc(AuditEvent.created_at))
+    query = (await _scoped_events_query(db, current_user)).order_by(desc(AuditEvent.created_at))
 
     if role:
         query = query.join(User, AuditEvent.actor_did == User.did, isouter=True).filter(
@@ -100,10 +119,12 @@ async def list_events(
 async def update_alert_status(
     event_id: str,
     payload: AlertStatusUpdateRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Update the triage status of a security alert (Forward to Manager, Escalate to Admin, Dismiss, Resolve)."""
+    if current_user.role == "USER":
+        raise HTTPException(status_code=403, detail="Not authorized to triage security alerts.")
     try:
         uid = uuid.UUID(event_id)
     except ValueError:
@@ -132,10 +153,11 @@ async def update_alert_status(
 async def get_event_by_tx(
     tx_hash: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_onboarded_user),
 ):
-    """Look up a single audit event by transaction hash. 404 if not indexed."""
+    """Look up a single audit event by transaction hash. 404 if not indexed or out of scope."""
     result = await db.execute(
-        select(AuditEvent).filter(AuditEvent.tx_hash == tx_hash)
+        (await _scoped_events_query(db, current_user)).filter(AuditEvent.tx_hash == tx_hash)
     )
     event = result.scalar_one_or_none()
     if not event:
@@ -147,13 +169,17 @@ async def get_event_by_tx(
 async def get_user_permissions(
     wallet_address: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_onboarded_user),
 ):
     """Retrieve all active on-chain permission grant events for or by a specific user wallet."""
     from web3 import Web3
     try:
         clean_address = Web3.to_checksum_address(wallet_address).lower()
     except Exception:
-        clean_address = wallet_address.lower()
+        raise HTTPException(status_code=400, detail="Invalid wallet address")
+    target = (await db.execute(select(User).where(func.lower(User.wallet_address) == clean_address))).scalar_one_or_none()
+    if not target or not access.can_see_user(current_user, target):
+        raise HTTPException(status_code=403, detail="Not authorized for this identity.")
 
     # Query grants and revokes involving this user (either actor or target)
     query = (
