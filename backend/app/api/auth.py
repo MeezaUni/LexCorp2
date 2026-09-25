@@ -1,70 +1,70 @@
-"""Authentication endpoints: nonce generation + SIWE verification + JWT session + 2FA WebAuthn/TOTP."""
+"""Authentication endpoints.
 
-from datetime import datetime, timedelta
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Response, status, Body, Request
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-import base64
+Identity lifecycle:
+  Wallet provisioning (wallet signature + one-time 3-hour PIN)  -> setup session
+  Mandatory setup: Login TOTP 1 + Login Passkey 1               -> full session
+  Login: typed wallet address + (TOTP 1 OR Passkey 1)           -> full session
+  Step-up: TOTP 2 / Passkey 2 (view, submit), TOTP 3 / Passkey 3 (mint, approve,
+           modify, download, admin actions), each bound to one named action.
+
+Login factors are never reset self-service; users request admin assistance and an
+admin approves with Factor 3, which invalidates the login factors, revokes sessions
+and issues a new single-use provisioning PIN.
+"""
+
 import json
+import logging
 import uuid
-import hashlib
-import time
+from datetime import timedelta
+from typing import List, Optional
 
-from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_request_client_ip, get_admin_user
-from app.services import auth, vc, security
-from app.models.domain import User, WebAuthnCredential, AuditEvent
+import webauthn
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from pydantic import BaseModel
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from webauthn.helpers import base64url_to_bytes, bytes_to_base64url, parse_client_data_json
+from webauthn.helpers.structs import (
+    AuthenticatorAttachment,
+    AuthenticatorSelectionCriteria,
+    PublicKeyCredentialDescriptor,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+)
+
+from app.api.dependencies import (
+    get_admin_user,
+    get_current_user,
+    get_db,
+    get_request_client_ip,
+    get_setup_user,
+    get_step_up_token,
+    record_audit,
+)
 from app.core.config import settings
+from app.core.crypto import hash_pin, verify_pin
 from app.core.limiter import limiter
+from app.models.domain import User, WebAuthnCredential
+from app.services import auth, mfa, security, vc
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+_GENERIC_LOGIN_FAILURE = "Authentication failed. Check the wallet address and your Login Authenticator or Login Passkey."
+
+
+# ============================================================ Schemas
 
 class NonceResponse(BaseModel):
     nonce: str
-    message: str  # Pre-built SIWE message for frontend to sign
-
-# --- Reset Request Schemas ---
-class ResetRequestPayload(BaseModel):
-    wallet_address: str
-    reason: Optional[str] = "User requested admin reset assistance"
-
-class AdminResetApproveRequest(BaseModel):
-    totp_code: Optional[str] = None
-
-class ResetRequestResponse(BaseModel):
-    id: str
-    wallet_address: str
-    name: Optional[str] = None
-    department: Optional[str] = None
-    role: str
-    reset_requested: bool
-    pin_expires_at: Optional[datetime] = None
-
-# --- Import OTP Schema ---
-class VerifyImportOTPRequest(BaseModel):
-    wallet_address: str
-    pin: str
-
-# --- WebAuthn Schemas ---
-class WebAuthnRegistrationRequest(BaseModel):
-    device_name: Optional[str] = "Biometric Authenticator"
-    factor_scope: str = "login" # 'login', 'factor2', 'factor3'
-
-class WebAuthnRegistrationResponse(BaseModel):
-    options: dict
-
-class WebAuthnVerifyRequest(BaseModel):
-    credential_id: str
-    response: dict
-    device_name: str
-    factor_scope: str = "login"
+    message: str
 
 
-class LoginRequest(BaseModel):
+class ProvisionRequest(BaseModel):
     message: str
     signature: str
     nonce: str
+    pin: str
 
 
 class LoginResponse(BaseModel):
@@ -83,283 +83,283 @@ class PasskeyLoginOptionsRequest(BaseModel):
 
 class PasskeyLoginVerifyRequest(BaseModel):
     wallet_address: str
-    credential_id: str
     response: dict
+    credential_id: Optional[str] = None  # ignored; derived from response.rawId
 
 
-def _check_onboarding_completion(user: User):
-    """Mark onboarding as complete if all 3 TOTP factors are enabled."""
-    if user.is_totp_enabled and user.is_totp_factor2_enabled and user.is_totp_factor3_enabled:
-        user.onboarding_pending = False
+class TotpCodeRequest(BaseModel):
+    token: str
 
-def _login_response(user: User, token: str) -> LoginResponse:
-    return LoginResponse(
-        token=token,
-        user={
-            "wallet_address": user.wallet_address,
-            "did": user.did,
-            "role": user.role,
-            "is_active": user.is_active,
-            "onboarding_pending": user.onboarding_pending,
-            "is_totp_enabled": user.is_totp_enabled,
-            "is_totp_factor2_enabled": user.is_totp_factor2_enabled,
-            "is_totp_factor3_enabled": user.is_totp_factor3_enabled,
-        },
+
+class FactorManageRequest(BaseModel):
+    totp_code: Optional[str] = None
+    step_up_token: Optional[str] = None
+
+
+class StepUpTotpRequest(BaseModel):
+    action: str
+    code: str
+
+
+class StepUpOptionsRequest(BaseModel):
+    action: str
+
+
+class StepUpVerifyRequest(BaseModel):
+    response: dict
+    credential_id: Optional[str] = None  # ignored; derived from response.rawId
+
+
+class WebAuthnRegistrationRequest(BaseModel):
+    device_name: Optional[str] = "Biometric Authenticator"
+    factor_scope: str = "login"
+    totp_code: Optional[str] = None
+    step_up_token: Optional[str] = None
+
+
+class WebAuthnRegisterVerifyRequest(BaseModel):
+    response: dict
+    device_name: Optional[str] = "Biometric Authenticator"
+    factor_scope: str = "login"
+    credential_id: Optional[str] = None  # ignored
+
+
+class ResetRequestPayload(BaseModel):
+    reason: Optional[str] = "User requested admin reset assistance"
+
+
+class WalletResetRequestPayload(BaseModel):
+    message: str
+    signature: str
+    nonce: str
+    reason: Optional[str] = "User requested admin reset assistance"
+
+
+class AdminResetApproveRequest(BaseModel):
+    totp_code: Optional[str] = None
+    step_up_token: Optional[str] = None
+
+
+class ResetRequestResponse(BaseModel):
+    id: str
+    wallet_address: str
+    name: Optional[str] = None
+    department: Optional[str] = None
+    role: str
+    reset_requested: bool
+    reset_requested_at: Optional[str] = None
+    reset_reason: Optional[str] = None
+
+
+# ============================================================ Helpers
+
+def _user_payload(user: User, scope: str) -> dict:
+    return {
+        "wallet_address": user.wallet_address,
+        "did": user.did,
+        "name": user.name,
+        "department": user.department,
+        "role": user.role,
+        "is_active": user.is_active,
+        "onboarding_pending": user.onboarding_pending,
+        "session_scope": scope,
+        "is_totp_enabled": user.is_totp_enabled,
+        "is_totp_factor2_enabled": user.is_totp_factor2_enabled,
+        "is_totp_factor3_enabled": user.is_totp_factor3_enabled,
+    }
+
+
+async def _issue_session(
+    db: AsyncSession, user: User, request: Request, response: Response, method: str
+) -> LoginResponse:
+    """Start a new (single) session. Scope is full only when login setup is complete."""
+    complete = await mfa.login_setup_complete(db, user)
+    user.onboarding_pending = not complete
+    scope = auth.SCOPE_FULL if complete else auth.SCOPE_SETUP
+    user.session_version = (user.session_version or 0) + 1
+    user.last_activity_at = mfa.utcnow()
+    client_ip = get_request_client_ip(request)
+    await record_audit(
+        db, "AuthenticationSucceeded",
+        actor_did=user.did, target_did=user.did, client_ip=client_ip,
+        details={"method": method, "session_scope": scope},
     )
+    await db.commit()
+    token = auth.create_jwt(
+        user.wallet_address, user.did, user.role, user.session_version,
+        client_ip=client_ip, scope=scope,
+    )
+    response.set_cookie(
+        key="session", value=token, httponly=True, samesite="strict",
+        max_age=settings.JWT_EXPIRE_MINUTES * 60,
+    )
+    return LoginResponse(token=token, user=_user_payload(user, scope))
 
 
-async def _record_login_event(db: AsyncSession, user: User, method: str, client_ip: str) -> None:
-    """Record successful authentication, including session replacement logins."""
-    tx_hash = "0x" + hashlib.sha256(f"auth:{user.wallet_address}:{method}:{time.time_ns()}".encode()).hexdigest()
-    db.add(AuditEvent(
-        event_type="AuthenticationSucceeded",
-        tx_hash=tx_hash,
-        block_number=0,
-        actor_did=user.did,
-        target_did=user.did,
-        asset_serial=method,
-        client_ip=client_ip,
-    ))
+async def _audit_failure(db: AsyncSession, event: str, request: Request, wallet: Optional[str], reason: str) -> None:
+    await record_audit(
+        db, event,
+        actor_did=auth.expected_did(wallet) if wallet else None,
+        client_ip=get_request_client_ip(request),
+        risk_label="MEDIUM", risk_score=0.5,
+        details={"reason": reason},
+    )
     await db.commit()
 
+
+async def _find_user(db: AsyncSession, wallet_address: str) -> Optional[User]:
+    return (await db.execute(
+        select(User).where(func.lower(User.wallet_address) == (wallet_address or "").strip().lower())
+    )).scalar_one_or_none()
+
+
+def _usable(user: Optional[User]) -> bool:
+    return bool(user and user.is_active and user.revoked_at is None)
+
+
+async def _consume_siwe(db: AsyncSession, message: str, signature: str, nonce: str) -> str:
+    """Verify the wallet signature over the exact server-built message and consume its nonce."""
+    from web3 import Web3
+    signer = auth.recover_signer(message, signature)
+    if message != auth.build_siwe_message(Web3.to_checksum_address(signer), nonce):
+        raise auth.AuthError("Signed message does not match the issued challenge")
+    if not await mfa.consume_challenge(db, "SIWE", nonce, wallet_address=signer):
+        raise auth.AuthError("Nonce expired, already used, or issued for a different wallet")
+    return signer
+
+
+# ============================================================ Provisioning (first-time wallet import)
 
 @router.post("/nonce", response_model=NonceResponse)
-@limiter.limit("5/minute")
-async def get_nonce(address: str, request: Request):
-    """Generate a fresh nonce for wallet authentication.
-    Returns a pre-built SIWE message that the frontend signs.
-    """
-    if not address:
-        raise HTTPException(status_code=400, detail="Wallet address required")
-
-    nonce = auth.generate_nonce()
-    auth.store_nonce(address, nonce)
-
-    message = (
-        f"lexcorp-sih.example.com wants you to sign in with your Ethereum account.\n"
-        f"Wallet: {address}\n"
-        f"Nonce: {nonce}\n"
-        f"URI: https://lexcorp-sih.example.com\n"
-        f"Version: 1\n"
-        f"Chain ID: 13371"
-    )
-
-    return NonceResponse(nonce=nonce, message=message)
-
-
-from datetime import datetime
-from sqlalchemy import select
-
-@router.post("/otp/verify-import")
-@limiter.limit("5/minute")
-async def verify_import_otp(
-    req: VerifyImportOTPRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify a strict 3-hour single-use OTP for wallet import."""
-    result = await db.execute(select(User).filter_by(wallet_address=req.wallet_address.lower()))
-    user = result.scalars().first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if not user.one_time_pin or not user.pin_expires_at:
-        raise HTTPException(status_code=400, detail="No active import PIN for this user")
-
-    if user.pin_used:
-        raise HTTPException(status_code=400, detail="Import PIN has already been used")
-
-    if datetime.utcnow() > user.pin_expires_at:
-        raise HTTPException(status_code=400, detail="Import PIN has expired")
-
-    if user.one_time_pin != req.pin:
-        raise HTTPException(status_code=401, detail="Invalid import PIN")
-
-    # Mark used
-    user.pin_used = True
-    await db.commit()
-
-    return {"status": "success", "message": "PIN verified successfully. Wallet import approved."}
-
-
-@router.post("/vc/issue")
-async def issue_kyc_vc(subject_did: str, db: AsyncSession = Depends(get_db)):
-    """Issue a W3C-compliant Verifiable Credential for KYC verification."""
-    issuer_did = f"did:ethr:{settings.CHAIN_ID}:0x0000000000000000000000000000000000000000"
-    vc_jwt, vc_model = vc.create_kyc_vc(issuer_did, subject_did)
+@limiter.limit("10/minute")
+async def get_nonce(address: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """Issue a single-use signing challenge bound to this wallet address."""
     try:
-        from sqlalchemy import select
-        res = await db.execute(select(User).filter(User.did == subject_did))
-        user = res.scalar_one_or_none()
-        if user:
-            vc_model.user_id = user.id
-            db.add(vc_model)
-            await db.commit()
+        from web3 import Web3
+        checksummed = Web3.to_checksum_address(address)
     except Exception:
-        pass
-    return {"vc_jwt": vc_jwt, "subject_did": subject_did, "type": "KYCCredential"}
+        raise HTTPException(status_code=400, detail="Invalid wallet address")
+    nonce = auth.generate_nonce()
+    await mfa.create_challenge(
+        db, "SIWE", wallet_address=checksummed, challenge=nonce,
+        ttl_seconds=settings.NONCE_EXPIRY_SECONDS,
+    )
+    await db.commit()
+    return NonceResponse(nonce=nonce, message=auth.build_siwe_message(checksummed, nonce))
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/provision", response_model=LoginResponse)
+@router.post("/login", response_model=LoginResponse, include_in_schema=False)
 @limiter.limit("5/minute")
-async def login(login_req: LoginRequest, response: Response, request: Request, db: AsyncSession = Depends(get_db)):
-    """Verify SIWE signature and return JWT session token.
-    On first login, automatically issues a DID to the user.
-    """
+async def provision_wallet(
+    req: ProvisionRequest, request: Request, response: Response, db: AsyncSession = Depends(get_db)
+):
+    """First-time wallet import: proves possession of the wallet key AND a valid
+    admin-issued single-use PIN. Returns a setup-only session."""
     try:
-        user = await auth.verify_siwe_message(
-            login_req.message,
-            login_req.signature,
-            login_req.nonce,
-            db,
-        )
+        signer = await _consume_siwe(db, req.message, req.signature, req.nonce)
     except auth.AuthError as e:
+        await db.commit()
+        await _audit_failure(db, "WALLET_PROVISIONING_FAILED", request, None, "signature/nonce")
         raise HTTPException(status_code=401, detail=str(e))
 
-    user.session_version = (user.session_version or 0) + 1
-    await db.commit()
-    await _record_login_event(db, user, "PASSWORD", get_request_client_ip(request))
-    token = auth.create_jwt(
-        user.wallet_address,
-        user.did,
-        user.role,
-        user.session_version,
-        client_ip=get_request_client_ip(request)
+    user = await _find_user(db, signer)
+    if not _usable(user):
+        await _audit_failure(db, "WALLET_PROVISIONING_FAILED", request, signer, "unknown or disabled identity")
+        raise HTTPException(status_code=401, detail="This wallet is not provisioned in LexCorp or has been revoked. Contact your administrator.")
+
+    now = mfa.utcnow()
+    if not user.pin_hash or user.pin_expires_at is None:
+        await _audit_failure(db, "WALLET_PROVISIONING_FAILED", request, signer, "no active PIN")
+        raise HTTPException(status_code=400, detail="No active provisioning PIN for this identity. Ask your administrator for a new PIN.")
+    if user.pin_used:
+        await _audit_failure(db, "WALLET_PROVISIONING_FAILED", request, signer, "PIN reuse")
+        raise HTTPException(status_code=400, detail="This provisioning PIN has already been used. Ask your administrator for a new PIN.")
+    if now > user.pin_expires_at:
+        await _audit_failure(db, "WALLET_PROVISIONING_FAILED", request, signer, "PIN expired")
+        raise HTTPException(status_code=400, detail="This provisioning PIN has expired (valid for 3 hours). Ask your administrator for a new PIN.")
+    if not verify_pin(req.pin.strip(), user.pin_hash):
+        await _audit_failure(db, "WALLET_PROVISIONING_FAILED", request, signer, "invalid PIN")
+        raise HTTPException(status_code=401, detail="Invalid provisioning PIN.")
+
+    # Atomic single-use consumption: a concurrent second use finds pin_used already true.
+    consumed = (await db.execute(
+        update(User)
+        .where(User.id == user.id, User.pin_used.is_(False), User.pin_hash == user.pin_hash)
+        .values(pin_used=True, pin_hash=None)
+        .returning(User.id)
+    )).scalar_one_or_none()
+    if consumed is None:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="This provisioning PIN has already been used.")
+    await db.refresh(user)
+    await record_audit(db, "WALLET_PROVISIONED", actor_did=user.did, target_did=user.did,
+                       client_ip=get_request_client_ip(request))
+    return await _issue_session(db, user, request, response, "WALLET_PROVISIONING")
+
+
+@router.post("/otp/verify-import", include_in_schema=False)
+async def verify_import_otp_removed():
+    raise HTTPException(
+        status_code=410,
+        detail="Removed: the PIN is now verified together with the wallet signature at POST /api/auth/provision.",
     )
 
-    response.set_cookie(
-        key="session",
-        value=token,
-        httponly=True,
-        samesite="lax",
-        max_age=1800,  # 30 minutes
-    )
 
-    return _login_response(user, token)
-
+# ============================================================ Login (TOTP 1 or Passkey 1)
 
 @router.post("/login/totp", response_model=LoginResponse)
 @limiter.limit("5/minute")
 async def login_with_totp(totp_req: TotpLoginRequest, response: Response, request: Request, db: AsyncSession = Depends(get_db)):
-    """Authenticate with a registered mobile authenticator without wallet password."""
-    from sqlalchemy import func, select
-
-    result = await db.execute(select(User).where(func.lower(User.wallet_address) == totp_req.wallet_address.lower()))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_active or not user.is_totp_enabled or not user.totp_secret:
-        raise HTTPException(status_code=401, detail="Mobile authenticator is not enabled for this wallet.")
-    if not security.verify_totp(user.totp_secret, totp_req.token):
-        raise HTTPException(status_code=401, detail="Invalid or expired mobile authenticator code.")
-
-    user.session_version = (user.session_version or 0) + 1
-    await db.commit()
-    await _record_login_event(db, user, "MOBILE_AUTHENTICATOR", get_request_client_ip(request))
-    token = auth.create_jwt(
-        user.wallet_address,
-        user.did,
-        user.role,
-        user.session_version,
-        client_ip=get_request_client_ip(request)
-    )
-    response.set_cookie(key="session", value=token, httponly=True, samesite="lax", max_age=1800)
-    return _login_response(user, token)
+    user = await _find_user(db, totp_req.wallet_address)
+    if not _usable(user) or not user.is_totp_enabled or not mfa.verify_totp_code(user, "login", totp_req.token):
+        await _audit_failure(db, "AuthenticationFailed", request, totp_req.wallet_address.strip().lower() or None, "TOTP 1")
+        raise HTTPException(status_code=401, detail=_GENERIC_LOGIN_FAILURE)
+    return await _issue_session(db, user, request, response, "TOTP1")
 
 
 @router.post("/login/passkey/options")
-@limiter.limit("5/minute")
+@limiter.limit("10/minute")
 async def get_passkey_login_options(options_req: PasskeyLoginOptionsRequest, request: Request, db: AsyncSession = Depends(get_db)):
-    """Create a WebAuthn challenge for passwordless passkey login."""
-    from sqlalchemy import func, select
-    import webauthn
-
-    result = await db.execute(select(User).where(func.lower(User.wallet_address) == options_req.wallet_address.lower()))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="Wallet identity not found.")
-
-    credentials = (await db.execute(select(WebAuthnCredential).where(
-        WebAuthnCredential.user_id == user.id,
-        WebAuthnCredential.is_active.is_(True),
-    ))).scalars().all()
-    if not credentials:
-        raise HTTPException(status_code=400, detail="No active passkey is registered for this wallet.")
-
-    # Validate origin and use static RP_ID
-    origin = request.headers.get("origin")
-    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
-        raise HTTPException(status_code=400, detail="Invalid origin")
-
-    rp_id = settings.RP_ID
-    options = security.generate_webauthn_login_options(
-        [bytes.fromhex(credential.credential_id) for credential in credentials],
-        rp_id=rp_id,
-    )
-    options_json = json.loads(webauthn.options_to_json(options))
-    auth.store_challenge(str(user.id), "login", options_json["challenge"])
-    return {"options": options_json}
+    user = await _find_user(db, options_req.wallet_address)
+    if not _usable(user):
+        raise HTTPException(status_code=401, detail=_GENERIC_LOGIN_FAILURE)
+    options = await mfa.passkey_options(db, user, "login", action="session.login")
+    await db.commit()
+    return {"options": options}
 
 
 @router.post("/login/passkey/verify", response_model=LoginResponse)
 @limiter.limit("5/minute")
 async def login_with_passkey(passkey_req: PasskeyLoginVerifyRequest, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
-    """Verify a WebAuthn assertion and issue a passwordless session."""
-    from sqlalchemy import func, select
-    import webauthn
-    from webauthn.helpers import base64url_to_bytes
-
-    result = await db.execute(select(User).where(func.lower(User.wallet_address) == passkey_req.wallet_address.lower()))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="Wallet identity not found.")
-
-    credential = (await db.execute(select(WebAuthnCredential).where(
-        WebAuthnCredential.user_id == user.id,
-        WebAuthnCredential.credential_id == passkey_req.credential_id,
-        WebAuthnCredential.is_active.is_(True),
-    ))).scalar_one_or_none()
-    challenge = auth.get_challenge(str(user.id), "login")
-    if not credential or not challenge:
-        raise HTTPException(status_code=401, detail="Passkey challenge or credential not found.")
-
-    origin = request.headers.get("origin")
-    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
-        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
-
-    rp_id = settings.RP_ID
-
+    user = await _find_user(db, passkey_req.wallet_address)
+    if not _usable(user):
+        raise HTTPException(status_code=401, detail=_GENERIC_LOGIN_FAILURE)
     try:
-        verification = webauthn.verify_authentication_response(
-            credential=passkey_req.response,
-            expected_challenge=base64url_to_bytes(challenge),
-            expected_origin=origin,
-            expected_rp_id=rp_id,
-            credential_public_key=bytes.fromhex(credential.public_key),
-            credential_current_sign_count=credential.sign_count,
-            require_user_verification=False,
-        )
-    except Exception as error:
-        raise HTTPException(status_code=401, detail=f"Passkey verification failed: {error}")
+        await mfa.verify_passkey_assertion(db, user, "login", passkey_req.response, request.headers.get("origin"))
+    except HTTPException as e:
+        await db.commit()
+        await _audit_failure(db, "AuthenticationFailed", request, user.wallet_address, f"Passkey 1: {e.detail}")
+        raise
+    return await _issue_session(db, user, request, response, "PASSKEY1")
 
-    credential.sign_count = verification.new_sign_count
-    await db.commit()
+
+@router.post("/logout")
+async def logout(response: Response, request: Request, user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
     user.session_version = (user.session_version or 0) + 1
+    await record_audit(db, "LOGOUT", actor_did=user.did, client_ip=get_request_client_ip(request))
     await db.commit()
-    await _record_login_event(db, user, "PASSKEY", get_request_client_ip(request))
-    token = auth.create_jwt(
-        user.wallet_address,
-        user.did,
-        user.role,
-        user.session_version,
-        client_ip=get_request_client_ip(request)
-    )
-    response.set_cookie(key="session", value=token, httponly=True, samesite="lax", max_age=1800)
-    return _login_response(user, token)
+    response.delete_cookie("session")
+    return {"message": "Signed out. Session revoked."}
 
 
 @router.get("/me")
-async def get_current_user_profile(user: User = Depends(get_current_active_user)):
-    """Get current authenticated user's profile and security settings."""
+async def get_current_user_profile(user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
+    """Profile and security-setup status. Reachable with a setup-only session."""
+    creds = (await db.execute(select(WebAuthnCredential).where(
+        WebAuthnCredential.user_id == user.id, WebAuthnCredential.is_active.is_(True)
+    ))).scalars().all()
+    scopes = {c.factor_scope for c in creds}
     return {
         "id": str(user.id),
         "wallet_address": user.wallet_address,
@@ -373,790 +373,427 @@ async def get_current_user_profile(user: User = Depends(get_current_active_user)
         "is_totp_enabled": user.is_totp_enabled,
         "is_totp_factor2_enabled": user.is_totp_factor2_enabled,
         "is_totp_factor3_enabled": user.is_totp_factor3_enabled,
-        "reset_requested": user.reset_requested or False
+        "has_login_passkey": "login" in scopes,
+        "has_factor2_passkey": "factor2" in scopes,
+        "has_factor3_passkey": "factor3" in scopes,
+        "reset_requested": bool(user.reset_requested),
     }
 
 
-# --- TOTP (RFC 6238) Setup & Verification ---
+# ============================================================ TOTP enrollment
+
+def _totp_purpose(path_factor: Optional[str]) -> str:
+    return {None: "login", "factor2": "factor2", "factor3": "factor3"}[path_factor]
+
+
+async def _totp_setup(user: User, purpose: str, db: AsyncSession) -> dict:
+    if mfa.totp_enabled(user, purpose):
+        if purpose == "login":
+            raise HTTPException(status_code=403, detail="Login Authenticator is already configured. Use REQUEST ADMIN ASSISTANCE to reset it.")
+        raise HTTPException(status_code=400, detail=f"{mfa.PURPOSE_LABELS[purpose]} TOTP is already enabled.")
+    secret = security.generate_totp_secret()
+    issuer = {"login": "LexCorp - Login (Factor 1)", "factor2": "LexCorp - Factor 2 (View/Submission)",
+              "factor3": "LexCorp - Factor 3 (Mint/Approve/Modify)"}[purpose]
+    mfa.set_totp_secret(user, purpose, secret)
+    await db.commit()
+    # Returned once to the enrolling user only, for their authenticator app. Never logged.
+    return {"secret": secret, "uri": security.get_totp_uri(user.name or user.wallet_address, secret, issuer_name=issuer)}
+
+
+async def _totp_verify(user: User, purpose: str, code: str, request: Request, response: Response, db: AsyncSession) -> dict:
+    if not mfa.get_totp_secret(user, purpose):
+        raise HTTPException(status_code=400, detail="TOTP setup not initiated.")
+    if mfa.totp_enabled(user, purpose):
+        raise HTTPException(status_code=400, detail="TOTP is already enabled.")
+    if not mfa.verify_totp_code(user, purpose, code, require_enabled=False):
+        raise HTTPException(status_code=401, detail="Invalid or expired TOTP code. Check your device clock and use a fresh code.")
+    _, enabled_field, _ = mfa._TOTP_FIELDS[purpose]
+    setattr(user, enabled_field, True)
+    await record_audit(db, "TOTP_ENROLLED", actor_did=user.did, client_ip=get_request_client_ip(request),
+                       details={"purpose": purpose})
+    await db.commit()
+    result = {"message": f"{mfa.PURPOSE_LABELS[purpose]} TOTP enabled.", "onboarding_pending": user.onboarding_pending}
+    if purpose == "login" and user.onboarding_pending and await mfa.login_setup_complete(db, user):
+        session = await _issue_session(db, user, request, response, "SETUP_COMPLETE")
+        result.update({"onboarding_pending": False, "setup_complete": True, "token": session.token, "user": session.user})
+    return result
+
 
 @router.post("/2fa/setup")
 @limiter.limit("5/minute")
-async def setup_totp(request: Request, user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Generate a new TOTP secret for the user to scan via Google Authenticator."""
-    if user.is_totp_enabled:
-        raise HTTPException(status_code=400, detail="TOTP 2FA is already enabled.")
-
-    secret = security.generate_totp_secret()
-    uri = security.get_totp_uri(user.name or user.wallet_address, secret)
-
-    user.totp_secret = secret
-    await db.commit()
-
-    return {"secret": secret, "uri": uri}
+async def setup_totp(request: Request, user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
+    return await _totp_setup(user, "login", db)
 
 
 @router.post("/2fa/verify")
 @limiter.limit("5/minute")
-async def verify_totp_setup(request: Request, token: str = Body(..., embed=True), user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Verify the TOTP code to finalize tracking."""
-    import logging
-    logger = logging.getLogger(__name__)
-
-    if not user.totp_secret:
-        raise HTTPException(status_code=400, detail="TOTP setup not initiated.")
-
-    logger.info(f"TOTP verification attempt for user {user.wallet_address}")
-
-    if security.verify_totp(user.totp_secret, token):
-        user.is_totp_enabled = True
-
-        # Check if user has an active login passkey
-        from sqlalchemy import select
-        res = await db.execute(
-            select(WebAuthnCredential).filter(
-                WebAuthnCredential.user_id == user.id,
-                WebAuthnCredential.is_active.is_(True),
-                WebAuthnCredential.factor_scope == "login"
-            )
-        )
-        has_login_passkey = res.scalars().first() is not None
-
-        _check_onboarding_completion(user)
-        if has_login_passkey:
-            user.onboarding_pending = False
-
-        await db.commit()
-        logger.info(f"TOTP successfully enabled for user {user.wallet_address}")
-        return {"message": "TOTP successfully enabled.", "onboarding_pending": user.onboarding_pending}
-
-    raise HTTPException(status_code=401, detail="Invalid or expired TOTP code. Please ensure your device clock is synchronized and try with a fresh code.")
+async def verify_totp_setup(request: Request, response: Response, token: str = Body(..., embed=True),
+                            user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
+    return await _totp_verify(user, "login", token, request, response, db)
 
 
-@router.post("/2fa/validate")
+@router.post("/2fa/{factor}/setup")
 @limiter.limit("5/minute")
-async def validate_totp(request: Request, token: str = Body(..., embed=True), user: User = Depends(get_current_active_user)):
-    """Validate a 2FA code during high-security actions without modifying state."""
-    import logging
-    logger = logging.getLogger(__name__)
+async def setup_totp_factor(factor: str, request: Request, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if factor not in ("factor2", "factor3"):
+        raise HTTPException(status_code=404, detail="Unknown factor")
+    if user.onboarding_pending:
+        raise HTTPException(status_code=403, detail="Complete login setup first.")
+    return await _totp_setup(user, factor, db)
 
-    if not user.is_totp_enabled or not user.totp_secret:
-        raise HTTPException(status_code=400, detail="TOTP is not enabled for this user.")
 
-    logger.info(f"TOTP validation attempt for user {user.wallet_address}")
+@router.post("/2fa/{factor}/verify")
+@limiter.limit("5/minute")
+async def verify_totp_factor(factor: str, request: Request, response: Response, token: str = Body(..., embed=True),
+                             user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if factor not in ("factor2", "factor3"):
+        raise HTTPException(status_code=404, detail="Unknown factor")
+    return await _totp_verify(user, factor, token, request, response, db)
 
-    if security.verify_totp(user.totp_secret, token):
-        return {"valid": True}
 
-    raise HTTPException(status_code=401, detail="Invalid or expired TOTP code. Please ensure your device clock is synchronized and try with a fresh code.")
+_ADMIN_ASSIST = "Login factors cannot be reset self-service. Use REQUEST ADMIN ASSISTANCE; an administrator will re-provision your identity."
 
 
 @router.post("/2fa/disable")
-async def disable_totp(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Disable mobile authenticator authentication for the current user."""
-    user.is_totp_enabled = False
-    user.totp_secret = None
-    await db.commit()
-    return {"message": "Mobile authenticator disabled.", "is_totp_enabled": False}
-
-
 @router.post("/2fa/reset")
-async def reset_totp(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Clear the mobile authenticator so a new device can be enrolled."""
-    user.is_totp_enabled = False
-    user.totp_secret = None
-    await db.commit()
-    return {"message": "Mobile authenticator reset.", "is_totp_enabled": False}
+async def login_totp_reset_blocked(user: User = Depends(get_setup_user)):
+    raise HTTPException(status_code=403, detail=_ADMIN_ASSIST)
 
 
-# --- Factor 2 TOTP (View / Submission Factor) ---
-
-@router.post("/2fa/factor2/setup")
-@limiter.limit("5/minute")
-async def setup_totp_factor2(request: Request, user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Generate a new Factor 2 TOTP secret for document view & submission authorizations."""
-    if user.is_totp_factor2_enabled:
-        raise HTTPException(status_code=400, detail="Factor 2 (View/Submission) TOTP is already enabled.")
-
-    secret = security.generate_totp_secret()
-    uri = security.get_totp_uri(
-        user.name or user.wallet_address,
-        secret,
-        issuer_name="LexCorp - Factor 2 (View/Submission)"
-    )
-
-    user.totp_factor2_secret = secret
-    await db.commit()
-
-    return {"secret": secret, "uri": uri}
-
-
-@router.post("/2fa/factor2/verify")
-@limiter.limit("5/minute")
-async def verify_totp_factor2_setup(
+@router.post("/2fa/{factor}/disable")
+@router.post("/2fa/{factor}/reset")
+async def reset_totp_factor(
+    factor: str,
     request: Request,
-    token: str = Body(..., embed=True),
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    body: FactorManageRequest = Body(default=FactorManageRequest()),
+    step_up_header: Optional[str] = Depends(get_step_up_token),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Verify Factor 2 TOTP code to finalize enrollment."""
-    if not user.totp_factor2_secret:
-        raise HTTPException(status_code=400, detail="Factor 2 TOTP setup not initiated.")
+    """Reset Factor 2 / Factor 3 TOTP. Requires a step-up with an existing factor of the
+    same purpose, so a login session alone can never replace a higher factor."""
+    if factor not in ("factor2", "factor3"):
+        raise HTTPException(status_code=404, detail="Unknown factor")
+    await mfa.require_factor(db, user, f"{factor}.manage", totp_code=body.totp_code,
+                             step_up_token=body.step_up_token or step_up_header)
+    mfa.set_totp_secret(user, factor, None)
+    await record_audit(db, "TOTP_RESET", actor_did=user.did, client_ip=get_request_client_ip(request),
+                       details={"purpose": factor})
+    await db.commit()
+    return {"message": f"{mfa.PURPOSE_LABELS[factor]} TOTP reset."}
 
-    if security.verify_totp(user.totp_factor2_secret, token):
-        user.is_totp_factor2_enabled = True
-        _check_onboarding_completion(user)
-        await db.commit()
-        return {"message": "Factor 2 (View/Submission) TOTP successfully enabled.", "is_totp_factor2_enabled": True, "onboarding_pending": user.onboarding_pending}
 
-    raise HTTPException(status_code=401, detail="Invalid or expired Factor 2 TOTP code. Please verify your device clock.")
+# ============================================================ Step-up (Factor 2 / Factor 3)
 
-
-@router.post("/2fa/factor2/validate")
+@router.post("/step-up/totp")
 @limiter.limit("10/minute")
-async def validate_totp_factor2(
-    request: Request,
-    token: str = Body(..., embed=True),
-    user: User = Depends(get_current_active_user)
-):
-    """Validate a Factor 2 TOTP code before allowing document view or submission."""
-    if not user.is_totp_factor2_enabled or not user.totp_factor2_secret:
-        raise HTTPException(status_code=400, detail="Factor 2 TOTP is not enabled for this user.")
-
-    if security.verify_totp(user.totp_factor2_secret, token):
-        return {"valid": True}
-
-    raise HTTPException(status_code=401, detail="Invalid or expired Factor 2 TOTP code.")
-
-
-@router.post("/2fa/factor2/disable")
-async def disable_totp_factor2(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Disable Factor 2 TOTP for the current user."""
-    user.is_totp_factor2_enabled = False
-    user.totp_factor2_secret = None
+async def step_up_with_totp(req: StepUpTotpRequest, request: Request, user: User = Depends(get_current_user),
+                            db: AsyncSession = Depends(get_db)):
+    """Exchange a purpose TOTP code for a single-use step-up token bound to one action."""
+    purpose = mfa.ACTION_PURPOSE.get(req.action)
+    if not purpose:
+        raise HTTPException(status_code=400, detail="Unknown action")
+    if not mfa.verify_totp_code(user, purpose, req.code):
+        await _audit_failure(db, "STEP_UP_FAILED", request, user.wallet_address, f"{purpose} TOTP for {req.action}")
+        raise HTTPException(status_code=401, detail=f"Invalid {mfa.PURPOSE_LABELS[purpose]} TOTP code.")
+    grant = await mfa.issue_step_up(db, user, purpose, req.action, "TOTP")
     await db.commit()
-    return {"message": "Factor 2 (View/Submission) TOTP disabled.", "is_totp_factor2_enabled": False}
+    return grant
 
 
-@router.post("/2fa/factor2/reset")
-async def reset_totp_factor2(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Clear Factor 2 TOTP secret for re-enrollment."""
-    user.is_totp_factor2_enabled = False
-    user.totp_factor2_secret = None
-    await db.commit()
-    return {"message": "Factor 2 TOTP reset.", "is_totp_factor2_enabled": False}
+# ============================================================ Passkey registration
 
-
-# --- Factor 3 TOTP (Mint / Approval / Revision Factor) ---
-
-@router.post("/2fa/factor3/setup")
-@limiter.limit("5/minute")
-async def setup_totp_factor3(request: Request, user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Generate a new Factor 3 TOTP secret for mint, approval, and revision authorizations."""
-    if user.is_totp_factor3_enabled:
-        raise HTTPException(status_code=400, detail="Factor 3 (Mint/Approval/Revision) TOTP is already enabled.")
-
-    secret = security.generate_totp_secret()
-    uri = security.get_totp_uri(
-        user.name or user.wallet_address,
-        secret,
-        issuer_name="LexCorp - Factor 3 (Mint/Approve/Revise)"
-    )
-
-    user.totp_factor3_secret = secret
-    await db.commit()
-
-    return {"secret": secret, "uri": uri}
-
-
-@router.post("/2fa/factor3/verify")
-@limiter.limit("5/minute")
-async def verify_totp_factor3_setup(
-    request: Request,
-    token: str = Body(..., embed=True),
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify Factor 3 TOTP code to finalize enrollment."""
-    if not user.totp_factor3_secret:
-        raise HTTPException(status_code=400, detail="Factor 3 TOTP setup not initiated.")
-
-    if security.verify_totp(user.totp_factor3_secret, token):
-        user.is_totp_factor3_enabled = True
-        _check_onboarding_completion(user)
-        await db.commit()
-        return {"message": "Factor 3 (Mint/Approval/Revision) TOTP successfully enabled.", "is_totp_factor3_enabled": True, "onboarding_pending": user.onboarding_pending}
-
-    raise HTTPException(status_code=401, detail="Invalid or expired Factor 3 TOTP code. Please verify your device clock.")
-
-
-@router.post("/2fa/factor3/validate")
-@limiter.limit("10/minute")
-async def validate_totp_factor3(
-    request: Request,
-    token: str = Body(..., embed=True),
-    user: User = Depends(get_current_active_user)
-):
-    """Validate a Factor 3 TOTP code before allowing mint, approval, or revision."""
-    if not user.is_totp_factor3_enabled or not user.totp_factor3_secret:
-        raise HTTPException(status_code=400, detail="Factor 3 TOTP is not enabled for this user.")
-
-    if security.verify_totp(user.totp_factor3_secret, token):
-        return {"valid": True}
-
-    raise HTTPException(status_code=401, detail="Invalid or expired Factor 3 TOTP code.")
-
-
-@router.post("/2fa/factor3/disable")
-async def disable_totp_factor3(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Disable Factor 3 TOTP for the current user."""
-    user.is_totp_factor3_enabled = False
-    user.totp_factor3_secret = None
-    await db.commit()
-    return {"message": "Factor 3 (Mint/Approval/Revision) TOTP disabled.", "is_totp_factor3_enabled": False}
-
-
-@router.post("/2fa/factor3/reset")
-async def reset_totp_factor3(user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_db)):
-    """Clear Factor 3 TOTP secret for re-enrollment."""
-    user.is_totp_factor3_enabled = False
-    user.totp_factor3_secret = None
-    await db.commit()
-    return {"message": "Factor 3 TOTP reset.", "is_totp_factor3_enabled": False}
-
-
-# --- WebAuthn (Passkeys / Biometrics) ---
-
-@router.post("/webauthn/register/options", response_model=WebAuthnRegistrationResponse)
+@router.post("/webauthn/register/options")
 @limiter.limit("5/minute")
 async def get_webauthn_registration_options(
     reg_req: WebAuthnRegistrationRequest,
     request: Request,
-    user: User = Depends(get_current_active_user)
+    step_up_header: Optional[str] = Depends(get_step_up_token),
+    user: User = Depends(get_setup_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Generate options to start WebAuthn registration."""
-    # Explicit RP ID from config
-    rp_id = settings.RP_ID
+    scope = reg_req.factor_scope
+    if scope not in mfa.PURPOSES:
+        raise HTTPException(status_code=400, detail="factor_scope must be login, factor2 or factor3")
+    existing = await mfa.scoped_credentials(db, user, scope)
+    if scope == "login":
+        if existing:
+            raise HTTPException(status_code=403, detail="Login Passkey is already configured. " + _ADMIN_ASSIST)
+    else:
+        if user.onboarding_pending:
+            raise HTTPException(status_code=403, detail="Complete login setup (TOTP 1 + Passkey 1) first.")
+        if existing or mfa.totp_enabled(user, scope):
+            # Adding a credential to an already-protected purpose needs that purpose's factor.
+            await mfa.require_factor(db, user, f"{scope}.manage", totp_code=reg_req.totp_code,
+                                     step_up_token=reg_req.step_up_token or step_up_header)
 
-    options = security.generate_webauthn_registration_options(
-        f"{user.id}_{reg_req.factor_scope}",
-        user.name or user.wallet_address,
-        user.wallet_address,
-        rp_id=rp_id,
-        factor_scope=reg_req.factor_scope
+    label = mfa.PURPOSE_LABELS[scope]
+    options = webauthn.generate_registration_options(
+        rp_id=settings.RP_ID,
+        rp_name="LexCorp SIH26125",
+        user_id=f"{user.id}_{scope}".encode(),
+        user_name=f"{user.wallet_address} ({label})",
+        user_display_name=f"{user.name or user.wallet_address} [{label}]",
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            authenticator_attachment=AuthenticatorAttachment.PLATFORM,
+            user_verification=UserVerificationRequirement.REQUIRED,
+            resident_key=ResidentKeyRequirement.REQUIRED,
+        ),
+        exclude_credentials=[PublicKeyCredentialDescriptor(id=bytes.fromhex(c.credential_id)) for c in existing],
     )
-
-    import webauthn
     options_json = json.loads(webauthn.options_to_json(options))
-    auth.store_challenge(str(user.id), "registration", options_json["challenge"])
-
+    await mfa.create_challenge(db, "WEBAUTHN_REG", user_id=user.id, purpose=scope, challenge=options_json["challenge"])
+    await db.commit()
     return {"options": options_json}
-
-class WebAuthnLoginOptionsResponse(BaseModel):
-    options: dict
-
-class WebAuthnLoginVerifyRequest(BaseModel):
-    credential_id: str
-    response: dict
-
-@router.post("/webauthn/login/options", response_model=WebAuthnLoginOptionsResponse)
-async def get_webauthn_login_options(
-    req: Request,
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Generate options to start WebAuthn authentication (login) for 2FA/step-up."""
-    from sqlalchemy import select
-    res = await db.execute(select(WebAuthnCredential).filter(WebAuthnCredential.user_id == user.id))
-    creds = res.scalars().all()
-    if not creds:
-        raise HTTPException(status_code=400, detail="No WebAuthn credentials registered for this user.")
-
-    # Parse hex credential IDs back to bytes
-    cred_ids = [bytes.fromhex(c.credential_id) for c in creds]
-    rp_id = settings.RP_ID
-
-    options = security.generate_webauthn_login_options(cred_ids, rp_id=rp_id)
-
-    import webauthn
-    options_json = json.loads(webauthn.options_to_json(options))
-    auth.store_challenge(str(user.id), "login", options_json["challenge"])
-
-    return {"options": options_json}
-
-@router.post("/webauthn/login/verify")
-async def verify_webauthn_login(
-    request: WebAuthnLoginVerifyRequest,
-    req: Request,
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify WebAuthn authentication response."""
-    import logging
-    import webauthn
-    from webauthn.helpers import base64url_to_bytes
-    from sqlalchemy import select
-
-    logger = logging.getLogger(__name__)
-
-    challenge = auth.get_challenge(str(user.id), "login")
-    if not challenge:
-        logger.warning(f"WebAuthn challenge not found for user {user.id}")
-        raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry.")
-
-    origin = req.headers.get("origin")
-    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
-        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
-
-    rp_id = settings.RP_ID
-
-    logger.info(f"WebAuthn verify attempt: rp_id={rp_id}, origin={origin}")
-
-    # Retrieve credential from DB
-    res = await db.execute(select(WebAuthnCredential).filter(
-        WebAuthnCredential.credential_id == request.credential_id,
-        WebAuthnCredential.user_id == user.id
-    ))
-    db_cred = res.scalar_one_or_none()
-
-    if not db_cred:
-        logger.warning(f"WebAuthn credential not found: {request.credential_id}")
-        raise HTTPException(status_code=404, detail="Credential not found")
-
-    try:
-        verification = webauthn.verify_authentication_response(
-            credential=request.response,
-            expected_challenge=base64url_to_bytes(challenge) if isinstance(challenge, str) else challenge,
-            expected_origin=origin,
-            expected_rp_id=rp_id,
-            credential_public_key=bytes.fromhex(db_cred.public_key) if isinstance(db_cred.public_key, str) and len(db_cred.public_key)>64 else db_cred.public_key.encode() if isinstance(db_cred.public_key, str) else db_cred.public_key,
-            credential_current_sign_count=db_cred.sign_count,
-            require_user_verification=False
-        )
-
-        # Update sign count
-        db_cred.sign_count = verification.new_sign_count
-        await db.commit()
-
-        logger.info(f"WebAuthn verification successful for user {user.id}")
-        return {"message": "WebAuthn authentication successful", "valid": True}
-
-    except Exception as e:
-        logger.error(f"WebAuthn verification failed: {e}")
-        raise HTTPException(status_code=400, detail=f"WebAuthn verification failed: {str(e)}")
-
-
-# --- Purpose-Bound Factor 2 (View / Submission) WebAuthn ---
-
-@router.post("/webauthn/factor2/options", response_model=WebAuthnLoginOptionsResponse)
-async def get_webauthn_factor2_options(
-    req: Request,
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Generate options to start WebAuthn authentication specifically for Factor 2 (View/Submission)."""
-    from sqlalchemy import select
-    res = await db.execute(select(WebAuthnCredential).filter(WebAuthnCredential.user_id == user.id, WebAuthnCredential.is_active.is_(True)))
-    creds = res.scalars().all()
-    if not creds:
-        raise HTTPException(status_code=400, detail="No active WebAuthn credentials registered for this user.")
-
-    cred_ids = [bytes.fromhex(c.credential_id) for c in creds]
-    rp_id = settings.RP_ID
-    options = security.generate_webauthn_login_options(cred_ids, rp_id=rp_id)
-
-    import webauthn
-    options_json = json.loads(webauthn.options_to_json(options))
-    auth.store_challenge(str(user.id), "factor2", options_json["challenge"])
-
-    return {"options": options_json}
-
-
-@router.post("/webauthn/factor2/verify")
-async def verify_webauthn_factor2(
-    request: WebAuthnLoginVerifyRequest,
-    req: Request,
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify WebAuthn authentication specifically for Factor 2 (View/Submission)."""
-    import logging
-    import webauthn
-    from webauthn.helpers import base64url_to_bytes
-    from sqlalchemy import select
-
-    logger = logging.getLogger(__name__)
-
-    challenge = auth.get_challenge(str(user.id), "factor2")
-    if not challenge:
-        logger.warning(f"WebAuthn factor 2 challenge not found for user {user.id}")
-        raise HTTPException(status_code=400, detail="Factor 2 challenge not found or expired. Please retry.")
-
-    origin = req.headers.get("origin")
-    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
-        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
-
-    rp_id = settings.RP_ID
-
-    res = await db.execute(select(WebAuthnCredential).filter(
-        WebAuthnCredential.credential_id == request.credential_id,
-        WebAuthnCredential.user_id == user.id,
-        WebAuthnCredential.is_active.is_(True)
-    ))
-    db_cred = res.scalar_one_or_none()
-
-    if not db_cred:
-        raise HTTPException(status_code=404, detail="Credential not found")
-
-    try:
-        verification = webauthn.verify_authentication_response(
-            credential=request.response,
-            expected_challenge=base64url_to_bytes(challenge) if isinstance(challenge, str) else challenge,
-            expected_origin=origin,
-            expected_rp_id=rp_id,
-            credential_public_key=bytes.fromhex(db_cred.public_key) if isinstance(db_cred.public_key, str) and len(db_cred.public_key)>64 else db_cred.public_key.encode() if isinstance(db_cred.public_key, str) else db_cred.public_key,
-            credential_current_sign_count=db_cred.sign_count,
-            require_user_verification=False
-        )
-
-        db_cred.sign_count = verification.new_sign_count
-        await db.commit()
-
-        # Mark assertion as verified for factor2
-        auth.verify_assertion(str(user.id), "factor2")
-
-        logger.info(f"WebAuthn Factor 2 verification successful for user {user.id}")
-        return {"message": "WebAuthn Factor 2 verification successful", "valid": True}
-
-    except Exception as e:
-        logger.error(f"WebAuthn Factor 2 verification failed: {e}")
-        raise HTTPException(status_code=400, detail=f"WebAuthn Factor 2 verification failed: {str(e)}")
-
-
-# --- Purpose-Bound Factor 3 (Mint / Approval / Modification) WebAuthn ---
-
-@router.post("/webauthn/factor3/options", response_model=WebAuthnLoginOptionsResponse)
-async def get_webauthn_factor3_options(
-    req: Request,
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Generate options to start WebAuthn authentication specifically for Factor 3 (Mint/Approval/Modification)."""
-    from sqlalchemy import select
-    res = await db.execute(select(WebAuthnCredential).filter(WebAuthnCredential.user_id == user.id, WebAuthnCredential.is_active.is_(True)))
-    creds = res.scalars().all()
-    if not creds:
-        raise HTTPException(status_code=400, detail="No active WebAuthn credentials registered for this user.")
-
-    cred_ids = [bytes.fromhex(c.credential_id) for c in creds]
-    rp_id = settings.RP_ID
-    options = security.generate_webauthn_login_options(cred_ids, rp_id=rp_id)
-
-    import webauthn
-    options_json = json.loads(webauthn.options_to_json(options))
-    auth.store_challenge(str(user.id), "factor3", options_json["challenge"])
-
-    return {"options": options_json}
-
-
-@router.post("/webauthn/factor3/verify")
-async def verify_webauthn_factor3(
-    request: WebAuthnLoginVerifyRequest,
-    req: Request,
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Verify WebAuthn authentication specifically for Factor 3 (Mint/Approval/Modification)."""
-    import logging
-    import webauthn
-    from webauthn.helpers import base64url_to_bytes
-    from sqlalchemy import select
-
-    logger = logging.getLogger(__name__)
-
-    challenge = auth.get_challenge(str(user.id), "factor3")
-    if not challenge:
-        logger.warning(f"WebAuthn factor 3 challenge not found for user {user.id}")
-        raise HTTPException(status_code=400, detail="Factor 3 challenge not found or expired. Please retry.")
-
-    origin = req.headers.get("origin")
-    if not origin or origin not in settings.WEBAUTHN_ORIGINS:
-        raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
-
-    rp_id = settings.RP_ID
-
-    res = await db.execute(select(WebAuthnCredential).filter(
-        WebAuthnCredential.credential_id == request.credential_id,
-        WebAuthnCredential.user_id == user.id,
-        WebAuthnCredential.is_active.is_(True)
-    ))
-    db_cred = res.scalar_one_or_none()
-
-    if not db_cred:
-        raise HTTPException(status_code=404, detail="Credential not found")
-
-    try:
-        verification = webauthn.verify_authentication_response(
-            credential=request.response,
-            expected_challenge=base64url_to_bytes(challenge) if isinstance(challenge, str) else challenge,
-            expected_origin=origin,
-            expected_rp_id=rp_id,
-            credential_public_key=bytes.fromhex(db_cred.public_key) if isinstance(db_cred.public_key, str) and len(db_cred.public_key)>64 else db_cred.public_key.encode() if isinstance(db_cred.public_key, str) else db_cred.public_key,
-            credential_current_sign_count=db_cred.sign_count,
-            require_user_verification=False
-        )
-
-        db_cred.sign_count = verification.new_sign_count
-        await db.commit()
-
-        # Mark assertion as verified for factor3
-        auth.verify_assertion(str(user.id), "factor3")
-
-        logger.info(f"WebAuthn Factor 3 verification successful for user {user.id}")
-        return {"message": "WebAuthn Factor 3 verification successful", "valid": True}
-
-    except Exception as e:
-        logger.error(f"WebAuthn Factor 3 verification failed: {e}")
-        raise HTTPException(status_code=400, detail=f"WebAuthn Factor 3 verification failed: {str(e)}")
-
 
 
 @router.post("/webauthn/register/verify")
 @limiter.limit("5/minute")
 async def verify_webauthn_registration(
     request: Request,
-    payload: WebAuthnVerifyRequest = Body(...),
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    response: Response,
+    payload: WebAuthnRegisterVerifyRequest = Body(...),
+    user: User = Depends(get_setup_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Verify WebAuthn registration response and save credential."""
-    import logging
-    import webauthn
-    from webauthn.helpers import base64url_to_bytes
-
-    logger = logging.getLogger(__name__)
-
-    challenge = auth.get_challenge(str(user.id), "registration")
-    if not challenge:
-        logger.warning(f"WebAuthn registration challenge not found for user {user.id}")
-        raise HTTPException(status_code=400, detail="Challenge not found or expired. Please retry registration.")
-
+    scope = payload.factor_scope
     origin = request.headers.get("origin")
     if not origin or origin not in settings.WEBAUTHN_ORIGINS:
         raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
-
-    rp_id = settings.RP_ID
-
-    logger.info(f"WebAuthn registration verify: rp_id={rp_id}, origin={origin}")
-
+    try:
+        client_data = parse_client_data_json(base64url_to_bytes(payload.response["response"]["clientDataJSON"]))
+        challenge_value = bytes_to_base64url(client_data.challenge)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Malformed WebAuthn registration response.")
+    challenge = await mfa.consume_challenge(db, "WEBAUTHN_REG", challenge_value, user_id=user.id, purpose=scope)
+    if challenge is None:
+        raise HTTPException(status_code=400, detail="Registration challenge not found, expired, or issued for a different scope.")
     try:
         verification = webauthn.verify_registration_response(
             credential=payload.response,
-            expected_challenge=base64url_to_bytes(challenge) if isinstance(challenge, str) else challenge,
+            expected_challenge=base64url_to_bytes(challenge.challenge),
             expected_origin=origin,
-            expected_rp_id=rp_id,
-            require_user_verification=False, # Relaxed for some environments
+            expected_rp_id=settings.RP_ID,
+            require_user_verification=True,
         )
-        logger.info("WebAuthn verification succeeded.")
-
-        # Save new credential
-        logger.info(f"Credential ID: {verification.credential_id}")
-        logger.info(f"Public Key: {verification.credential_public_key}")
-
-        new_cred = WebAuthnCredential(
-            user_id=user.id,
-            credential_id=verification.credential_id.hex(),
-            public_key=verification.credential_public_key.hex() if isinstance(verification.credential_public_key, bytes) else str(verification.credential_public_key),
-            sign_count=verification.sign_count,
-            device_name=payload.device_name,
-            factor_scope=payload.factor_scope
-        )
-        db.add(new_cred)
-        logger.info("Credential added to DB.")
-
-        if user.is_totp_enabled and payload.factor_scope == "login":
-            user.onboarding_pending = False
-
-        await db.commit()
-        logger.info("Credential committed to DB.")
-
-        logger.info(f"WebAuthn credential registered successfully for user {user.id}")
-        return {"message": "WebAuthn credential registered successfully"}
     except Exception as e:
-        logger.error(f"WebAuthn registration verification failed: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"WebAuthn verification failed: {str(e)}")
+        await db.commit()
+        logger.warning("Passkey registration rejected: %s", e)
+        raise HTTPException(status_code=400, detail="Passkey registration verification failed.")
+
+    db.add(WebAuthnCredential(
+        user_id=user.id,
+        credential_id=verification.credential_id.hex(),
+        public_key=verification.credential_public_key.hex(),
+        sign_count=verification.sign_count,
+        device_name=payload.device_name,
+        factor_scope=scope,
+    ))
+    await record_audit(db, "PASSKEY_REGISTERED", actor_did=user.did, client_ip=get_request_client_ip(request),
+                       details={"purpose": scope})
+    await db.commit()
+    result = {"message": f"{mfa.PURPOSE_LABELS[scope]} passkey registered.", "factor_scope": scope}
+    if scope == "login" and user.onboarding_pending and await mfa.login_setup_complete(db, user):
+        session = await _issue_session(db, user, request, response, "SETUP_COMPLETE")
+        result.update({"setup_complete": True, "token": session.token, "user": session.user})
+    return result
 
 
 @router.get("/webauthn/credentials")
-async def list_webauthn_credentials(
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """List active passkeys without exposing credential public keys."""
-    from sqlalchemy import select
-
+async def list_webauthn_credentials(user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(WebAuthnCredential).where(
-            WebAuthnCredential.user_id == user.id,
-            WebAuthnCredential.is_active.is_(True),
+            WebAuthnCredential.user_id == user.id, WebAuthnCredential.is_active.is_(True)
         ).order_by(WebAuthnCredential.created_at.desc())
     )
     return [{
-        "credential_id": credential.credential_id,
-        "device_name": credential.device_name,
-        "factor_scope": credential.factor_scope or "login",
-        "created_at": credential.created_at.isoformat(),
-    } for credential in result.scalars().all()]
+        "credential_id": c.credential_id,
+        "device_name": c.device_name,
+        "factor_scope": c.factor_scope or "login",
+        "created_at": c.created_at.isoformat(),
+    } for c in result.scalars().all()]
 
 
 @router.delete("/webauthn/credentials/{credential_id}")
 async def disable_webauthn_credential(
     credential_id: str,
-    user: User = Depends(get_current_active_user),
+    request: Request,
+    body: FactorManageRequest = Body(default=FactorManageRequest()),
+    step_up_header: Optional[str] = Depends(get_step_up_token),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Disable one passkey for the current user."""
-    from sqlalchemy import select
-
-    result = await db.execute(select(WebAuthnCredential).where(
+    credential = (await db.execute(select(WebAuthnCredential).where(
         WebAuthnCredential.user_id == user.id,
         WebAuthnCredential.credential_id == credential_id,
         WebAuthnCredential.is_active.is_(True),
-    ))
-    credential = result.scalar_one_or_none()
+    ))).scalar_one_or_none()
     if not credential:
         raise HTTPException(status_code=404, detail="Passkey not found")
+    if credential.factor_scope == "login":
+        raise HTTPException(status_code=403, detail=_ADMIN_ASSIST)
+    await mfa.require_factor(db, user, f"{credential.factor_scope}.manage", totp_code=body.totp_code,
+                             step_up_token=body.step_up_token or step_up_header)
     credential.is_active = False
+    await record_audit(db, "PASSKEY_DISABLED", actor_did=user.did, client_ip=get_request_client_ip(request),
+                       details={"purpose": credential.factor_scope})
     await db.commit()
     return {"message": "Passkey disabled.", "credential_id": credential_id}
 
 
 @router.post("/webauthn/reset")
-async def reset_webauthn_credentials(
-    user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Disable all passkeys so the user can enroll a new authenticator."""
-    from sqlalchemy import update
+async def reset_webauthn_blocked(user: User = Depends(get_setup_user)):
+    raise HTTPException(status_code=403, detail=_ADMIN_ASSIST)
 
-    await db.execute(
-        update(WebAuthnCredential)
-        .where(WebAuthnCredential.user_id == user.id)
-        .values(is_active=False)
-    )
+
+# ------------------------------------------------------------ Step-up passkeys (declared after /webauthn/register/* so 'register' is never read as a factor)
+
+@router.post("/webauthn/{factor}/options")
+async def step_up_passkey_options(factor: str, req: StepUpOptionsRequest = Body(default=None),
+                                  user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if factor not in ("factor2", "factor3"):
+        raise HTTPException(status_code=404, detail="Unknown factor")
+    action = req.action if req else None
+    if not action or mfa.ACTION_PURPOSE.get(action) != factor:
+        raise HTTPException(status_code=400, detail=f"A {mfa.PURPOSE_LABELS[factor]} action must be specified.")
+    options = await mfa.passkey_options(db, user, factor, action)
     await db.commit()
-    return {"message": "All passkeys reset.", "credentials": []}
+    return {"options": options}
 
 
-# --- Admin Assistance Login Factor Reset Workflow ---
+@router.post("/webauthn/{factor}/verify")
+async def step_up_passkey_verify(factor: str, req: StepUpVerifyRequest, request: Request,
+                                 user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Verify a Passkey 2 / Passkey 3 assertion and mint a step-up token for the
+    action the challenge was issued for."""
+    if factor not in ("factor2", "factor3"):
+        raise HTTPException(status_code=404, detail="Unknown factor")
+    try:
+        challenge = await mfa.verify_passkey_assertion(db, user, factor, req.response, request.headers.get("origin"))
+    except HTTPException as e:
+        await db.commit()
+        await _audit_failure(db, "STEP_UP_FAILED", request, user.wallet_address, f"{factor} passkey: {e.detail}")
+        raise
+    grant = await mfa.issue_step_up(db, user, factor, challenge.action, "PASSKEY")
+    await db.commit()
+    return {**grant, "valid": True}
+
+
+# ============================================================ Admin-assisted login reset
 
 @router.post("/reset-request")
 @limiter.limit("5/minute")
-async def request_admin_reset(
-    request: Request,
-    payload: ResetRequestPayload,
-    db: AsyncSession = Depends(get_db)
-):
-    """Request admin assistance to reset Login Authenticator and Login Passkey."""
-    from sqlalchemy import select, func
-    res = await db.execute(select(User).where(func.lower(User.wallet_address) == payload.wallet_address.lower()))
-    target_user = res.scalar_one_or_none()
-
-    if not target_user:
-        raise HTTPException(status_code=404, detail="User with this wallet address not found")
-
-    target_user.reset_requested = True
+async def request_admin_reset(request: Request, payload: ResetRequestPayload = Body(default=ResetRequestPayload()),
+                              user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
+    """Signed-in user (My Identity) asks an administrator to reset login factors."""
+    user.reset_requested = True
+    user.reset_requested_at = mfa.utcnow()
+    user.reset_reason = (payload.reason or "")[:500]
+    await record_audit(db, "LOGIN_RESET_REQUESTED", actor_did=user.did, client_ip=get_request_client_ip(request))
     await db.commit()
-    return {"message": "Admin assistance requested. Your administrator will review and issue a new single-use 3-hour import PIN."}
+    return {"message": "Admin assistance requested. Your administrator will review and issue a new single-use 3-hour provisioning PIN."}
+
+
+@router.post("/reset-request/wallet")
+@limiter.limit("3/minute")
+async def request_admin_reset_with_wallet(req: WalletResetRequestPayload, request: Request, db: AsyncSession = Depends(get_db)):
+    """Locked-out user proves wallet possession (signature over a server nonce) to ask for a reset."""
+    try:
+        signer = await _consume_siwe(db, req.message, req.signature, req.nonce)
+    except auth.AuthError as e:
+        await db.commit()
+        raise HTTPException(status_code=401, detail=str(e))
+    user = await _find_user(db, signer)
+    if _usable(user):
+        user.reset_requested = True
+        user.reset_requested_at = mfa.utcnow()
+        user.reset_reason = (req.reason or "")[:500]
+        await record_audit(db, "LOGIN_RESET_REQUESTED", actor_did=user.did, client_ip=get_request_client_ip(request),
+                           details={"channel": "wallet-signature"})
+    await db.commit()
+    # Same response whether or not the wallet is provisioned (no account enumeration).
+    return {"message": "If this wallet is provisioned, an administrator has been notified."}
 
 
 @router.get("/reset-requests", response_model=List[ResetRequestResponse])
-async def list_reset_requests(
-    db: AsyncSession = Depends(get_db),
-    admin: User = Depends(get_admin_user)
-):
-    """List all users who have requested admin assistance for login factor resets."""
-    from sqlalchemy import select
-    res = await db.execute(
+async def list_reset_requests(db: AsyncSession = Depends(get_db), admin: User = Depends(get_admin_user)):
+    users = (await db.execute(
         select(User).where(User.reset_requested.is_(True), User.is_active.is_(True)).order_by(User.created_at.desc())
-    )
-    users = res.scalars().all()
-    return [
-        ResetRequestResponse(
-            id=str(u.id),
-            wallet_address=u.wallet_address,
-            name=u.name,
-            department=u.department,
-            role=u.role,
-            reset_requested=u.reset_requested or False,
-            pin_expires_at=u.pin_expires_at
-        )
-        for u in users
-    ]
+    )).scalars().all()
+    return [ResetRequestResponse(
+        id=str(u.id), wallet_address=u.wallet_address, name=u.name, department=u.department, role=u.role,
+        reset_requested=bool(u.reset_requested),
+        reset_requested_at=u.reset_requested_at.isoformat() if u.reset_requested_at else None,
+        reset_reason=u.reset_reason,
+    ) for u in users]
 
 
 @router.post("/reset-approve/{user_id}")
 async def approve_user_reset(
     user_id: str,
-    body: AdminResetApproveRequest,
+    request: Request,
+    body: AdminResetApproveRequest = Body(default=AdminResetApproveRequest()),
+    step_up_header: Optional[str] = Depends(get_step_up_token),
     db: AsyncSession = Depends(get_db),
-    admin: User = Depends(get_admin_user)
+    admin: User = Depends(get_admin_user),
 ):
-    """Approve user login reset using Admin's Factor 3 authentication."""
-    from sqlalchemy import select, update
+    """Approve a login reset with the admin's Factor 3. Invalidates the user's Login
+    TOTP 1 and Login Passkey(s), revokes their sessions and issues a NEW single-use
+    3-hour provisioning PIN (any previous PIN stops working)."""
     try:
         uid = uuid.UUID(user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID format")
-
-    res = await db.execute(select(User).where(User.id == uid))
-    target_user = res.scalar_one_or_none()
-    if not target_user:
+    target = (await db.execute(select(User).where(User.id == uid))).scalar_one_or_none()
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if target.id == admin.id:
+        raise HTTPException(status_code=403, detail="Administrators cannot approve their own login reset.")
+    if not target.reset_requested:
+        raise HTTPException(status_code=409, detail="This user has no pending reset request.")
 
-    # Verify Admin's Factor 3: either WebAuthn Factor 3 or TOTP Factor 3
-    is_passkey_valid = auth.is_assertion_valid(str(admin.id), "factor3")
-    is_totp_valid = bool(body.totp_code and admin.totp_factor3_secret and security.verify_totp(admin.totp_factor3_secret, body.totp_code))
+    await mfa.require_factor(db, admin, "admin.reset", totp_code=body.totp_code,
+                             step_up_token=body.step_up_token or step_up_header)
 
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(
-            status_code=401,
-            detail="Admin Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation required to approve reset"
-        )
-
-    # Invalidate target user's login factors
-    target_user.is_totp_enabled = False
-    target_user.totp_secret = None
-    target_user.is_totp_factor2_enabled = False
-    target_user.totp_factor2_secret = None
-    target_user.is_totp_factor3_enabled = False
-    target_user.totp_factor3_secret = None
-
-    # Invalidate ALL passkeys for this user
+    mfa.set_totp_secret(target, "login", None)
     await db.execute(
         update(WebAuthnCredential)
-        .where(WebAuthnCredential.user_id == target_user.id)
+        .where(WebAuthnCredential.user_id == target.id, WebAuthnCredential.factor_scope == "login")
         .values(is_active=False)
     )
-
-    # Generate new random 3-hour single-use OTP
     new_pin = security.generate_one_time_pin(12)
-    new_expiry = datetime.utcnow() + timedelta(hours=3)
-
-    target_user.one_time_pin = new_pin
-    target_user.pin_expires_at = new_expiry
-    target_user.pin_used = False
-    target_user.onboarding_pending = True
-    target_user.reset_requested = False
-
+    expires_at = mfa.utcnow() + timedelta(hours=settings.PROVISIONING_PIN_TTL_HOURS)
+    target.pin_hash = hash_pin(new_pin)
+    target.pin_expires_at = expires_at
+    target.pin_used = False
+    target.onboarding_pending = True
+    target.reset_requested = False
+    target.session_version = (target.session_version or 0) + 1  # revoke all sessions
+    await record_audit(
+        db, "ADMIN_LOGIN_RESET_APPROVED",
+        actor_did=admin.did, target_did=target.did, client_ip=get_request_client_ip(request),
+        details={"invalidated": ["login_totp", "login_passkeys", "sessions"], "pin_expires_at": expires_at.isoformat()},
+    )
     await db.commit()
-    await db.refresh(target_user)
-
     return {
-        "message": f"Successfully reset login factors for {target_user.wallet_address}.",
-        "user_id": str(target_user.id),
-        "wallet_address": target_user.wallet_address,
+        "message": f"Login factors reset for {target.wallet_address}. Give the user this PIN out-of-band; it is shown only once.",
+        "user_id": str(target.id),
+        "wallet_address": target.wallet_address,
         "one_time_pin": new_pin,
-        "pin_expires_at": new_expiry.isoformat() + "Z"
+        "pin_expires_at": expires_at.isoformat(),
     }
 
 
+# ============================================================ Verifiable credentials
+
+@router.post("/vc/issue")
+async def issue_kyc_vc(subject_did: str, db: AsyncSession = Depends(get_db), admin: User = Depends(get_admin_user)):
+    """Issue a W3C Verifiable Credential (admin only)."""
+    subject = (await db.execute(select(User).where(User.did == subject_did))).scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject DID not found")
+    vc_jwt, vc_model = vc.create_kyc_vc(admin.did, subject_did)
+    vc_model.user_id = subject.id
+    db.add(vc_model)
+    await db.commit()
+    return {"vc_jwt": vc_jwt, "subject_did": subject_did, "type": "KYCCredential"}

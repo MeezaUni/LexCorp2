@@ -1,95 +1,234 @@
+import hashlib
+import ipaddress
+import logging
+import time
+from datetime import datetime, timedelta, UTC
 from typing import Optional
+
 from fastapi import Cookie, Depends, HTTPException, Header, Request
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
-from app.services.auth import verify_jwt
-from app.models.domain import User
+from app.models.domain import AuditEvent, User
+from app.services.auth import SCOPE_FULL, SCOPE_SETUP, verify_jwt
 
-__all__ = ["get_db", "get_current_user", "get_current_active_user", "get_admin_user", "get_manager_user", "get_onboarded_user", "get_request_client_ip"]
+logger = logging.getLogger(__name__)
 
-def get_request_client_ip(request: Request) -> str:
-    """Extract client IP from request headers or host, normalized to IPv4."""
-    forwarded = request.headers.get("x-forwarded-for")
-    ip = ""
-    if forwarded:
-        ip = forwarded.split(",")[0].strip()
-    elif request.client:
-        ip = request.client.host
-    else:
-        ip = "127.0.0.1"
+__all__ = [
+    "get_db", "get_current_user", "get_current_active_user", "get_setup_user",
+    "get_admin_user", "get_manager_user", "get_onboarded_user", "get_request_client_ip",
+    "get_step_up_token", "record_audit",
+]
 
-    if ip in ("::1", "localhost", "testclient"):
+# Throttle last-activity writes; the inactivity timeout is minutes, not seconds.
+_ACTIVITY_WRITE_INTERVAL = timedelta(seconds=30)
+
+
+def _trusted_networks():
+    nets = []
+    for cidr in settings.TRUSTED_PROXIES:
+        try:
+            nets.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            logger.error("Ignoring invalid TRUSTED_PROXIES entry: %s", cidr)
+    return nets
+
+
+def _normalize_ip(ip: str) -> str:
+    ip = (ip or "").strip()
+    if ip in ("localhost", "testclient", "::1"):
         return "127.0.0.1"
     if ip.startswith("::ffff:"):
-        return ip.replace("::ffff:", "")
-    return ip
+        ip = ip[len("::ffff:"):]
+    try:
+        return str(ipaddress.ip_address(ip))
+    except ValueError:
+        return ip
 
-async def get_current_user(
+
+def _is_trusted(ip: str, nets) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in n for n in nets)
+
+
+def get_request_client_ip(request: Request) -> str:
+    """Effective client IP from the trusted server-side request context.
+
+    X-Forwarded-For is honoured only when the direct peer is a configured trusted
+    proxy; the chain is then walked right-to-left, skipping trusted hops, and the
+    first untrusted address is the client. A client talking to the API directly
+    cannot choose its own IP by sending the header."""
+    peer = _normalize_ip(request.client.host if request.client else "127.0.0.1")
+    nets = _trusted_networks()
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded and _is_trusted(peer, nets):
+        hops = [_normalize_ip(h) for h in forwarded.split(",") if h.strip()]
+        for hop in reversed(hops):
+            if not _is_trusted(hop, nets):
+                return hop
+        if hops:
+            return hops[0]
+    return peer
+
+
+def get_step_up_token(x_step_up_token: Optional[str] = Header(None)) -> Optional[str]:
+    return x_step_up_token
+
+
+async def record_audit(
+    db: AsyncSession,
+    event_type: str,
+    *,
+    actor_did: Optional[str] = None,
+    target_did: Optional[str] = None,
+    asset_serial: Optional[str] = None,
+    client_ip: Optional[str] = None,
+    risk_label: Optional[str] = None,
+    risk_score: Optional[float] = None,
+    details: Optional[dict] = None,
+) -> AuditEvent:
+    """Add an off-chain audit event (block_number 0). Caller commits."""
+    tx_hash = "0x" + hashlib.sha256(
+        f"{event_type}:{actor_did}:{target_did}:{asset_serial}:{time.time_ns()}".encode()
+    ).hexdigest()
+    event = AuditEvent(
+        event_type=event_type,
+        tx_hash=tx_hash,
+        block_number=0,
+        actor_did=actor_did,
+        target_did=target_did,
+        asset_serial=asset_serial,
+        client_ip=client_ip,
+        risk_label=risk_label,
+        risk_score=risk_score,
+        risk_factors=details,
+    )
+    db.add(event)
+    return event
+
+
+async def _authenticate(
     request: Request,
-    session: Optional[str] = Cookie(None),
-    authorization: Optional[str] = Header(None),
-    db: AsyncSession = Depends(get_db)
-) -> User:
-    """Dependency to get the current authenticated user via JWT from cookie or Auth header."""
+    session: Optional[str],
+    authorization: Optional[str],
+    db: AsyncSession,
+) -> tuple[User, dict]:
     token = session
-    if not token and authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ")[1]
-
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
     if not token:
         raise HTTPException(status_code=401, detail="Authentication required")
 
     payload = verify_jwt(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Session expired or invalid")
-
     wallet_address = payload.get("sub")
     if not wallet_address:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    # IP Session Binding Verification
-    token_ip = payload.get("client_ip")
-    if token_ip:
-        current_ip = get_request_client_ip(request)
-        # Check mismatch, allowing standard local loopback aliases
-        is_local = token_ip in ("127.0.0.1", "localhost", "testclient", "::1") and current_ip in ("127.0.0.1", "localhost", "testclient", "::1")
-        if not is_local and token_ip != current_ip:
-            raise HTTPException(
-                status_code=401,
-                detail="Session revoked: IP address mismatch (IP session binding violation)"
-            )
-
-    result = await db.execute(
+    user = (await db.execute(
         select(User).where(func.lower(User.wallet_address) == wallet_address.lower())
-    )
-    user = result.scalar_one_or_none()
-
+    )).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-
+    if not user.is_active or user.revoked_at is not None:
+        raise HTTPException(status_code=403, detail="Account is disabled or identity has been revoked")
     if payload.get("session_version", 0) != (user.session_version or 0):
-        raise HTTPException(status_code=401, detail="Session replaced by a newer login")
+        raise HTTPException(status_code=401, detail="Session replaced by a newer login or revoked")
 
+    # IP session binding: a changed effective client IP terminates the session.
+    token_ip = payload.get("client_ip")
+    current_ip = get_request_client_ip(request)
+    if token_ip and _normalize_ip(token_ip) != current_ip:
+        user.session_version = (user.session_version or 0) + 1
+        await record_audit(
+            db, "SESSION_TERMINATED_IP_CHANGE",
+            actor_did=user.did, target_did=user.did, client_ip=current_ip,
+            risk_label="HIGH", risk_score=0.8,
+            details={"bound_ip": token_ip, "request_ip": current_ip},
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=401,
+            detail="Session terminated: client IP address changed (IP session binding). Please sign in again.",
+        )
+
+    # Server-side inactivity timeout.
+    now = datetime.now(UTC)
+    last = user.last_activity_at
+    if last is not None and now - last > timedelta(minutes=settings.INACTIVITY_TIMEOUT_MINUTES):
+        user.session_version = (user.session_version or 0) + 1
+        await record_audit(db, "SESSION_EXPIRED_INACTIVITY", actor_did=user.did, client_ip=current_ip)
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Session expired due to inactivity. Please sign in again.")
+    if last is None or now - last > _ACTIVITY_WRITE_INTERVAL:
+        user.last_activity_at = now
+        await db.commit()
+
+    return user, payload
+
+
+async def get_setup_user(
+    request: Request,
+    session: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Any valid session (setup or full). Only for identity-setup endpoints."""
+    user, payload = await _authenticate(request, session, authorization, db)
+    if payload.get("scope", SCOPE_FULL) not in (SCOPE_FULL, SCOPE_SETUP):
+        raise HTTPException(status_code=401, detail="Invalid session scope")
     return user
+
+
+async def get_current_user(
+    request: Request,
+    session: Optional[str] = Cookie(None),
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """A full application session. Setup-only sessions are rejected here, so no
+    application endpoint is reachable before Login TOTP 1 + Passkey 1 exist."""
+    user, payload = await _authenticate(request, session, authorization, db)
+    if payload.get("scope", SCOPE_FULL) != SCOPE_FULL:
+        raise HTTPException(
+            status_code=403,
+            detail="Onboarding incomplete: configure Login Authenticator (TOTP 1) and Login Passkey (Passkey 1) first.",
+        )
+    return user
+
+
+def _require_active(user: User) -> None:
+    # Checked again here (not only in _authenticate) as defence in depth.
+    if not user.is_active or user.revoked_at is not None:
+        raise HTTPException(status_code=403, detail="Account is disabled or identity has been revoked")
+
 
 async def get_current_active_user(user: User = Depends(get_current_user)) -> User:
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account is disabled")
+    _require_active(user)
     return user
 
-async def get_onboarded_user(user: User = Depends(get_current_active_user)) -> User:
+
+async def get_onboarded_user(user: User = Depends(get_current_user)) -> User:
+    _require_active(user)
     if user.onboarding_pending:
         raise HTTPException(
             status_code=403,
-            detail="Onboarding incomplete: You must configure Login Authenticator and Login Passkey before accessing platform features."
+            detail="Onboarding incomplete: You must configure Login Authenticator and Login Passkey before accessing platform features.",
         )
     return user
+
 
 async def get_admin_user(user: User = Depends(get_onboarded_user)) -> User:
     if user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Requires ADMIN role")
     return user
+
 
 async def get_manager_user(user: User = Depends(get_onboarded_user)) -> User:
     if user.role not in ("ADMIN", "MANAGER"):

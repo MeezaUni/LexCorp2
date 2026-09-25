@@ -3,6 +3,7 @@ import io
 from datetime import datetime, timedelta, UTC
 from jose import jwt
 from app.services.auth import create_jwt
+from tests.conftest import mfa_headers, totp_code
 from app.core.config import settings
 
 # Active Test Wallets mapped from PostgreSQL test DB
@@ -135,12 +136,12 @@ async def test_user_cannot_mint_physical_defense_assets(client):
 
 
 @pytest.mark.asyncio
-async def test_manager_can_mint_physical_assets(client):
-    """MANAGER role is authorized to prepare physical defense hardware mints."""
+async def test_manager_can_mint_physical_assets(client, db_session):
+    """MANAGER role is authorized to prepare physical defense hardware mints (with Factor 3)."""
     token = get_token(ACTIVE_MANAGER_WALLET, "MANAGER", ACTIVE_MANAGER_VERSION)
     response = await client.post(
         "/api/assets/mint/prepare",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=await mfa_headers(db_session, token, ACTIVE_MANAGER_WALLET, "asset.mint"),
         json={"to_address": "0x1234567890123456789012345678901234567890", "token_id": 999, "serial_number": "SEC-PHY-001", "owner_did": "did:ethr:13371:0x123"}
     )
     assert response.status_code == 200
@@ -178,19 +179,26 @@ async def test_user_cannot_reassign_custody(client):
 
 
 @pytest.mark.asyncio
-async def test_admin_can_reassign_custody(client):
-    """ADMIN role is authorized to reassign asset custody."""
+async def test_admin_can_reassign_custody(client, db_session):
+    """ADMIN role is authorized to reassign custody of a registered asset."""
     from unittest.mock import patch
+    import uuid as _uuid
+    from sqlalchemy import select as _select
+    from app.models.domain import Asset, User as _User
     token = get_token(ACTIVE_ADMIN_WALLET, "ADMIN", ACTIVE_ADMIN_VERSION)
+    owner = (await db_session.execute(_select(_User).where(_User.wallet_address == ACTIVE_ADMIN_WALLET))).scalar_one()
+    serial = f"BEL-RADAR-{_uuid.uuid4().hex[:6]}"
+    db_session.add(Asset(token_id=_uuid.uuid4().int % 2_000_000_000, serial_number=serial, owner_id=owner.id, is_physical=True))
+    await db_session.commit()
 
     with patch("app.api.assets.contract_service.get_token_by_serial", return_value=1):
         response = await client.post(
-            "/api/assets/serial/BEL-RADAR-001/assign",
+            f"/api/assets/serial/{serial}/assign",
             headers={"Authorization": f"Bearer {token}"},
             json={"custodian_did": "did:ethr:13371:0x95ea9708bcf136d710a4b8e76fe20f895eca003a", "custodian_department": "BEL Tactical Radar Div"}
         )
     assert response.status_code == 200
-    assert response.json()["serial_number"] == "BEL-RADAR-001"
+    assert response.json()["serial_number"] == serial
     assert response.json()["custodian_department"] == "BEL Tactical Radar Div"
 
 
@@ -281,43 +289,27 @@ async def test_production_webauthn_insecure_validation():
 # 7. DID Migration & Auto-Repair (Phase 12)
 # ==============================================================================
 import uuid
-from app.services.auth import migrate_user_dids
+from app.services.auth import report_legacy_dids
 from app.models.domain import User
 
 @pytest.mark.asyncio
-async def test_did_auto_migration_on_startup(db_session):
-    """User without a DID or with a non-compliant DID is auto-repaired during migration."""
-    # Create legacy user
+async def test_legacy_dids_reported_not_rewritten(db_session):
+    """Spec section 50: legacy/non-compliant DIDs are detected and reported, but
+    historical identifiers are never silently rewritten."""
     legacy_wa = f"0x{uuid.uuid4().hex[:40]}"
-    legacy_user = User(
-        wallet_address=legacy_wa,
-        role="USER",
-        did=None  # No DID
-    )
-    db_session.add(legacy_user)
-
-    # Create another legacy user with wrong DID format
+    legacy_user = User(wallet_address=legacy_wa, role="USER", did=None)
     legacy_wa2 = f"0x{uuid.uuid4().hex[:40]}"
-    legacy_user2 = User(
-        wallet_address=legacy_wa2,
-        role="USER",
-        did="did:ethr:wrongformat"
-    )
-    db_session.add(legacy_user2)
+    legacy_user2 = User(wallet_address=legacy_wa2, role="USER", did=f"did:ethr:31337:{legacy_wa2}")
+    db_session.add_all([legacy_user, legacy_user2])
     await db_session.commit()
 
-    # Run migration
-    migrated_count = await migrate_user_dids(db_session)
-    assert migrated_count >= 2
+    assert await report_legacy_dids(db_session) >= 2
 
-    # Verify repairs
     await db_session.refresh(legacy_user)
     await db_session.refresh(legacy_user2)
+    assert legacy_user.did is None
+    assert legacy_user2.did == f"did:ethr:31337:{legacy_wa2}"
 
-    expected_did1 = f"did:ethr:{settings.CHAIN_ID}:{legacy_wa.lower()}"
-    assert legacy_user.did == expected_did1
-
-    expected_did2 = f"did:ethr:{settings.CHAIN_ID}:{legacy_wa2.lower()}"
-    assert legacy_user2.did == expected_did2
-
-
+    await db_session.delete(legacy_user)
+    await db_session.delete(legacy_user2)
+    await db_session.commit()

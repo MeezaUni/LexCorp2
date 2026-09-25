@@ -1,43 +1,33 @@
 import pytest
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from unittest.mock import AsyncMock, patch
+from sqlalchemy import select
+
+from app.models.domain import User
+
 
 @pytest.mark.asyncio
-async def test_full_siwe_auth_flow(async_client):
-    """Test SIWE authentication flow without requiring a real Postgres connection."""
-    # 1. Create a mock wallet
+async def test_full_siwe_auth_flow(async_client, db_session):
+    """A wallet signature is only a provisioning proof: without a valid PIN for a
+    provisioned identity it never yields a session, and unknown wallets are not auto-created."""
     acct = Account.create()
-    wallet_address = acct.address
 
-    # 2. Request a Nonce
-    nonce_res = await async_client.post(f"/api/auth/nonce?address={wallet_address}")
+    nonce_res = await async_client.post(f"/api/auth/nonce?address={acct.address}")
     assert nonce_res.status_code == 200
     nonce_data = nonce_res.json()
-    nonce = nonce_data["nonce"]
-    message = nonce_data["message"]
+    signature = acct.sign_message(encode_defunct(text=nonce_data["message"])).signature.hex()
 
-    # 3. Sign the message client-side
-    signable_msg = encode_defunct(text=message)
-    signed_msg = acct.sign_message(signable_msg)
-    signature = signed_msg.signature.hex()
+    # Signature alone (legacy /login shape, no PIN) is rejected outright
+    no_pin = await async_client.post("/api/auth/login", json={
+        "message": nonce_data["message"], "signature": signature, "nonce": nonce_data["nonce"],
+    })
+    assert no_pin.status_code == 422
 
-    # 4. Authenticate & obtain JWT
-    # Mock the database session to avoid connection errors
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock()
-    mock_db.commit = AsyncMock()
-    mock_db.refresh = AsyncMock()
-
-    with patch('app.api.dependencies.get_db', return_value=mock_db):
-        login_res = await async_client.post(
-            "/api/auth/login",
-            json={
-                "message": message,
-                "signature": signature,
-                "nonce": nonce,
-            }
-        )
-        # Should still fail because User doesn't exist in mock, but the logic runs
-        # For now, expect 401 (nonce verification would pass, but db lookup fails)
-        assert login_res.status_code == 200 or login_res.status_code == 401
+    # With a PIN, an unprovisioned wallet is still refused and no user is created
+    res = await async_client.post("/api/auth/provision", json={
+        "message": nonce_data["message"], "signature": signature, "nonce": nonce_data["nonce"], "pin": "ABCDEFGHJKLM",
+    })
+    assert res.status_code == 401
+    assert "token" not in res.json()
+    created = (await db_session.execute(select(User).where(User.wallet_address == acct.address.lower()))).scalar_one_or_none()
+    assert created is None

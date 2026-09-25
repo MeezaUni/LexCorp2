@@ -1,109 +1,69 @@
-"""Wallet authentication using Ethereum signed messages and SIWE-standard format.
+"""Wallet signature verification and JWT session management.
 
-Implements NIST SP 800-63-4 session management practices:
-- Nonce expiry (5 minutes default)
-- Short-lived JWT sessions (30 minutes default)
-- Direct secp256k1 signature verification via eth_account (robust & dependency-free)
+Sessions:
+- scope "full"  : normal application access (issued after Login TOTP 1 or Passkey 1,
+                  and only once both are configured).
+- scope "setup" : mandatory first-login setup only (issued after wallet import with a
+                  valid one-time provisioning PIN, or a login by a user whose login
+                  setup is incomplete). Cannot reach any application endpoint.
+
+Wallet signatures (EIP-191) are accepted only for provisioning. Nonces are stored
+server-side, bound to the wallet address, single-use and expire after
+NONCE_EXPIRY_SECONDS.
 """
 
 import secrets
 from datetime import datetime, timedelta, UTC
 from typing import Optional
 
-from eth_account.messages import encode_defunct
 from eth_account import Account
+from eth_account.messages import encode_defunct
 from jose import JWTError, jwt
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.domain import User
 
-
-class NonceData(BaseModel):
-    """Stored nonce with expiry."""
-    nonce: str
-    expires_at: datetime
-
-
-# In-memory nonce store — in production, use Redis with TTL
-_nonce_store: dict[str, NonceData] = {}
-
-# Store WebAuthn challenges for registration and login, keyed by purpose
-_challenge_store: dict[str, str] = {}
-# Verified assertions for purpose-specific factors
-_verified_assertion_store: dict[str, datetime] = {}
+SCOPE_FULL = "full"
+SCOPE_SETUP = "setup"
 
 
 class AuthError(Exception):
     """Authentication failure."""
-    pass
 
 
 def generate_nonce() -> str:
-    """Generate a cryptographically random nonce."""
     return secrets.token_hex(16)
 
 
-def store_nonce(address: str, nonce: str, expires_in_seconds: int = 300) -> None:
-    """Store a nonce for a wallet address with expiry."""
-    expires_at = datetime.now(UTC) + timedelta(seconds=expires_in_seconds)
-    _nonce_store[address.lower()] = NonceData(nonce=nonce, expires_at=expires_at)
+def build_siwe_message(address: str, nonce: str) -> str:
+    return (
+        f"lexcorp-sih.example.com wants you to sign in with your Ethereum account.\n"
+        f"Wallet: {address}\n"
+        f"Nonce: {nonce}\n"
+        f"URI: https://lexcorp-sih.example.com\n"
+        f"Version: 1\n"
+        f"Chain ID: {settings.CHAIN_ID}"
+    )
 
 
-def get_nonce(address: str) -> Optional[str]:
-    """Get and validate a stored nonce. Returns None if expired or missing."""
-    data = _nonce_store.get(address.lower())
-    if not data:
-        return None
-    if datetime.now(UTC) > data.expires_at:
-        del _nonce_store[address.lower()]
-        return None
-    return data.nonce
+def recover_signer(message: str, signature: str) -> str:
+    try:
+        return Account.recover_message(encode_defunct(text=message), signature=signature).lower()
+    except Exception as e:
+        raise AuthError(f"Invalid wallet signature: {e}")
 
 
-def clear_nonce(address: str) -> None:
-    """Remove a used nonce."""
-    _nonce_store.pop(address.lower(), None)
-
-
-def store_challenge(user_id: str, purpose: str, challenge: str) -> None:
-    """Store WebAuthn challenge for a user and purpose."""
-    key = f"{user_id}:{purpose}"
-    _challenge_store[key] = challenge
-
-
-def get_challenge(user_id: str, purpose: str) -> Optional[str]:
-    """Get and clear stored WebAuthn challenge for a user and purpose."""
-    key = f"{user_id}:{purpose}"
-    return _challenge_store.pop(key, None)
-
-
-def verify_assertion(user_id: str, purpose: str) -> None:
-    """Register a successful verified assertion."""
-    key = f"{user_id}:{purpose}"
-    # Valid for 5 minutes
-    expires_at = datetime.now(UTC) + timedelta(minutes=5)
-    _verified_assertion_store[key] = expires_at
-
-
-def is_assertion_valid(user_id: str, purpose: str) -> bool:
-    """Check if a verified assertion exists and is valid."""
-    key = f"{user_id}:{purpose}"
-    expires_at = _verified_assertion_store.get(key)
-    if not expires_at:
-        return False
-    if datetime.now(UTC) > expires_at:
-        _verified_assertion_store.pop(key, None)
-        return False
-    # Single-use: once verified, clear it
-    _verified_assertion_store.pop(key, None)
-    return True
-
-
-def create_jwt(wallet_address: str, did: str, role: str, session_version: int = 0, client_ip: Optional[str] = None) -> str:
-    """Create a short-lived JWT session token with optional IP binding."""
+def create_jwt(
+    wallet_address: str,
+    did: str,
+    role: str,
+    session_version: int = 0,
+    client_ip: Optional[str] = None,
+    scope: str = SCOPE_FULL,
+) -> str:
+    """Create a short-lived JWT bound to the session version and client IP."""
     now = datetime.now(UTC)
     payload = {
         "sub": wallet_address.lower(),
@@ -111,6 +71,8 @@ def create_jwt(wallet_address: str, did: str, role: str, session_version: int = 
         "role": role,
         "session_version": session_version,
         "client_ip": client_ip,
+        "scope": scope,
+        "jti": secrets.token_hex(12),
         "iat": now,
         "exp": now + timedelta(minutes=settings.JWT_EXPIRE_MINUTES),
     }
@@ -118,80 +80,18 @@ def create_jwt(wallet_address: str, did: str, role: str, session_version: int = 
 
 
 def verify_jwt(token: str) -> Optional[dict]:
-    """Verify and decode a JWT. Returns payload or None if invalid."""
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
-        return payload
+        return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
     except JWTError:
         return None
 
 
-async def verify_siwe_message(
-    message: str,
-    signature: str,
-    nonce: str,
-    db: AsyncSession,
-) -> User:
-    """Verify a SIWE/EIP-4361 message and signature, returning or creating the user."""
-    try:
-        # Recover address from signature directly
-        encoded_message = encode_defunct(text=message)
-        recovered_address = Account.recover_message(encoded_message, signature=signature)
-
-        # Verify nonce matches what we stored for the recovered address
-        stored_nonce = get_nonce(recovered_address)
-        if not stored_nonce:
-            raise AuthError("Nonce expired or not found")
-        if stored_nonce != nonce:
-            raise AuthError("Invalid nonce")
-
-        # Nonce is single-use — clear it
-        clear_nonce(recovered_address)
-
-        # Find or create user (using AsyncSession)
-        from app.models.domain import User
-        from sqlalchemy import func
-
-        result = await db.execute(
-            select(User).where(func.lower(User.wallet_address) == recovered_address.lower())
-        )
-        user = result.scalar_one_or_none()
-
-        if not user:
-            # First connect — issue DID
-            did = f"did:ethr:{settings.CHAIN_ID}:{recovered_address.lower()}"
-            user = User(wallet_address=recovered_address.lower(), did=did, role="USER")
-            db.add(user)
-            await db.commit()
-            await db.refresh(user)
-        elif not user.is_active:
-            # Blocked wallet
-            raise AuthError("Wallet access has been revoked for this user")
-        elif not user.did:
-            # Auto-repair legacy accounts that were seeded without a DID
-            user.did = f"did:ethr:{settings.CHAIN_ID}:{user.wallet_address.lower()}"
-            await db.commit()
-            await db.refresh(user)
-
-        return user
-
-    except Exception as e:
-        if isinstance(e, AuthError):
-            raise
-        raise AuthError(f"Authentication verification error: {e}")
+def expected_did(wallet_address: str) -> str:
+    return f"did:ethr:{settings.CHAIN_ID}:{wallet_address.lower()}"
 
 
-async def migrate_user_dids(db: AsyncSession) -> int:
-    """Ensure all users in the database have valid W3C DIDs formatted as did:ethr:{CHAIN_ID}:{wallet_address}."""
-    result = await db.execute(select(User))
-    users = result.scalars().all()
-    migrated_count = 0
-    for user in users:
-        expected_did = f"did:ethr:{settings.CHAIN_ID}:{user.wallet_address.lower()}"
-        if user.did != expected_did:
-            user.did = expected_did
-            migrated_count += 1
-    if migrated_count > 0:
-        await db.commit()
-    return migrated_count
-
+async def report_legacy_dids(db: AsyncSession) -> int:
+    """Count users whose DID does not match did:ethr:<CHAIN_ID>:<wallet>.
+    Report-only: historical identifiers are never rewritten silently."""
+    users = (await db.execute(select(User))).scalars().all()
+    return sum(1 for u in users if u.did != expected_did(u.wallet_address))

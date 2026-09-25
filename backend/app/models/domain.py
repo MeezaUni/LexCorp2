@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer, UniqueConstraint, DateTime
+from sqlalchemy import String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer, BigInteger, UniqueConstraint, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -24,22 +24,35 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(default=True)
     onboarding_pending: Mapped[bool] = mapped_column(Boolean, default=True)
     session_version: Mapped[int] = mapped_column(Integer, default=0)
+    # Legacy plaintext PIN column. Migration 0003 moved values into pin_hash; never written.
     one_time_pin: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    pin_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    pin_hash: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    pin_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     pin_used: Mapped[bool] = mapped_column(Boolean, default=False)
     reset_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    reset_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    reset_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # Factor 1: Login TOTP (existing — backward-compatible rename)
-    totp_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Server-side session activity (single active session per user) and identity revocation
+    last_activity_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revocation_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # TOTP secrets are stored encrypted (app.core.crypto). *_last_step blocks code replay.
+    # Factor 1: Login TOTP
+    totp_secret: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    totp_last_step: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     # Factor 2: View / Submission TOTP
-    totp_factor2_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    totp_factor2_secret: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_totp_factor2_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    totp_factor2_last_step: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     # Factor 3: Mint / Approve / Modify TOTP
-    totp_factor3_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    totp_factor3_secret: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_totp_factor3_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    totp_factor3_last_step: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     # High-Assurance Hardware WebAuthn/Passkey Credentials
     webauthn_credentials: Mapped[List["WebAuthnCredential"]] = relationship(
@@ -67,6 +80,37 @@ class WebAuthnCredential(Base, TimestampMixin):
     factor_scope: Mapped[str] = mapped_column(String(20), default="login")
 
     user: Mapped[User] = relationship(back_populates="webauthn_credentials")
+
+
+class AuthChallenge(Base, TimestampMixin):
+    """Single-use server-side challenge: SIWE nonces and WebAuthn challenges."""
+    __tablename__ = "auth_challenges"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(20), index=True)  # SIWE, WEBAUTHN_REG, WEBAUTHN_AUTH
+    wallet_address: Mapped[Optional[str]] = mapped_column(String(42), index=True, nullable=True)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    purpose: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # login, factor2, factor3
+    action: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    challenge: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class StepUpGrant(Base, TimestampMixin):
+    """Proof that a purpose-specific factor (Factor 2 / Factor 3) was just satisfied
+    for one named action. Single-use and short-lived; only the token hash is stored."""
+    __tablename__ = "step_up_grants"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    purpose: Mapped[str] = mapped_column(String(20))
+    action: Mapped[str] = mapped_column(String(64))
+    method: Mapped[str] = mapped_column(String(10))  # TOTP, PASSKEY
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    session_version: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Asset(Base, TimestampMixin):
@@ -134,7 +178,7 @@ class DocumentAction(Base, TimestampMixin):
     purpose: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     client_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     download_token: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True, nullable=True)
-    token_expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     watermark_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 

@@ -249,7 +249,7 @@ async def check_actor_risk_level(actor_did: str, db) -> dict:
     """
     from sqlalchemy import select, desc
     from app.models.domain import AuditEvent
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, UTC
 
     if not actor_did:
         return {
@@ -261,7 +261,7 @@ async def check_actor_risk_level(actor_did: str, db) -> dict:
 
     try:
         # Query recent events for this actor (last 24 hours)
-        cutoff_time = datetime.utcnow() - timedelta(hours=24)
+        cutoff_time = datetime.now(UTC) - timedelta(hours=24)
 
         result = await db.execute(
             select(AuditEvent)

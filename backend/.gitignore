@@ -15,3 +15,6 @@ dist/
 build/
 *.egg-info/
 .mypy_cache/
+
+# Isolated test file storage
+tests/.test_storage/

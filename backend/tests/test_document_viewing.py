@@ -1,6 +1,7 @@
 """Test suite for Phase 5: Digital Document Viewing, Dynamic Watermarking, & View Logging (VW-)."""
 
 import pytest
+from tests.conftest import mfa_headers
 import uuid
 import os
 from PIL import Image
@@ -26,7 +27,7 @@ async def test_view_digital_document_success(client, db_session):
     serial = f"BEL-DOC-VIEW-{uuid.uuid4().hex[:6].upper()}"
     prop_res = await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=await mfa_headers(db_session, token, USER_WALLET, "document.submit"),
         json={
             "name": "Secret Specs",
             "serial_number": serial,
@@ -44,7 +45,7 @@ async def test_view_digital_document_success(client, db_session):
     with patch("app.services.contract.contract_service.prepare_mint_digital_calldata", return_value={"to": "0x123", "data": "0xabc"}):
         appr_res = await client.post(
             f"/api/assets/document/approval/{action_id}",
-            headers={"Authorization": f"Bearer {mgr_token}"},
+            headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "asset.approve"),
             json={"decision": "APPROVE"}
         )
     assert appr_res.status_code == 200
@@ -60,7 +61,7 @@ async def test_view_digital_document_success(client, db_session):
     # View Document
     view_res = await client.get(
         f"/api/assets/document/view/{action_id}",
-        headers={"Authorization": f"Bearer {token}"}
+        headers=await mfa_headers(db_session, token, USER_WALLET, "document.view")
     )
     assert view_res.status_code == 200
     assert view_res.headers["content-type"] == "application/octet-stream"
@@ -70,14 +71,14 @@ async def test_view_digital_document_success(client, db_session):
     assert returned_img.format == "PNG"
 
 @pytest.mark.asyncio
-async def test_view_digital_document_unauthorized(client):
+async def test_view_digital_document_unauthorized(client, db_session):
     """Users cannot view documents proposed by others."""
     # User 1 proposes doc
     token1 = get_token(USER_WALLET, "USER", 1)
     serial = f"BEL-DOC-VIEW-UNAUTH-{uuid.uuid4().hex[:6].upper()}"
     prop_res = await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {token1}"},
+        headers=await mfa_headers(db_session, token1, USER_WALLET, "document.submit"),
         json={
             "name": "Classified Doc",
             "serial_number": serial,
@@ -107,7 +108,7 @@ async def test_view_audit_logs(client, db_session):
 
     prop_res = await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=await mfa_headers(db_session, token, USER_WALLET, "document.submit"),
         json={
             "name": "Log Tracking Doc",
             "serial_number": serial,
@@ -120,8 +121,8 @@ async def test_view_audit_logs(client, db_session):
     action_id = prop_res.json()["action_id"]
 
     # View it multiple times
-    await client.get(f"/api/assets/document/view/{action_id}", headers={"Authorization": f"Bearer {token}"})
-    await client.get(f"/api/assets/document/view/{action_id}", headers={"Authorization": f"Bearer {token}"})
+    await client.get(f"/api/assets/document/view/{action_id}", headers=await mfa_headers(db_session, token, USER_WALLET, "document.view"))
+    await client.get(f"/api/assets/document/view/{action_id}", headers=await mfa_headers(db_session, token, USER_WALLET, "document.view"))
 
     # Retrieve logs (as admin)
     admin_token = get_token(ADMIN_WALLET, "ADMIN", 5)

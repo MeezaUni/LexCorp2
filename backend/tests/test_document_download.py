@@ -1,4 +1,5 @@
 import pytest
+from tests.conftest import mfa_headers
 import uuid
 import os
 import pyotp
@@ -28,7 +29,7 @@ async def test_download_workflow_success(client, db_session):
         serial = f"BEL-DL-{uuid.uuid4().hex[:6].upper()}"
         propose_res = await client.post(
             "/api/assets/document/propose",
-            headers={"Authorization": f"Bearer {user_token}"},
+            headers=await mfa_headers(db_session, user_token, USER_WALLET, "document.submit"),
             json={
                 "name": "Download Doc",
                 "serial_number": serial,
@@ -49,7 +50,7 @@ async def test_download_workflow_success(client, db_session):
         creation_action = res.scalar_one()
         await client.post(
             f"/api/assets/document/approval/{creation_action.action_id}",
-            headers={"Authorization": f"Bearer {mgr_token}"},
+            headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "asset.approve"),
             json={"decision": "APPROVE"}
         )
         
@@ -79,7 +80,7 @@ async def test_download_workflow_success(client, db_session):
         # 3. Approve download (Manager)
         appr_res = await client.post(
             f"/api/assets/document/approval/{action_id}",
-            headers={"Authorization": f"Bearer {mgr_token}"},
+            headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "asset.approve"),
             json={"decision": "APPROVE"}
         )
         assert appr_res.status_code == 200

@@ -36,15 +36,15 @@ async def lifespan(app: FastAPI):
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables verified/created successfully.")
 
-        # Run DID auto-migration on startup
-        from app.core.database import async_session_maker
-        from app.services.auth import migrate_user_dids
-        async with async_session_maker() as db:
-            migrated = await migrate_user_dids(db)
-            if migrated > 0:
-                logger.info(f"Startup DID migration completed: {migrated} user DIDs updated.")
+        # DID format check is report-only; historical DIDs are never rewritten silently.
+        from app.core.database import async_session_factory
+        from app.services.auth import report_legacy_dids
+        async with async_session_factory() as db:
+            legacy = await report_legacy_dids(db)
+            if legacy:
+                logger.warning(f"{legacy} user DID(s) do not match did:ethr:{settings.CHAIN_ID}:<wallet>; review before any migration.")
     except Exception as e:
-        logger.error(f"Failed to initialize database tables or migrate DIDs: {e}")
+        logger.error(f"Failed to initialize database tables or check DIDs: {e}")
 
     # Initialize AI Risk Engine model
     from app.services.ai import ai_engine

@@ -10,11 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List, Any
 import time
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 
 from app.core.limiter import limiter
-from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_onboarded_user, get_request_client_ip
+from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_onboarded_user, get_request_client_ip, get_step_up_token, record_audit
 from app.core.config import settings
 from app.services.contract import contract_service
 from app.services.watermark import apply_watermark
@@ -22,8 +22,7 @@ from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_asset_certificate_svg
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent, AssetAccessGrant
 from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead
-from app.services.security import verify_totp
-from app.services import auth
+from app.services import mfa
 from sqlalchemy import select, desc, func, or_
 
 # Simple in-memory TTL cache (60 seconds) for registry queries
@@ -46,7 +45,7 @@ def _set_cache(key: str, value):
 router = APIRouter(prefix="/assets", tags=["assets"])
 
 # Storage directory for off-chain encrypted documents
-OFFCHAIN_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "offchain_storage")
+OFFCHAIN_STORAGE_DIR = settings.OFFCHAIN_STORAGE_DIR
 os.makedirs(OFFCHAIN_STORAGE_DIR, exist_ok=True)
 
 
@@ -232,7 +231,7 @@ async def prepare_revoke(request: AccessCheckRequest, current_user: User = Depen
     )
 
 @router.post("/mint/prepare", response_model=MintCalldataResponse)
-async def prepare_mint(request: MintRequest, current_user: User = Depends(get_onboarded_user)):
+async def prepare_mint(request: MintRequest, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db), step_up_token: Optional[str] = Depends(get_step_up_token)):
     """Prepare unsigned mint transaction calldata for physical asset.
 
     Authorization Rules:
@@ -247,10 +246,7 @@ async def prepare_mint(request: MintRequest, current_user: User = Depends(get_on
         )
 
     # Factor 3 Validation
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
-    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "asset.mint", totp_code=request.totp_code, step_up_token=step_up_token)
 
     calldata = contract_service.prepare_mint_calldata(
         request.to_address,
@@ -264,7 +260,7 @@ async def prepare_mint(request: MintRequest, current_user: User = Depends(get_on
     )
 
 @router.post("/mint-digital/prepare", response_model=MintCalldataResponse)
-async def prepare_mint_digital(request: DigitalMintRequest, current_user: User = Depends(get_onboarded_user)):
+async def prepare_mint_digital(request: DigitalMintRequest, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db), step_up_token: Optional[str] = Depends(get_step_up_token)):
     """Prepare unsigned mint transaction calldata for digital asset with SHA-256 hash.
 
     Authorization Rules:
@@ -278,10 +274,7 @@ async def prepare_mint_digital(request: DigitalMintRequest, current_user: User =
         )
 
     # Factor 3 Validation
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
-    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "asset.mint", totp_code=request.totp_code, step_up_token=step_up_token)
 
 
     calldata = contract_service.prepare_mint_digital_calldata(
@@ -309,7 +302,9 @@ class UpdateDigitalAssetRequest(BaseModel):
 @router.post("/update-digital/prepare", response_model=MintCalldataResponse)
 async def prepare_update_digital(
     request: UpdateDigitalAssetRequest,
-    current_user: User = Depends(get_onboarded_user)
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Prepare unsigned updateDigitalAsset transaction calldata."""
     if current_user.role == "AUDITOR":
@@ -319,10 +314,7 @@ async def prepare_update_digital(
         )
 
     # Factor 3 Validation
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
-    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "document.modify", totp_code=request.totp_code, step_up_token=step_up_token)
 
 
     calldata = contract_service.prepare_update_digital_asset_calldata(
@@ -771,20 +763,13 @@ async def assign_asset_custodian(
     asset_db = res.scalar_one_or_none()
 
     if not asset_db:
-        # Create DB record if not exists
-        asset_db = Asset(
-            serial_number=serial,
-            token_id=token_id,
-            owner_id=current_user.id,
-            custodian_did=req.custodian_did,
-            custodian_department=req.custodian_department,
-            lifecycle_status=req.lifecycle_status or "ASSIGNED"
-        )
-        db.add(asset_db)
-    else:
-        asset_db.custodian_did = req.custodian_did
-        asset_db.custodian_department = req.custodian_department
-        asset_db.lifecycle_status = req.lifecycle_status or "ASSIGNED"
+        # Never fabricate a registry record (previously created one owned by the caller).
+        raise HTTPException(status_code=404, detail="Asset is not in the LexCorp registry.")
+    if current_user.role == "MANAGER" and asset_db.department and asset_db.department != current_user.department:
+        raise HTTPException(status_code=403, detail="Managers can only reassign custody of assets in their own department.")
+    asset_db.custodian_did = req.custodian_did
+    asset_db.custodian_department = req.custodian_department
+    asset_db.lifecycle_status = req.lifecycle_status or "ASSIGNED"
 
     await db.commit()
     await db.refresh(asset_db)
@@ -991,7 +976,8 @@ async def propose_document_creation(
     request: DocumentProposalRequest,
     current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
-    client_ip: str = Depends(get_request_client_ip)
+    client_ip: str = Depends(get_request_client_ip),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Propose a new digital document for creation and approval."""
     if current_user.role in ["ADMIN", "MANAGER"]:
@@ -1001,13 +987,8 @@ async def propose_document_creation(
     if current_user.role in ["USER", "AUDITOR"] and dept != current_user.department:
         raise HTTPException(status_code=403, detail="Users can only propose documents for their assigned department.")
 
-    if not current_user.is_totp_factor2_enabled:
-        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to submit proposals.")
 
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "document.submit", totp_code=request.totp_code, step_up_token=step_up_token)
 
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
     if res.scalar_one_or_none():
@@ -1081,16 +1062,12 @@ async def propose_document_share(
     request: ShareProposalRequest,
     current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
-    client_ip: str = Depends(get_request_client_ip)
+    client_ip: str = Depends(get_request_client_ip),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Propose sharing an asset with another DID."""
-    if not current_user.is_totp_factor2_enabled:
-        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to submit proposals.")
 
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "access.request", totp_code=request.totp_code, step_up_token=step_up_token)
 
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.asset_serial))
     asset = res.scalar_one_or_none()
@@ -1140,7 +1117,8 @@ async def propose_physical_asset_creation(
     request: PhysicalProposalRequest,
     current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
-    client_ip: str = Depends(get_request_client_ip)
+    client_ip: str = Depends(get_request_client_ip),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Propose a new physical asset for creation and approval."""
     if current_user.role == "AUDITOR":
@@ -1152,13 +1130,8 @@ async def propose_physical_asset_creation(
     if current_user.role == "MANAGER" and dept != current_user.department:
         raise HTTPException(status_code=403, detail="Managers can only propose physical assets for their assigned department.")
 
-    if not current_user.is_totp_factor2_enabled:
-        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to submit proposals.")
 
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "document.submit", totp_code=request.totp_code, step_up_token=step_up_token)
 
     # 1. Uniqueness check on serial_number
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.serial_number))
@@ -1339,7 +1312,8 @@ async def approve_document(
     request: DocumentApprovalRequest,
     current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
-    client_ip: str = Depends(get_request_client_ip)
+    client_ip: str = Depends(get_request_client_ip),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Approve or reject a pending document action."""
     if current_user.role not in ["ADMIN", "MANAGER"]:
@@ -1360,13 +1334,8 @@ async def approve_document(
         if asset.department != current_user.department:
             raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
 
-    if not current_user.is_totp_factor3_enabled:
-        raise HTTPException(status_code=403, detail="Factor 3 setup required. Please complete your MFA onboarding to perform approvals.")
 
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
-    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "asset.approve", totp_code=request.totp_code, step_up_token=step_up_token)
 
     if request.decision.upper() == "APPROVE":
         action.status = "APPROVED"
@@ -1444,7 +1413,7 @@ async def approve_document(
                 )
         elif action.action_type == "DOWNLOAD":
             download_token = f"dlt_{secrets.token_urlsafe(32)}"
-            token_expires_at = datetime.utcnow() + timedelta(minutes=15)
+            token_expires_at = datetime.now(UTC) + timedelta(minutes=15)
             action.download_token = download_token
             action.token_expires_at = token_expires_at
             download_url = f"/api/assets/document/download-token/{download_token}"
@@ -1544,18 +1513,14 @@ async def view_digital_document(
     identifier: str,
     totp_code: Optional[str] = None,
     current_user: User = Depends(get_onboarded_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Securely render a document with on-the-fly dynamic watermarking."""
 
     # 1. MFA Factor 2 Enforcement
-    if not current_user.is_totp_factor2_enabled:
-        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to view documents.")
 
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-    is_totp_valid = totp_code and verify_totp(current_user.totp_factor2_secret, totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "document.view", totp_code=totp_code, step_up_token=step_up_token)
 
     # 2. Lookup asset or action
     asset = None
@@ -1695,18 +1660,14 @@ async def request_document_download(
     request: DownloadRequest,
     req: Request,
     current_user: User = Depends(get_onboarded_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Submit a request to download a digital document, pending Manager/Admin approval."""
     
     # 1. MFA Factor 2 Enforcement
-    if not current_user.is_totp_factor2_enabled:
-        raise HTTPException(status_code=403, detail="Factor 2 setup required. Please complete your MFA onboarding to submit proposals.")
 
-    is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-    is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
-    if not (is_totp_valid or is_passkey_valid):
-        raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    await mfa.require_factor(db, current_user, "download.request", totp_code=request.totp_code, step_up_token=step_up_token)
 
     # 2. Asset Verification
     asset_res = await db.execute(select(Asset).filter(Asset.serial_number == request.asset_serial))
@@ -1756,17 +1717,20 @@ async def approve_document_download(
     action_id: str,
     request: DocumentApprovalRequest,
     current_user: User = Depends(get_onboarded_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    client_ip: str = Depends(get_request_client_ip),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Alias endpoint for approving download requests. Just routes to approve_document."""
-    return await approve_document(action_id, request, current_user, db)
+    return await approve_document(action_id, request, current_user, db, client_ip, step_up_token)
 
 
 @router.post("/document/revise", response_model=DocumentActionRead)
 async def revise_document(
     request: DocumentRevisionRequest,
     current_user: User = Depends(get_onboarded_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
     """Propose a modification/revision to an existing digital document."""
     if current_user.role == "AUDITOR":
@@ -1791,22 +1755,8 @@ async def revise_document(
         if parent_asset.department and current_user.department and parent_asset.department != current_user.department:
             raise HTTPException(status_code=403, detail="Managers can only revise documents in their own department.")
 
-    # 3. Factor 3 / Factor 2 MFA Check (Modification requires Factor 3, with fallback to Factor 2)
-    if not current_user.is_totp_factor3_enabled and not current_user.is_totp_factor2_enabled:
-        raise HTTPException(status_code=403, detail="MFA setup required. Please complete your MFA onboarding to perform approvals.")
-
-    # Try Factor 3
-    if current_user.is_totp_factor3_enabled:
-        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor3")
-        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor3_secret, request.totp_code)
-        if not (is_totp_valid or is_passkey_valid):
-            raise HTTPException(status_code=401, detail="Invalid Factor 3 (Mint/Approve/Modify) TOTP or Passkey validation failed.")
-    # Fallback to Factor 2
-    elif current_user.is_totp_factor2_enabled:
-        is_passkey_valid = auth.is_assertion_valid(str(current_user.id), "factor2")
-        is_totp_valid = request.totp_code and verify_totp(current_user.totp_factor2_secret, request.totp_code)
-        if not (is_totp_valid or is_passkey_valid):
-            raise HTTPException(status_code=401, detail="Invalid Factor 2 (View/Submission) TOTP or Passkey validation failed.")
+    # 3. Modification requires Factor 3 (TOTP 3 or Passkey 3) — no Factor 2 fallback
+    await mfa.require_factor(db, current_user, "document.modify", totp_code=request.totp_code, step_up_token=step_up_token)
 
     # 4. Uniqueness check for new serial number
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.new_serial_number))
@@ -2001,7 +1951,7 @@ async def download_document_with_token(
     if action.status != "APPROVED":
         raise HTTPException(status_code=403, detail="Download request is not in APPROVED status")
         
-    if action.token_expires_at and action.token_expires_at < datetime.utcnow():
+    if action.token_expires_at and action.token_expires_at < datetime.now(UTC):
         raise HTTPException(status_code=403, detail="Download token has expired")
 
     # 2. Consume token (single use)

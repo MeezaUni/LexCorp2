@@ -8,6 +8,10 @@ os.environ.setdefault(
 os.environ.setdefault(
     "DATABASE_URL_SYNC", "postgresql://lexcorp:lexcorp_dev@localhost:5432/lexcorp_sih_test"
 )
+# Test file storage is isolated from the live off-chain vault.
+os.environ.setdefault(
+    "OFFCHAIN_STORAGE_DIR", os.path.join(os.path.dirname(__file__), ".test_storage")
+)
 if not os.environ["DATABASE_URL"].rstrip("/").endswith("_test"):
     raise RuntimeError("Refusing to run tests: DATABASE_URL must point at a *_test database.")
 
@@ -22,14 +26,48 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.models.domain import User
 
-@pytest_asyncio.fixture(scope="function", autouse=True)
-def mock_mfa_factors(request):
-    """Bypass MFA assertions for regression tests not specifically testing WebAuthn/TOTP assertions."""
-    if "test_passkey_factors.py" in str(request.node.fspath) or "test_approval_factor3_totp_enforcement" in request.node.name:
+import pyotp
+from app.core.crypto import encrypt_secret
+
+# Deterministic per-user, per-purpose TOTP secrets for tests. No MFA bypass exists:
+# tests must present a real TOTP code or a real step-up grant for the right purpose.
+def test_totp_secret(wallet: str, purpose: str) -> str:
+    import base64, hashlib
+    raw = hashlib.sha256(f"{wallet.lower()}:{purpose}".encode()).digest()[:20]
+    return base64.b32encode(raw).decode()
+
+
+def totp_code(wallet: str, purpose: str) -> str:
+    return pyotp.TOTP(test_totp_secret(wallet, purpose)).now()
+
+
+async def mfa_headers(db, token: str, wallet: str, action: str) -> dict:
+    """Authorization header plus a genuine step-up grant for one action."""
+    return {"Authorization": f"Bearer {token}", "X-Step-Up-Token": await step_up_token(db, wallet, action)}
+
+
+async def step_up_token(db, wallet: str, action: str) -> str:
+    """Mint a genuine step-up grant (the same record a passkey assertion produces)."""
+    from app.services import mfa
+    user = (await db.execute(select(User).where(User.wallet_address == wallet.lower()))).scalar_one()
+    grant = await mfa.issue_step_up(db, user, mfa.ACTION_PURPOSE[action], action, "PASSKEY")
+    await db.commit()
+    return grant["step_up_token"]
+
+@pytest.fixture(autouse=True)
+def reset_rate_limits():
+    """Rate limits stay active inside a test; counters just don't leak between tests."""
+    from app.core.limiter import limiter
+    limiter.reset()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def no_live_chain_funding():
+    """User creation funds wallets on Besu; tests must not send live transactions."""
+    with patch("app.api.users.auto_fund_wallet", return_value=None):
         yield
-    else:
-        with patch("app.api.assets.auth.is_assertion_valid", return_value=True):
-            yield
+
 
 TEST_USERS = [
     {
@@ -120,6 +158,9 @@ async def seed_test_users(setup_database):
                     is_totp_factor3_enabled=True,
                     onboarding_pending=False
                 )
+                u.totp_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "login"))
+                u.totp_factor2_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "factor2"))
+                u.totp_factor3_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "factor3"))
                 session.add(u)
             else:
                 existing.role = u_data["role"]
@@ -145,8 +186,16 @@ async def reset_user_mfa(db_session):
             user.is_totp_enabled = True
             user.is_totp_factor2_enabled = True
             user.is_totp_factor3_enabled = True
-            user.totp_factor2_secret = None
-            user.totp_factor3_secret = None
+            user.totp_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "login"))
+            user.totp_factor2_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "factor2"))
+            user.totp_factor3_secret = encrypt_secret(test_totp_secret(u_data["wallet_address"], "factor3"))
+            user.totp_last_step = None
+            user.totp_factor2_last_step = None
+            user.totp_factor3_last_step = None
+            user.last_activity_at = None
+            user.session_version = u_data["session_version"]
+            user.is_active = u_data["is_active"]
+            user.revoked_at = None
             user.onboarding_pending = False
     await db_session.commit()
 

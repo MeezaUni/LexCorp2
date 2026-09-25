@@ -107,7 +107,7 @@ async def test_idor_and_spoofing_prevented_on_download(async_client: AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_rbac_custody_assignment_restrictions(async_client: AsyncClient, auth_tokens):
+async def test_rbac_custody_assignment_restrictions(async_client: AsyncClient, auth_tokens, db_session):
     """Verify that only ADMIN and MANAGER can assign custody. USER and AUDITOR get 403."""
     user_headers = {"Authorization": f"Bearer {auth_tokens['user']}"}
     auditor_headers = {"Authorization": f"Bearer {auth_tokens['auditor']}"}
@@ -136,13 +136,26 @@ async def test_rbac_custody_assignment_restrictions(async_client: AsyncClient, a
     )
     assert res.status_code == 403
 
-    # 3. MANAGER permitted (200 or 404 depending on chain mock)
+    # 3. MANAGER permitted for a registered asset in their department
+    from app.models.domain import Asset
+    from sqlalchemy import select as _select
+    owner = (await db_session.execute(_select(User).where(User.wallet_address == "0x95ea9708bcf136d710a4b8e76fe20f895eca003a"))).scalar_one()
+    radar_serial = f"BEL-RADAR-{uuid.uuid4().hex[:6]}"
+    db_session.add(Asset(token_id=uuid.uuid4().int % 2_000_000_000, serial_number=radar_serial, owner_id=owner.id,
+                         department="Radar Dept", is_physical=True))
+    await db_session.commit()
     mock_manager = User(id=uuid.uuid4(), wallet_address="0x70997970c51812dc3a010c7d01b50e0d17dc79c8", role="MANAGER", is_active=True, session_version=0, department="Radar Dept")
     app.dependency_overrides[get_current_user] = lambda: mock_manager
 
     with patch("app.services.contract.contract_service.get_token_by_serial", return_value=1):
+        missing = await async_client.post(
+            "/api/assets/serial/NOT-IN-REGISTRY/assign",
+            json={"custodian_did": "did:ethr:13371:0x999", "custodian_department": "Radar Dept"},
+            headers=manager_headers
+        )
+        assert missing.status_code == 404
         res = await async_client.post(
-            "/api/assets/serial/BEL-RADAR-001/assign",
+            f"/api/assets/serial/{radar_serial}/assign",
             json={"custodian_did": "did:ethr:13371:0x999", "custodian_department": "Radar Dept"},
             headers=manager_headers
         )

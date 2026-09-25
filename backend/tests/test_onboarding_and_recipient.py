@@ -1,6 +1,8 @@
 """Test suite for Mandatory MFA Onboarding and Recipient Mapping in Document Proposals."""
 
 import pytest
+from tests.conftest import mfa_headers
+from app.core.crypto import verify_pin
 import uuid
 import pyotp
 from unittest.mock import patch
@@ -79,7 +81,11 @@ async def test_admin_creates_user_with_onboarding_pending(client, db_session):
     res = await db_session.execute(select(User).where(User.wallet_address == new_wallet))
     created_user = res.scalar_one()
     assert created_user.onboarding_pending is True
-    assert created_user.one_time_pin is not None
+    # The PIN is returned once and stored only as a hash, never in plaintext.
+    assert created_user.one_time_pin is None
+    assert created_user.pin_hash and created_user.pin_hash.startswith("scrypt$")
+    assert data["one_time_pin"] not in created_user.pin_hash
+    assert verify_pin(data["one_time_pin"], created_user.pin_hash)
     assert created_user.pin_used is False
 
 
@@ -109,7 +115,7 @@ async def test_document_proposal_with_recipient(client, db_session):
         # 1. Propose document specifying recipient
         propose_res = await client.post(
             "/api/assets/document/propose",
-            headers={"Authorization": f"Bearer {user_token}"},
+            headers=await mfa_headers(db_session, user_token, user_wallet, "document.submit"),
             json={
                 "name": "Targeted Spec Doc",
                 "serial_number": serial,
@@ -134,7 +140,7 @@ async def test_document_proposal_with_recipient(client, db_session):
         mgr_token = get_token(MANAGER_WALLET, "MANAGER", MANAGER_VERSION)
         appr_res = await client.post(
             f"/api/assets/document/approval/{action_id}",
-            headers={"Authorization": f"Bearer {mgr_token}"},
+            headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "asset.approve"),
             json={"decision": "APPROVE"}
         )
         assert appr_res.status_code == 200

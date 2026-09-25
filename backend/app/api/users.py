@@ -16,6 +16,8 @@ from app.core.database import get_db
 from app.api.dependencies import get_current_active_user, get_manager_user, get_admin_user
 from app.models.domain import User, Asset, VerifiableCredential
 from app.services.security import generate_one_time_pin
+from app.core.crypto import hash_pin
+from datetime import UTC
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -65,6 +67,7 @@ class UserResponse(BaseModel):
     one_time_pin: Optional[str] = None
     pin_expires_at: Optional[datetime] = None
     reset_requested: Optional[bool] = None
+    funding_warning: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -204,8 +207,9 @@ async def create_or_register_user(
 
     # Issue DID and create new record
     did = f"did:ethr:{settings.CHAIN_ID}:{checksummed.lower()}"
+    # The PIN is returned once in this response and stored only as a scrypt hash.
     pin = generate_one_time_pin(12)
-    pin_expires_at = datetime.utcnow() + timedelta(hours=3)
+    pin_expires_at = datetime.now(UTC) + timedelta(hours=settings.PROVISIONING_PIN_TTL_HOURS)
 
     new_user = User(
         wallet_address=checksummed.lower(),
@@ -216,7 +220,7 @@ async def create_or_register_user(
         role=role_clean,
         is_active=True,
         onboarding_pending=True,
-        one_time_pin=pin,
+        pin_hash=hash_pin(pin),
         pin_expires_at=pin_expires_at,
         pin_used=False
     )
@@ -224,8 +228,13 @@ async def create_or_register_user(
     await db.commit()
     await db.refresh(new_user)
 
-    # Fund the newly generated wallet with ETH on local network so they can transact
-    auto_fund_wallet(new_user.wallet_address)
+    # Fund the wallet for gas. A funding failure must not lose the one-time PIN,
+    # which exists only in this response, so it is reported rather than raised.
+    funding_warning = None
+    try:
+        auto_fund_wallet(new_user.wallet_address)
+    except Exception as e:
+        funding_warning = f"Wallet funding failed; use the Fund action later. ({str(e)[:200]})"
 
     return UserResponse(
         id=str(new_user.id),
@@ -237,9 +246,10 @@ async def create_or_register_user(
         role=new_user.role,
         is_active=new_user.is_active,
         onboarding_pending=new_user.onboarding_pending,
-        one_time_pin=new_user.one_time_pin,
+        one_time_pin=pin,
         pin_expires_at=new_user.pin_expires_at,
         reset_requested=new_user.reset_requested,
+        funding_warning=funding_warning,
     )
 
 

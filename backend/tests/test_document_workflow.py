@@ -7,6 +7,7 @@ from unittest.mock import patch
 from app.services.auth import create_jwt
 from app.models.domain import User
 from sqlalchemy import select
+from tests.conftest import mfa_headers
 
 ADMIN_WALLET = "0x95ea9708bcf136d710a4b8e76fe20f895eca003a".lower()
 MANAGER_WALLET = "0x049dd1327d3bf40ab2dd8d70086304770e841fca".lower()
@@ -34,7 +35,7 @@ async def test_propose_document_success(client, db_session):
 
     response = await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=await mfa_headers(db_session, token, USER_WALLET, "document.submit"),
         json=payload
     )
     assert response.status_code == 200
@@ -69,7 +70,7 @@ async def test_propose_document_department_violation(client):
 
 
 @pytest.mark.asyncio
-async def test_propose_document_duplicate_serial(client):
+async def test_propose_document_duplicate_serial(client, db_session):
     """Attempting to propose an asset with an already existing serial number is rejected."""
     token = get_token(USER_WALLET, "USER", 1)
 
@@ -84,7 +85,7 @@ async def test_propose_document_duplicate_serial(client):
     }
     res1 = await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=await mfa_headers(db_session, token, USER_WALLET, "document.submit"),
         json=payload1
     )
     assert res1.status_code == 200
@@ -100,7 +101,7 @@ async def test_propose_document_duplicate_serial(client):
 
     response = await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=await mfa_headers(db_session, token, USER_WALLET, "document.submit"),
         json=payload2
     )
     assert response.status_code == 400
@@ -115,7 +116,7 @@ async def test_pending_queue_department_scoping(client, db_session):
     token = get_token(USER_WALLET, "USER", 1)
     await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=await mfa_headers(db_session, token, USER_WALLET, "document.submit"),
         json={
             "name": "Pending Queue Scope Test Doc",
             "serial_number": f"BEL-DOC-AVIONICS-{uuid.uuid4().hex[:6].upper()}",
@@ -148,14 +149,14 @@ async def test_pending_queue_department_scoping(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_user_cannot_approve_document(client):
+async def test_user_cannot_approve_document(client, db_session):
     """Standard USER role is forbidden from approving documents."""
     token = get_token(USER_WALLET, "USER", 1)
 
     # Propose a fresh doc
     await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=await mfa_headers(db_session, token, USER_WALLET, "document.submit"),
         json={
             "name": "Approval scope fail doc",
             "serial_number": f"BEL-DOC-AVIONICS-{uuid.uuid4().hex[:6].upper()}",
@@ -187,7 +188,7 @@ async def test_approval_factor3_totp_enforcement(client, db_session):
     user_token = get_token(USER_WALLET, "USER", 1)
     await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {user_token}"},
+        headers=await mfa_headers(db_session, user_token, USER_WALLET, "document.submit"),
         json={
             "name": "MFA Test Document",
             "serial_number": f"BEL-DOC-MFA-{uuid.uuid4().hex[:6].upper()}",
@@ -249,7 +250,7 @@ async def test_rejection_workflow(client, db_session):
     user_token = get_token(USER_WALLET, "USER", 1)
     prop_res = await client.post(
         "/api/assets/document/propose",
-        headers={"Authorization": f"Bearer {user_token}"},
+        headers=await mfa_headers(db_session, user_token, USER_WALLET, "document.submit"),
         json={
             "name": "Defective Spec Document",
             "serial_number": f"BEL-DOC-REJECT-{uuid.uuid4().hex[:6].upper()}",
@@ -266,7 +267,7 @@ async def test_rejection_workflow(client, db_session):
     admin_token = get_token(ADMIN_WALLET, "ADMIN", 5)
     reject_res = await client.post(
         f"/api/assets/document/approval/{action_id}",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers=await mfa_headers(db_session, admin_token, ADMIN_WALLET, "asset.approve"),
         json={
             "decision": "REJECT",
             "rejection_reason": "Incomplete technical specifications and unverified hash integrity."

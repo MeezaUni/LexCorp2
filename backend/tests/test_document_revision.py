@@ -1,6 +1,7 @@
 """Test suite for Phase 7: Document Revision Workflow (MOD-)."""
 
 import pytest
+from tests.conftest import mfa_headers
 import uuid
 import os
 import pyotp
@@ -29,7 +30,7 @@ async def test_revise_document_success(client, db_session):
         serial1 = f"BEL-DOC-{uuid.uuid4().hex[:6].upper()}"
         propose_res1 = await client.post(
             "/api/assets/document/propose",
-            headers={"Authorization": f"Bearer {user_token}"},
+            headers=await mfa_headers(db_session, user_token, USER_WALLET, "document.submit"),
             json={
                 "name": "Original Doc v1",
                 "serial_number": serial1,
@@ -47,17 +48,17 @@ async def test_revise_document_success(client, db_session):
         creation_action = res.scalar_one()
         appr_res1 = await client.post(
             f"/api/assets/document/approval/{creation_action.action_id}",
-            headers={"Authorization": f"Bearer {mgr_token}"},
+            headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "asset.approve"),
             json={"decision": "APPROVE"}
         )
         assert appr_res1.status_code == 200
 
-        # Enable Factor 2 for user to propose revision
+        # Modification requires Factor 3 (spec: TOTP 3 OR Passkey 3)
         res = await db_session.execute(select(User).where(User.wallet_address == USER_WALLET))
         user = res.scalar_one()
         secret = pyotp.random_base32()
-        user.totp_factor2_secret = secret
-        user.is_totp_factor2_enabled = True
+        user.totp_factor3_secret = secret
+        user.is_totp_factor3_enabled = True
         await db_session.commit()
 
         totp = pyotp.TOTP(secret)

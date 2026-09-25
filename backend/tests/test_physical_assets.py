@@ -1,6 +1,7 @@
 """Test suite for Phase 9: Physical Asset Registration & Global Uniqueness Auditing."""
 
 import pytest
+from tests.conftest import mfa_headers
 import uuid
 import random
 from unittest.mock import patch
@@ -40,7 +41,7 @@ async def test_propose_physical_asset_success(client, db_session):
 
     response = await client.post(
         "/api/assets/physical/propose",
-        headers={"Authorization": f"Bearer {mgr_token}"},
+        headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "document.submit"),
         json=payload
     )
     assert response.status_code == 200
@@ -148,7 +149,7 @@ async def test_duplicate_mac_address_attempt_audited(client, db_session):
 
     response = await client.post(
         "/api/assets/physical/propose",
-        headers={"Authorization": f"Bearer {mgr_token}"},
+        headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "document.submit"),
         json=payload
     )
     assert response.status_code == 400
@@ -204,7 +205,7 @@ async def test_duplicate_device_unique_address_attempt_audited(client, db_sessio
 
     response = await client.post(
         "/api/assets/physical/propose",
-        headers={"Authorization": f"Bearer {mgr_token}"},
+        headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "document.submit"),
         json=payload
     )
     assert response.status_code == 400
@@ -231,7 +232,7 @@ async def test_physical_pending_queue_scoping(client, db_session):
     serial = f"BEL-HW-PENDING-{uuid.uuid4().hex[:6].upper()}"
     await client.post(
         "/api/assets/physical/propose",
-        headers={"Authorization": f"Bearer {mgr_token}"},
+        headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "document.submit"),
         json={
             "name": "Pending Hardware Test",
             "serial_number": serial,
@@ -261,7 +262,7 @@ async def test_physical_asset_approval_calldata(client, db_session):
     serial = f"BEL-HW-APPROVE-{uuid.uuid4().hex[:6].upper()}"
     prop_res = await client.post(
         "/api/assets/physical/propose",
-        headers={"Authorization": f"Bearer {mgr_token}"},
+        headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "document.submit"),
         json={
             "name": "Flight Computer Alpha",
             "serial_number": serial,
@@ -279,7 +280,7 @@ async def test_physical_asset_approval_calldata(client, db_session):
     with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0xContract", "data": "0xPhysicalMintData"}):
         res_approve = await client.post(
             f"/api/assets/physical/approval/{action_id}",
-            headers={"Authorization": f"Bearer {admin_token}"},
+            headers=await mfa_headers(db_session, admin_token, ADMIN_WALLET, "asset.approve"),
             json={"decision": "APPROVE"}
         )
     assert res_approve.status_code == 200
@@ -322,7 +323,7 @@ async def test_duplicate_serial_number_attempt_audited(client, db_session):
 
     response = await client.post(
         "/api/assets/physical/propose",
-        headers={"Authorization": f"Bearer {mgr_token}"},
+        headers=await mfa_headers(db_session, mgr_token, MANAGER_WALLET, "document.submit"),
         json=payload
     )
     assert response.status_code == 400

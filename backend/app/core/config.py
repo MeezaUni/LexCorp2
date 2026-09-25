@@ -34,11 +34,29 @@ class Settings(BaseSettings):
     CHAIN_ID: int = 13371
     CONTRACT_DEPLOYMENT_PATH: str = str(BASE_DIR.parent / "contracts" / "deployments" / "localhost.json")
 
+    # Off-chain document vault (original uploads are immutable; derived copies are generated per action)
+    OFFCHAIN_STORAGE_DIR: str = str(BASE_DIR / "offchain_storage")
+
     # IPFS
     IPFS_GATEWAY: str = "http://127.0.0.1:5001"
 
     # Nonce
     NONCE_EXPIRY_SECONDS: int = 300  # 5 minutes per NIST SP 800-63-4
+
+    # Session hardening
+    INACTIVITY_TIMEOUT_MINUTES: int = 15
+    # Only these peers may supply X-Forwarded-For; anyone else's header is ignored.
+    TRUSTED_PROXIES: List[str] = ["127.0.0.1/32", "::1/128"]
+
+    # Purpose-bound step-up (Factor 2 / Factor 3) grant lifetime
+    STEP_UP_TTL_SECONDS: int = 300
+    WEBAUTHN_CHALLENGE_TTL_SECONDS: int = 300
+
+    # Wallet provisioning PIN
+    PROVISIONING_PIN_TTL_HOURS: int = 3
+
+    # Key for encrypting TOTP secrets at rest. If unset, one is derived from JWT_SECRET.
+    DATA_ENCRYPTION_KEY: str = ""
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
