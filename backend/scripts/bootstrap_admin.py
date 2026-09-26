@@ -60,13 +60,17 @@ async def main() -> int:
     if a.reissue_pin:
         async with async_session_factory() as db:
             admins = (await db.execute(select(User).where(User.role == "ADMIN"))).scalars().all()
-            pending = [u for u in admins if u.onboarding_pending and not u.pin_used and u.is_active]
+            # Still setting up: either the PIN was never used, or it was used but the login
+            # authenticator and passkey were never completed (the setup session ended first).
+            pending = [u for u in admins if u.onboarding_pending and u.is_active]
             if len(admins) != 1 or len(pending) != 1:
-                print("Re-issue is only possible while the single bootstrap admin has not completed provisioning.")
+                print("Re-issue is only possible while the single bootstrap admin has not finished setting up. "
+                      "For an administrator who has finished, use --reset-login.")
                 return 2
             u = pending[0]
             pin = generate_one_time_pin(12)
             u.pin_hash = hash_pin(pin)
+            u.pin_used = False
             u.pin_expires_at = datetime.now(UTC) + timedelta(hours=settings.PROVISIONING_PIN_TTL_HOURS)
             import hashlib, time
             db.add(AuditEvent(event_type="PROVISIONING_PIN_REISSUED", block_number=0,
