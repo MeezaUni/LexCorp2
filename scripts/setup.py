@@ -43,8 +43,14 @@ def fail(msg):
     sys.exit(1)
 
 
+# `npm run setup` exports the parent npm's settings as npm_config_* variables; nested npm
+# commands would inherit them (newer npm then refuses to install). Child commands get a clean
+# environment and read .npmrc themselves, exactly as when typed in a terminal.
+CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.lower().startswith("npm_config_")}
+
+
 def run(cmd, cwd=ROOT, check=True, quiet=False, env=None):
-    r = subprocess.run(cmd, cwd=cwd, text=True, capture_output=quiet, env=env)
+    r = subprocess.run(cmd, cwd=cwd, text=True, capture_output=quiet, env=env or CLEAN_ENV)
     if check and r.returncode != 0:
         if quiet:
             print((r.stdout or "") + (r.stderr or ""))
@@ -157,7 +163,7 @@ def ledger():
         print("No validator keys on this machine yet: generating a new private network.")
         # Stop any nodes still running from an earlier attempt (the enode value is irrelevant for "down").
         run(["docker", "compose", "-f", str(BESU / "docker-compose-active.yml"), "down"], check=False, quiet=True,
-            env={**os.environ, "BESU_NODE1_ENODE": "0"})
+            env={**CLEAN_ENV, "BESU_NODE1_ENODE": "0"})
         run([PY, "scripts/generate_besu_network.py", "--force"])
     elif not NODE_ENV.is_file():
         enode = (KEYS / "node1" / "key.pub").read_text(encoding="utf-8").strip().removeprefix("0x")
@@ -230,7 +236,7 @@ def main():
         print("Start the app with: npm start   (then open http://localhost:5173)")
         return 0
     print("Starting the app: backend on 127.0.0.1:8000, frontend on http://localhost:5173 (Ctrl+C stops it).\n", flush=True)
-    return subprocess.call([NPM, "start"], cwd=ROOT)
+    return subprocess.call([NPM, "start"], cwd=ROOT, env=CLEAN_ENV)
 
 
 if __name__ == "__main__":

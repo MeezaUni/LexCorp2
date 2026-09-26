@@ -61,42 +61,58 @@ Hyperledger Besu ledger.
 
 ## First-time setup (development)
 
-You need Docker Desktop, Python 3.11 or newer, and Node 20 or newer.
+You need **Docker Desktop** (running), **Python 3.11 or newer**, **Node 20 or newer** and git.
+Then, in the project folder:
 
 ```bash
-npm install && npm --prefix frontend install && npm --prefix contracts install
-pip install -r backend/requirements-dev.txt
-
-python scripts/init_secrets.py          # writes .env, secrets/chain.env and backend/.env (git-ignored; values never printed)
-docker compose up -d postgres           # PostgreSQL on 127.0.0.1:5432
-python scripts/generate_besu_network.py # fresh validator keys and genesis (only if network/besu/data is empty)
-npm run besu:up && npm run chain:wait
-npm run contract:deploy && npm run contract:verify
-npm run migrate
-python backend/scripts/bootstrap_admin.py --name "Security Administrator" --department "Cyber Security"
-npm start                               # backend on 127.0.0.1:8000, frontend on http://localhost:5173
+npm run setup
 ```
 
-The first administrator's PIN is written to `secrets/bootstrap_admin_pin.txt`. If you did
-not pass `--wallet-address`, their generated wallet is written to
-`secrets/bootstrap_admin_wallet.json`. If the PIN expires before use, run
-`python backend/scripts/bootstrap_admin.py --reissue-pin`.
+That one command takes a fresh clone to a running app:
+1. checks the prerequisites;
+2. installs all dependencies;
+3. creates this machine's secrets (git-ignored; values never printed);
+4. starts PostgreSQL;
+5. generates this machine's own 3-validator blockchain and waits until it produces blocks;
+6. deploys and verifies the smart contract;
+7. prepares the database;
+8. creates the first administrator, then starts the backend (127.0.0.1:8000) and the frontend
+   (http://localhost:5173).
 
-### If the first run fails
+It is safe to run again: what already exists is kept. After the first time, `npm start` is
+enough. Useful options:
 
-- **`password authentication failed for user "lexcorp"`.** A PostgreSQL volume from an earlier
-  LexCorp setup is being reused. Its password was fixed when that volume was first created, so it
-  doesn't match the new `.env`.
-  - If you don't need that old local database, recreate it (this deletes it):
-    `docker compose down -v`, then `docker compose up -d postgres`.
+| Command | What it does |
+|---|---|
+| `npm run setup -- --no-start` | Prepare everything, but don't start the app |
+| `npm run setup -- --skip-install` | Skip the npm and pip installs |
+| `npm run setup -- --reset-db` | Recreate a local database left over from an older LexCorp copy (deletes that local database) |
+| `npm run stop` | Stop the app and the ledger |
+
+The first administrator's recovery phrase is in `secrets/bootstrap_admin_wallet.json` and the
+single-use PIN is in `secrets/bootstrap_admin_pin.txt`. If the PIN expires before use, run
+`python backend/scripts/bootstrap_admin.py --reissue-pin`. Then follow
+`backend/Final_Manual_Test_Checklist.md`.
+
+**Files that change on your machine.** The setup writes this machine's
+`contracts/deployments/besu.json` (the address of the contract it deployed). Don't commit it.
+Its network keys, genesis and `network/besu/.env` are already git-ignored.
+
+### If setup stops
+
+The setup explains what went wrong and what to run. The usual cases:
+- **The database rejects the password.** An older LexCorp copy created the local database with
+  another password.
+  - Run `npm run setup -- --reset-db` if you don't need that old local database.
   - To keep a copy first, run `docker exec lexcorp_postgres pg_dumpall -U lexcorp > old_db_backup.sql`.
-- **`network/besu/data holds chain data from an earlier network`**, or later
-  **`HH108: Cannot connect to the network besu`** / **`other side closed`.** The validator keys
-  for this machine were never generated, so the nodes keep restarting. Run:
-  `npm run besu:down`, then `python scripts/generate_besu_network.py --force` (old chain data is moved to
-  `network/besu/data_archived_<time>/`, not deleted), then `npm run besu:up && npm run chain:wait`.
-  Wait about 20 seconds, then continue with `npm run contract:deploy`.
-- Run the setup commands one at a time. If one fails, fix it before running the next.
+- **A container named `lexcorp_postgres` belongs to another folder.** Stop and rename it:
+  `docker stop lexcorp_postgres` then `docker rename lexcorp_postgres lexcorp_postgres_old`.
+- **Docker says a network pool overlaps.** Run `docker network prune -f`, which removes only
+  unused networks, then run the setup again.
+- **The ledger doesn't produce blocks.** Check `docker logs besu_node1`. For a clean new ledger,
+  run `npm run besu:down`, then `python scripts/generate_besu_network.py --force`, then
+  `npm run setup` again. The old chain data is moved to `network/besu/data_archived_<time>/`,
+  not deleted.
 
 ## Tests
 
