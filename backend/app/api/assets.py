@@ -1174,6 +1174,23 @@ async def propose_document_share(
     return action
 
 
+
+PHYSICAL_ASSET_TYPES = {"EQUIPMENT", "SENSOR", "COMMUNICATION", "COMPUTE", "VEHICLE", "OTHER"}
+
+
+def _physical_asset_type(asset_type: Optional[str], other: Optional[str]) -> str:
+    """A known type, or for OTHER the person's own description, stored as "OTHER: <description>"."""
+    t = (asset_type or "EQUIPMENT").strip().upper()
+    if t not in PHYSICAL_ASSET_TYPES:
+        raise HTTPException(status_code=400, detail="Unknown asset type.")
+    if t != "OTHER":
+        return t
+    text = " ".join((other or "").split())
+    if not 2 <= len(text) <= 40 or any(not (ch.isprintable()) for ch in text):
+        raise HTTPException(status_code=400, detail="For asset type Other, describe what the asset is (2 to 40 characters).")
+    return f"OTHER: {text}"
+
+
 @router.post("/physical/propose", response_model=DocumentActionRead)
 async def propose_physical_asset_creation(
     request: PhysicalProposalRequest,
@@ -1188,6 +1205,7 @@ async def propose_physical_asset_creation(
     if current_user.role not in ["ADMIN", "MANAGER"]:
         raise HTTPException(status_code=403, detail="Only Managers and Administrators can propose physical assets.")
 
+    asset_type = _physical_asset_type(request.asset_type, request.asset_type_other)
     dept = request.department or current_user.department
     if current_user.role == "MANAGER" and dept not in access.manager_departments(current_user):
         raise HTTPException(status_code=403, detail="Managers can only propose physical assets for their assigned department.")
@@ -1226,7 +1244,7 @@ async def propose_physical_asset_creation(
         version_number=1,
         serial_number=serial,
         name=request.name,
-        asset_type=request.asset_type or "EQUIPMENT",
+        asset_type=asset_type,
         is_physical=True,
         mac_address=mac,
         device_unique_address=unique_address,
@@ -1260,7 +1278,7 @@ async def propose_physical_asset_creation(
         purpose=request.purpose,
         details={
             "name": request.name,
-            "asset_type": request.asset_type or "EQUIPMENT",
+            "asset_type": asset_type,
             "is_physical": True,
             "identifier_kind": "MAC" if mac else "UNIQUE_ADDRESS",
             "location": request.location,

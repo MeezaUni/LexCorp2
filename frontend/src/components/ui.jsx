@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 /* ------------------------------------------------------------------ formatting */
 
@@ -158,14 +159,19 @@ export function Register({ columns, rows, rowKey, onRowClick, empty, foot, capti
 export function Dialog({ title, onClose, children, footer, wide, danger, labelledBy }) {
   const ref = useRef(null);
   const id = useId();
+  // Parents often pass a new onClose function on every render. Keep the latest one in a ref so
+  // the focus effect below runs only when the dialog opens; re-running it on each parent render
+  // pulled the cursor back to the first field while the person was typing elsewhere.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     const prev = document.activeElement;
     const first = ref.current?.querySelector('input, select, textarea, button:not(.close)');
     (first || ref.current)?.focus();
-    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    const onKey = (e) => { if (e.key === 'Escape') closeRef.current?.(); };
     window.addEventListener('keydown', onKey);
     return () => { window.removeEventListener('keydown', onKey); prev?.focus?.(); };
-  }, [onClose]);
+  }, []);
   return (
     <div className="dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
       <div ref={ref} className={`dialog${wide ? ' wide' : ''}${danger ? ' danger' : ''}`} role="dialog" aria-modal="true"
@@ -190,7 +196,13 @@ export function StepUpDialog({ factor, actionLabel, onSubmit, onClose, extra, co
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const name = factor === 'factor3' ? 'Factor 3 (approve, mint, modify, download)' : 'Factor 2 (view and submit)';
+  const { user } = useAuth();
+  // A purpose the person set to reuse their login factors is proven with the login authenticator/passkey.
+  const viaLogin = factor === 'login' || Boolean(user?.[`${factor}_uses_login`]);
+  const name = factor === 'login' ? 'your login factor'
+    : factor === 'factor3' ? 'Factor 3 (approve, mint, modify, download)' : 'Factor 2 (view and submit)';
+  const source = viaLogin ? 'login authenticator (TOTP 1)' : `${factor === 'factor3' ? 'Factor 3' : 'Factor 2'} authenticator`;
+  const passkeyName = viaLogin ? 'login passkey' : factor === 'factor3' ? 'Passkey 3' : 'Passkey 2';
   const submit = async (method) => {
     setBusy(true); setError('');
     try { await onSubmit(method === 'passkey' ? null : code.trim()); }
@@ -200,12 +212,12 @@ export function StepUpDialog({ factor, actionLabel, onSubmit, onClose, extra, co
     <Dialog title={actionLabel} onClose={busy ? undefined : onClose} danger={danger}
       footer={<>
         <Button onClick={onClose} disabled={busy}>Cancel</Button>
-        <Button variant="secondary" busy={busy} onClick={() => submit('passkey')}>Use {factor === 'factor3' ? 'Passkey 3' : 'Passkey 2'}</Button>
+        <Button variant="secondary" busy={busy} onClick={() => submit('passkey')}>Use {passkeyName}</Button>
         <Button variant={danger ? 'danger' : 'primary'} busy={busy} disabled={code.length !== 6} onClick={() => submit('code')}>{confirmLabel}</Button>
       </>}>
       {extra}
-      <p className="muted small">This action requires {name}. Enter the current code from that authenticator, or use its passkey.</p>
-      <Field label={`${factor === 'factor3' ? 'Factor 3' : 'Factor 2'} authenticator code`}>
+      <p className="muted small">This action requires {name}{viaLogin && factor !== 'login' ? ', which you set to use your login factors' : ''}. Enter the current code from your {source}, or use your {passkeyName}.</p>
+      <Field label={`Code from your ${source}`}>
         <input className="input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
           onKeyDown={(e) => { if (e.key === 'Enter' && code.length === 6) submit('code'); }} />

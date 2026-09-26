@@ -94,10 +94,10 @@ export default function Dashboard() {
                 ['Role', roleName(user.role)],
                 ['Department', user.department || 'None'],
                 ['Wallet', <Id key="w">{shortWallet(user.wallet_address)}</Id>],
-                ['Factor 2 (view and submit)', factorState(user.is_totp_factor2_enabled, user.has_factor2_passkey)],
-                ['Factor 3 (approve and modify)', factorState(user.is_totp_factor3_enabled, user.has_factor3_passkey)],
+                ['Factor 2 (view and submit)', factorState(user, 'factor2')],
+                ['Factor 3 (approve and modify)', factorState(user, 'factor3')],
               ]} />
-              {(!(user.is_totp_factor2_enabled || user.has_factor2_passkey) || (user.role !== 'USER' && !(user.is_totp_factor3_enabled || user.has_factor3_passkey))) && (
+              {(!user.factor2_ready || (user.role !== 'USER' && !user.factor3_ready)) && (
                 <div style={{ marginTop: 12 }}><Notice tone="warning">Some actions need a factor you have not set up yet. <Link to="/identity">Set it up in My identity</Link>.</Notice></div>
               )}
             </Panel>
@@ -151,7 +151,10 @@ export default function Dashboard() {
   );
 }
 
-function factorState(totp, passkey) {
+function factorState(user, purpose) {
+  if (user[`${purpose}_uses_login`]) return 'Uses login factors';
+  const totp = user[`is_totp_${purpose}_enabled`];
+  const passkey = user[`has_${purpose}_passkey`];
   if (totp && passkey) return 'Authenticator and passkey';
   if (totp) return 'Authenticator';
   if (passkey) return 'Passkey';

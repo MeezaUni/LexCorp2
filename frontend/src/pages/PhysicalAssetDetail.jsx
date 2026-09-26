@@ -45,7 +45,7 @@ export default function PhysicalAssetDetail() {
     <>
       <PageHeader crumbs={[['Dashboard', '/'], ['Physical assets', '/physical'], [asset.serial_number]]}
         title={asset.name || asset.serial_number}
-        lede={`${asset.asset_type ? asset.asset_type.charAt(0) + asset.asset_type.slice(1).toLowerCase() : 'Asset'} registered to ${asset.department || 'no department'}.`}
+        lede={`${assetTypeLabel(asset.asset_type)} registered to ${asset.department || 'no department'}.`}
         ribbon={[
           { content: <>Token <strong>#{asset.token_id}</strong></> },
           { content: <>Ledger <strong>{onLedger(asset) ? 'recorded' : 'not yet recorded'}</strong></>, warn: asset.approval_status === 'APPROVED' && !onLedger(asset) },
@@ -183,4 +183,12 @@ function LedgerDialog({ asset, onClose, onSubmit }) {
       </>}
       onSubmit={(code) => onSubmit(code, setProgress)} />
   );
+}
+
+const TYPE_LABELS = { EQUIPMENT: 'Equipment', SENSOR: 'Sensor', COMMUNICATION: 'Communication unit', COMPUTE: 'Computing unit', VEHICLE: 'Vehicle' };
+
+function assetTypeLabel(type) {
+  if (!type) return 'Asset';
+  if (type.startsWith('OTHER: ')) return type.slice(7);
+  return TYPE_LABELS[type] || type.charAt(0) + type.slice(1).toLowerCase();
 }

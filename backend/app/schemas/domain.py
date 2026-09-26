@@ -115,6 +115,7 @@ class PhysicalProposalRequest(BaseSchema):
     name: str
     serial_number: str
     asset_type: str = "EQUIPMENT"
+    asset_type_other: Optional[str] = None  # required when asset_type is OTHER: what the asset is
     has_mac_address: Optional[bool] = None  # YES -> mac_address required; NO -> device_unique_address required
     mac_address: Optional[str] = None
     device_unique_address: Optional[str] = None

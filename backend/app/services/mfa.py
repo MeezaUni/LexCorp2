@@ -9,6 +9,13 @@ Three purposes, each with its own TOTP secret and its own passkey scope:
 A factor for one purpose never satisfies another: TOTP codes are checked against
 that purpose's secret only, and passkey assertions are accepted only from a
 credential registered under that purpose's scope.
+
+Opt-in reuse: a person may choose (with proof of their login factor) that Factor 2
+and/or Factor 3 use the login authenticator and login passkey instead of separate
+ones (User.factor2_uses_login / factor3_uses_login). Every check then resolves that
+purpose to its source, "login" (source_purpose). Step-up proofs stay single-use and
+bound to one action, and a linked purpose shares the login replay counter, so a code
+accepted once (for sign-in or any action) cannot be accepted again.
 """
 
 import json
@@ -54,6 +61,10 @@ ACTION_PURPOSE = {
     # proving an existing factor of that same purpose.
     "factor2.manage": "factor2",
     "factor3.manage": "factor3",
+    # Choosing to reuse (or stop reusing) the login factors for Factor 2 / Factor 3
+    # requires proving the login factor.
+    "factor2.link": "login",
+    "factor3.link": "login",
 }
 
 _TOTP_FIELDS = {
@@ -78,10 +89,20 @@ def _check_purpose(purpose: str) -> None:
         raise HTTPException(status_code=400, detail=f"Unknown authentication purpose '{purpose}'.")
 
 
+def uses_login(user: User, purpose: str) -> bool:
+    """True when the person chose to use their login factors for this purpose."""
+    return purpose in ("factor2", "factor3") and bool(getattr(user, f"{purpose}_uses_login", False))
+
+
+def source_purpose(user: User, purpose: str) -> str:
+    """The purpose whose authenticator and passkeys actually satisfy `purpose`."""
+    return "login" if uses_login(user, purpose) else purpose
+
+
 # --------------------------------------------------------------------------- TOTP
 
 def totp_enabled(user: User, purpose: str) -> bool:
-    _, enabled_field, _ = _TOTP_FIELDS[purpose]
+    _, enabled_field, _ = _TOTP_FIELDS[source_purpose(user, purpose)]
     return bool(getattr(user, enabled_field))
 
 
@@ -102,7 +123,7 @@ def verify_totp_code(user: User, purpose: str, code: Optional[str], *, require_e
     rejects any step at or before the last accepted one (replay protection).
     On success the caller must commit the session to persist the new step."""
     _check_purpose(purpose)
-    secret_field, enabled_field, step_field = _TOTP_FIELDS[purpose]
+    secret_field, enabled_field, step_field = _TOTP_FIELDS[source_purpose(user, purpose)]
     if require_enabled and not getattr(user, enabled_field):
         return False
     secret = decrypt_secret(getattr(user, secret_field))
@@ -190,7 +211,7 @@ def _check_origin(origin: Optional[str]) -> str:
 async def scoped_credentials(db: AsyncSession, user: User, purpose: str) -> list[WebAuthnCredential]:
     result = await db.execute(select(WebAuthnCredential).where(
         WebAuthnCredential.user_id == user.id,
-        WebAuthnCredential.factor_scope == purpose,
+        WebAuthnCredential.factor_scope == source_purpose(user, purpose),
         WebAuthnCredential.is_active.is_(True),
     ))
     return list(result.scalars().all())
@@ -259,7 +280,7 @@ async def verify_passkey_assertion(
     ))).scalar_one_or_none()
     if credential is None:
         raise HTTPException(status_code=401, detail="Passkey is not registered to this identity.")
-    if credential.factor_scope != purpose:
+    if credential.factor_scope != source_purpose(user, purpose):
         raise HTTPException(
             status_code=401,
             detail=f"Wrong-purpose passkey: this passkey is registered for {PURPOSE_LABELS.get(credential.factor_scope, credential.factor_scope)}, "
@@ -334,7 +355,7 @@ async def require_factor(
     if step_up_token and await consume_step_up(db, user, purpose, action, step_up_token):
         return "PASSKEY"
     if not totp_enabled(user, purpose) and not await scoped_credentials(db, user, purpose):
-        number = {"factor2": 2, "factor3": 3}[purpose]
+        number = {"login": 1, "factor2": 2, "factor3": 3}[purpose]
         raise HTTPException(
             status_code=403,
             detail=f"Factor {number} setup required: configure {label} TOTP or Passkey in My Identity.",
@@ -351,3 +372,28 @@ async def require_factor(
 async def login_setup_complete(db: AsyncSession, user: User) -> bool:
     """Both Login TOTP 1 and Login Passkey 1 must be configured."""
     return bool(user.is_totp_enabled) and bool(await scoped_credentials(db, user, "login"))
+
+
+async def reset_login_factors(db: AsyncSession, target: User) -> tuple[str, datetime]:
+    """Invalidate the person's Login TOTP 1 and login passkeys, revoke their sessions and
+    wallet keystore, and issue a NEW single-use provisioning PIN. Returns (pin, expires_at).
+    The caller records the audit event and commits."""
+    from app.core.crypto import hash_pin
+    from app.services.security import generate_one_time_pin
+
+    set_totp_secret(target, "login", None)
+    await db.execute(
+        update(WebAuthnCredential)
+        .where(WebAuthnCredential.user_id == target.id, WebAuthnCredential.factor_scope == "login")
+        .values(is_active=False)
+    )
+    pin = generate_one_time_pin(12)
+    expires_at = utcnow() + timedelta(hours=settings.PROVISIONING_PIN_TTL_HOURS)
+    target.wallet_wrap_secret = None  # old keystore copies can no longer be unlocked
+    target.pin_hash = hash_pin(pin)
+    target.pin_expires_at = expires_at
+    target.pin_used = False
+    target.onboarding_pending = True
+    target.reset_requested = False
+    target.session_version = (target.session_version or 0) + 1  # revoke all sessions
+    return pin, expires_at

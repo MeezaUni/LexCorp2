@@ -49,7 +49,13 @@ async def main() -> int:
                     help="comma-separated initial departments (existing ones are kept)")
     ap.add_argument("--reissue-pin", action="store_true",
                     help="issue a new PIN for the bootstrap admin if it has NOT completed provisioning yet")
+    ap.add_argument("--reset-login", action="store_true",
+                    help="reset an administrator's login factors (for the only administrator, who has no one to approve it); "
+                         "with several administrators, name one with --wallet-address")
     a = ap.parse_args()
+
+    if a.reset_login:
+        return await reset_admin_login(a.wallet_address)
 
     if a.reissue_pin:
         async with async_session_factory() as db:
@@ -131,6 +137,43 @@ async def main() -> int:
     if generated:
         print(f"Generated wallet written to {SECRETS / 'bootstrap_admin_wallet.json'} (not shown) - move it to the admin securely")
     print(f"On-chain roles: {'granted ' + ', '.join(chain.get('roles', [])) if chain.get('ok') else 'FAILED - see audit log; reconciler will retry'}")
+    return 0
+
+
+async def reset_admin_login(wallet_address) -> int:
+    """Out-of-band reset for an administrator, run by whoever operates the server. Same effect
+    as an approved reset in the app: login factors and sessions end, and a new single-use PIN is
+    written to secrets/bootstrap_admin_pin.txt. The administrator keeps their wallet and
+    provisions again with their recovery phrase and the new PIN."""
+    from app.services import mfa
+    async with async_session_factory() as db:
+        admins = (await db.execute(select(User).where(User.role == "ADMIN", User.is_active.is_(True)))).scalars().all()
+        if wallet_address:
+            target = next((u for u in admins if u.wallet_address == Web3.to_checksum_address(wallet_address).lower()), None)
+            if target is None:
+                print("No active administrator has that wallet address.")
+                return 2
+        elif len(admins) == 1:
+            target = admins[0]
+        else:
+            print("There are several administrators: another administrator can approve the reset in the app, "
+                  "or name the one to reset with --wallet-address.")
+            return 2
+        pin, expires_at = await mfa.reset_login_factors(db, target)
+        import hashlib, time
+        db.add(AuditEvent(event_type="ADMIN_LOGIN_RESET_BY_OPERATOR", block_number=0,
+                          tx_hash="0x" + hashlib.sha256(f"operator-reset:{time.time_ns()}".encode()).hexdigest(),
+                          actor_did="system:operator", target_did=target.did,
+                          risk_factors={"invalidated": ["login_totp", "login_passkeys", "sessions", "wallet_keystore"]}))
+        await db.commit()
+    SECRETS.mkdir(exist_ok=True)
+    (SECRETS / "bootstrap_admin_pin.txt").write_text(
+        "LexCorp2 administrator login reset\n"
+        f"wallet: {target.wallet_address}\n"
+        f"provisioning PIN (single use, expires {expires_at.isoformat()}): {pin}\n",
+        encoding="utf-8")
+    print(f"Login factors reset for {target.wallet_address}. New PIN written to {SECRETS / 'bootstrap_admin_pin.txt'} (not shown).")
+    print("The administrator signs in with First-time provisioning (recovery phrase + this PIN) and sets up new login factors.")
     return 0
 
 

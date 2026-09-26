@@ -397,8 +397,31 @@ async def get_current_user_profile(user: User = Depends(get_setup_user), db: Asy
         "has_login_passkey": "login" in scopes,
         "has_factor2_passkey": "factor2" in scopes,
         "has_factor3_passkey": "factor3" in scopes,
+        "factor2_uses_login": bool(user.factor2_uses_login),
+        "factor3_uses_login": bool(user.factor3_uses_login),
+        # Ready = the purpose can be proven now (its own factors, or the login factors it reuses).
+        "factor2_ready": _purpose_ready(user, "factor2", scopes),
+        "factor3_ready": _purpose_ready(user, "factor3", scopes),
         "reset_requested": bool(user.reset_requested),
+        # An administrator can't approve their own reset; with no other active administrator
+        # the reset is done by the server operator (backend/scripts/bootstrap_admin.py --reset-login).
+        "reset_path": await _reset_path(db, user),
     }
+
+
+def _purpose_ready(user: User, purpose: str, scopes: set) -> bool:
+    if mfa.uses_login(user, purpose):
+        return bool(user.is_totp_enabled) or "login" in scopes
+    return bool(getattr(user, f"is_totp_{purpose}_enabled")) or purpose in scopes
+
+
+async def _reset_path(db: AsyncSession, user: User) -> str:
+    if user.role != "ADMIN":
+        return "administrator"
+    others = (await db.execute(select(User.id).where(
+        User.role == "ADMIN", User.is_active.is_(True), User.onboarding_pending.is_(False), User.id != user.id,
+    ))).first()
+    return "another_administrator" if others else "server_operator"
 
 
 @router.get("/wallet-key")
@@ -477,6 +500,7 @@ async def setup_totp_factor(factor: str, request: Request, body: FactorManageReq
         raise HTTPException(status_code=404, detail="Unknown factor")
     if user.onboarding_pending:
         raise HTTPException(status_code=403, detail="Complete login setup first.")
+    _refuse_if_linked(user, factor)
     # A purpose already protected by a passkey may only gain a TOTP with that purpose's
     # own proof; a login session alone must never add a higher factor.
     if await mfa.scoped_credentials(db, user, factor):
@@ -491,6 +515,7 @@ async def verify_totp_factor(factor: str, request: Request, response: Response, 
                              user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     if factor not in ("factor2", "factor3"):
         raise HTTPException(status_code=404, detail="Unknown factor")
+    _refuse_if_linked(user, factor)
     return await _totp_verify(user, factor, token, request, response, db)
 
 
@@ -517,6 +542,7 @@ async def reset_totp_factor(
     same purpose, so a login session alone can never replace a higher factor."""
     if factor not in ("factor2", "factor3"):
         raise HTTPException(status_code=404, detail="Unknown factor")
+    _refuse_if_linked(user, factor)
     await mfa.require_factor(db, user, f"{factor}.manage", totp_code=body.totp_code,
                              step_up_token=body.step_up_token or step_up_header)
     mfa.set_totp_secret(user, factor, None)
@@ -558,6 +584,8 @@ async def get_webauthn_registration_options(
     scope = reg_req.factor_scope
     if scope not in mfa.PURPOSES:
         raise HTTPException(status_code=400, detail="factor_scope must be login, factor2 or factor3")
+    if scope != "login":
+        _refuse_if_linked(user, scope)
     existing = await mfa.scoped_credentials(db, user, scope)
     if scope == "login":
         if existing:
@@ -600,6 +628,8 @@ async def verify_webauthn_registration(
     db: AsyncSession = Depends(get_db),
 ):
     scope = payload.factor_scope
+    if scope in ("factor2", "factor3"):
+        _refuse_if_linked(user, scope)
     origin = request.headers.get("origin")
     if not origin or origin not in settings.WEBAUTHN_ORIGINS:
         raise HTTPException(status_code=400, detail="Invalid origin for WebAuthn")
@@ -694,7 +724,8 @@ async def reset_webauthn_blocked(user: User = Depends(get_setup_user)):
 @router.post("/webauthn/{factor}/options")
 async def step_up_passkey_options(factor: str, req: StepUpOptionsRequest = Body(default=None),
                                   user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    if factor not in ("factor2", "factor3"):
+    # "login" is accepted only for actions that require the login factor (factor2.link / factor3.link).
+    if factor not in mfa.PURPOSES:
         raise HTTPException(status_code=404, detail="Unknown factor")
     action = req.action if req else None
     if not action or mfa.ACTION_PURPOSE.get(action) != factor:
@@ -709,7 +740,7 @@ async def step_up_passkey_verify(factor: str, req: StepUpVerifyRequest, request:
                                  user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Verify a Passkey 2 / Passkey 3 assertion and mint a step-up token for the
     action the challenge was issued for."""
-    if factor not in ("factor2", "factor3"):
+    if factor not in mfa.PURPOSES:
         raise HTTPException(status_code=404, detail="Unknown factor")
     try:
         challenge = await mfa.verify_passkey_assertion(db, user, factor, req.response, request.headers.get("origin"))
@@ -722,6 +753,65 @@ async def step_up_passkey_verify(factor: str, req: StepUpVerifyRequest, request:
     return {**grant, "valid": True}
 
 
+# ============================================================ Reusing login factors for Factor 2 / 3
+
+def _refuse_if_linked(user: User, purpose: str) -> None:
+    if mfa.uses_login(user, purpose):
+        n = {"factor2": 2, "factor3": 3}[purpose]
+        raise HTTPException(status_code=409, detail=f"Factor {n} currently uses your login authenticator and passkey. "
+                                                    f"Choose \"Use separate factors\" in My identity first.")
+
+
+class FactorLinkRequest(BaseModel):
+    totp_code: Optional[str] = None
+    step_up_token: Optional[str] = None
+
+
+@router.post("/factors/{factor}/use-login")
+@limiter.limit("5/minute")
+async def use_login_factors(factor: str, request: Request, body: FactorLinkRequest = Body(default=FactorLinkRequest()),
+                            step_up_header: Optional[str] = Depends(get_step_up_token),
+                            user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """The person chooses to prove Factor 2 or Factor 3 with their login authenticator and
+    login passkey instead of separate ones. Requires proof of the login factor now."""
+    if factor not in ("factor2", "factor3"):
+        raise HTTPException(status_code=404, detail="Unknown factor")
+    if mfa.uses_login(user, factor):
+        raise HTTPException(status_code=409, detail="This factor already uses your login factors.")
+    if mfa.totp_enabled(user, factor) or await mfa.scoped_credentials(db, user, factor):
+        raise HTTPException(status_code=409, detail="This factor already has its own authenticator or passkey. "
+                                                    "Remove those first if you want to use your login factors instead.")
+    await mfa.require_factor(db, user, f"{factor}.link", totp_code=body.totp_code,
+                             step_up_token=body.step_up_token or step_up_header)
+    setattr(user, f"{factor}_uses_login", True)
+    await record_audit(db, "FACTOR_USES_LOGIN_ENABLED", actor_did=user.did, client_ip=get_request_client_ip(request),
+                       details={"purpose": factor})
+    await db.commit()
+    return {"message": f"{mfa.PURPOSE_LABELS[factor]} now uses your login authenticator and passkey.", "factor": factor}
+
+
+@router.post("/factors/{factor}/use-separate")
+@limiter.limit("5/minute")
+async def use_separate_factors(factor: str, request: Request, body: FactorLinkRequest = Body(default=FactorLinkRequest()),
+                               step_up_header: Optional[str] = Depends(get_step_up_token),
+                               user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Stop reusing the login factors for Factor 2 or Factor 3. Requires proof of the login
+    factor (the factor currently protecting this purpose). The purpose then needs its own
+    authenticator or passkey before it can be used again."""
+    if factor not in ("factor2", "factor3"):
+        raise HTTPException(status_code=404, detail="Unknown factor")
+    if not mfa.uses_login(user, factor):
+        raise HTTPException(status_code=409, detail="This factor doesn't use your login factors.")
+    await mfa.require_factor(db, user, f"{factor}.link", totp_code=body.totp_code,
+                             step_up_token=body.step_up_token or step_up_header)
+    setattr(user, f"{factor}_uses_login", False)
+    await record_audit(db, "FACTOR_USES_LOGIN_DISABLED", actor_did=user.did, client_ip=get_request_client_ip(request),
+                       details={"purpose": factor})
+    await db.commit()
+    return {"message": f"{mfa.PURPOSE_LABELS[factor]} no longer uses your login factors. Set up its own authenticator or passkey.",
+            "factor": factor}
+
+
 # ============================================================ Admin-assisted login reset
 
 @router.post("/reset-request")
@@ -729,6 +819,10 @@ async def step_up_passkey_verify(factor: str, req: StepUpVerifyRequest, request:
 async def request_admin_reset(request: Request, payload: ResetRequestPayload = Body(default=ResetRequestPayload()),
                               user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
     """Signed-in user (My Identity) asks an administrator to reset login factors."""
+    if await _reset_path(db, user) == "server_operator":
+        raise HTTPException(status_code=409, detail="You are the only administrator, so no one in LexCorp2 can approve a reset for you. "
+                                                    "The person who runs the LexCorp2 server resets it with: "
+                                                    "python backend/scripts/bootstrap_admin.py --reset-login")
     user.reset_requested = True
     user.reset_requested_at = mfa.utcnow()
     user.reset_reason = (payload.reason or "")[:500]
@@ -761,7 +855,9 @@ async def request_admin_reset_with_wallet(req: WalletResetRequestPayload, reques
 @router.get("/reset-requests", response_model=List[ResetRequestResponse])
 async def list_reset_requests(db: AsyncSession = Depends(get_db), admin: User = Depends(get_admin_user)):
     users = (await db.execute(
-        select(User).where(User.reset_requested.is_(True), User.is_active.is_(True)).order_by(User.created_at.desc())
+        # An administrator never sees (and can't approve) their own request.
+        select(User).where(User.reset_requested.is_(True), User.is_active.is_(True), User.id != admin.id)
+        .order_by(User.created_at.desc())
     )).scalars().all()
     return [ResetRequestResponse(
         id=str(u.id), wallet_address=u.wallet_address, name=u.name, department=u.department, role=u.role,
@@ -798,21 +894,7 @@ async def approve_user_reset(
     await mfa.require_factor(db, admin, "admin.reset", totp_code=body.totp_code,
                              step_up_token=body.step_up_token or step_up_header)
 
-    mfa.set_totp_secret(target, "login", None)
-    await db.execute(
-        update(WebAuthnCredential)
-        .where(WebAuthnCredential.user_id == target.id, WebAuthnCredential.factor_scope == "login")
-        .values(is_active=False)
-    )
-    new_pin = security.generate_one_time_pin(12)
-    expires_at = mfa.utcnow() + timedelta(hours=settings.PROVISIONING_PIN_TTL_HOURS)
-    target.wallet_wrap_secret = None  # old keystore copies can no longer be unlocked
-    target.pin_hash = hash_pin(new_pin)
-    target.pin_expires_at = expires_at
-    target.pin_used = False
-    target.onboarding_pending = True
-    target.reset_requested = False
-    target.session_version = (target.session_version or 0) + 1  # revoke all sessions
+    new_pin, expires_at = await mfa.reset_login_factors(db, target)
     await record_audit(
         db, "ADMIN_LOGIN_RESET_APPROVED",
         actor_did=admin.did, target_did=target.did, client_ip=get_request_client_ip(request),

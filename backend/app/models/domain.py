@@ -59,6 +59,11 @@ class User(Base, TimestampMixin):
     is_totp_factor3_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     totp_factor3_last_step: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
+    # Opt-in, chosen by the person: Factor 2 / Factor 3 accept the login authenticator and
+    # login passkey instead of separate ones (see app/services/mfa.py, source_purpose).
+    factor2_uses_login: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    factor3_uses_login: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
     # High-Assurance Hardware WebAuthn/Passkey Credentials
     webauthn_credentials: Mapped[List["WebAuthnCredential"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

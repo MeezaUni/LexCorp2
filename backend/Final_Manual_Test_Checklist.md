@@ -183,8 +183,24 @@ never in screenshots.
 - **Evidence:** C4.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
+### C4b — Use the login factors for Factor 2 (the quick option)
+- **Purpose:** a person can choose to confirm Factor 2 or Factor 3 actions with the authenticator and passkey they sign in with, instead of setting up separate ones.
+- **Preconditions:** an identity whose Factor 2 panel shows "Not set up" (for example USB right after D5, before setting up its Factor 2).
+- **Steps:**
+  1. **My identity** → Factor 2 panel → **Use my login factors** → enter the **login** authenticator code (or **Use login passkey** → Windows Hello).
+  2. Open a delegated or own document → **View document** → enter the login authenticator code.
+  3. Immediately repeat step 2 with the same code.
+  4. **My identity** → Factor 2 → **Use separate factors instead** → confirm with the login factor.
+- **Expected:**
+  1. The panel shows "Uses login factors", and the dashboard shows "Uses login factors" for Factor 2.
+  2. The view opens.
+  3. The repeated code is refused; the next code works.
+  4. The panel returns to "Not set up", and viewing is refused until a Factor 2 authenticator or passkey is set up.
+- **Evidence:** C4b.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
 ### C5 — Factors cannot stand in for each other
-- **Preconditions:** a document exists (E4), and USA has no Factor 2 passkey.
+- **Preconditions:** a document exists (E4), USA has no Factor 2 passkey, and USA's Factor 2 does not use the login factors (C4b).
 - **Steps:**
   1. As USA open the document → **View document** → enter the **Factor 3** code in the Factor 2 box.
   2. Click **Use Passkey 2** when no Passkey 2 is registered.
@@ -232,6 +248,17 @@ never in screenshots.
 - **Evidence:** C10-request.png, C10-approved.png (PIN masked), C10-reenrol.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
+### C10b — An administrator's own reset
+- **Purpose:** an administrator can't approve their own reset, so the page must send them to the right person.
+- **Steps:**
+  1. As ADM while it is the only administrator: **My identity** → Login factors.
+  2. After D2 registers a second administrator (or temporarily register one), reload **My identity** as ADM.
+- **Expected:**
+  1. No "Ask an administrator" button. A notice says you are the only administrator and that the server operator resets it with `python backend/scripts/bootstrap_admin.py --reset-login`.
+  2. The button reads **Ask another administrator to reset my login factors**. After sending, the request appears for the other administrator only, never in ADM's own list.
+- **Evidence:** C10b-sole.png, C10b-other.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
 ### C11 — Locked-out request from the sign-in screen
 - **Steps:** Sign in → **Locked out** tab → paste USB's recovery phrase → reason → **Send signed reset request**.
 - **Expected:** "Request recorded". ADM sees USB under "Login reset requests".
@@ -252,6 +279,7 @@ never in screenshots.
 - **Steps:**
   1. In the Manager profile: sign-in screen → **Create a wallet** → **Generate wallet on this device**. Record the recovery phrase privately, tick the box, then **Clear it from the screen**. Copy only the address.
   2. As ADM: **Administration** → **Register identity**. Name "Test Manager", role Manager, department Avionics; paste the address → **Register** → Factor 3.
+- **Also check:** while the dialog is open, click **Contact number** and **Wallet address** and type. The cursor stays in the field you clicked.
 - **Expected:**
   - A dialog shows the PIN "once".
   - Ledger roles read `ANCHOR_ROLE, MANAGER_ROLE, MINTER_ROLE`.
@@ -615,6 +643,12 @@ never in screenshots.
   4. Custodian wallet = USA's address → **Submit for approval** → Factor 2.
 - **Expected:** "Submitted for approval".
 - **Evidence:** L1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L1b — Asset type "Other" needs a description
+- **Steps:** Register asset → Asset type **Other**. Try to submit without filling **What is it?**, then fill in "Drone battery" and submit.
+- **Expected:** the **What is it?** field appears when Other is chosen, and **Submit for approval** stays disabled until it's filled. After approval the asset page reads "Drone battery registered to …".
+- **Evidence:** L1b.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
 ### L2 — Register with a unique address

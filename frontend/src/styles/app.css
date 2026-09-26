@@ -199,6 +199,8 @@ a.sr-only:focus { position: fixed; top: 8px; left: 8px; width: auto; height: aut
 .input[aria-invalid='true'] { border-color: var(--alert); }
 .textarea { min-height: 76px; resize: vertical; }
 .choice { display: flex; gap: var(--s2); align-items: flex-start; font-size: var(--fs-md); }
+.choice-card { display: flex; gap: var(--s4); align-items: center; justify-content: space-between; flex-wrap: wrap; background: var(--signal-tint); border-left: 3px solid var(--signal); border-radius: var(--radius); padding: var(--s3) var(--s4); margin-top: var(--s3); }
+.choice-card p { margin: var(--s1) 0 0; max-width: 60ch; }
 .choice input { margin-top: 4px; }
 .segmented { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: var(--radius); overflow: hidden; }
 .segmented button { font: inherit; font-size: var(--fs-sm); border: none; background: var(--surface); color: var(--ink); padding: 7px 12px; cursor: pointer; border-right: 1px solid var(--rule-strong); }

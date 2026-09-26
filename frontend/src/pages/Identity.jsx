@@ -59,17 +59,50 @@ export default function Identity() {
             ['Login authenticator (TOTP 1)', user.is_totp_enabled ? <Status key="t" value="ACTIVE">Configured</Status> : <Status key="t" value="PENDING">Missing</Status>],
             ['Login passkey (Passkey 1)', user.has_login_passkey ? <Status key="p" value="ACTIVE">Configured</Status> : <Status key="p" value="PENDING">Missing</Status>],
           ]} />
-          <p className="small muted" style={{ marginTop: 12 }}>Login factors cannot be changed by yourself. If you lose one, ask an administrator; they verify you in person, then your login factors and sessions are reset and you receive a new provisioning PIN.</p>
-          {user.reset_requested ? <Notice tone="info">Your reset request is waiting for an administrator.</Notice>
-            : <Button onClick={() => setFlow({ kind: 'reset' })}>Ask an administrator to reset my login factors</Button>}
+          {user.reset_path === 'server_operator' ? (
+            <Notice tone="info" title="You are the only administrator">
+              No one in LexCorp2 can approve a login reset for you, and you can't approve your own. If you lose a login factor, the person who runs the LexCorp2 server resets it with <code>python backend/scripts/bootstrap_admin.py --reset-login</code>. Registering a second administrator lets you approve each other's resets instead.
+            </Notice>
+          ) : (
+            <>
+              <p className="small muted" style={{ marginTop: 12 }}>
+                Login factors cannot be changed by yourself. If you lose one, ask {user.reset_path === 'another_administrator' ? 'another administrator (you cannot approve your own reset)' : 'an administrator'}; they verify you in person, then your login factors and sessions are reset and you receive a new provisioning PIN.
+              </p>
+              {user.reset_requested ? <Notice tone="info">Your reset request is waiting for {user.reset_path === 'another_administrator' ? 'another administrator' : 'an administrator'}.</Notice>
+                : <Button onClick={() => setFlow({ kind: 'reset' })}>{user.reset_path === 'another_administrator' ? 'Ask another administrator to reset my login factors' : 'Ask an administrator to reset my login factors'}</Button>}
+            </>
+          )}
         </Panel>
 
         {PURPOSES.map((p) => {
-          const totpOn = user[`is_totp_${p.id}_enabled`];
-          const keyOn = has(p.id);
+          const linked = Boolean(user[`${p.id}_uses_login`]);
+          const totpOn = !linked && user[`is_totp_${p.id}_enabled`];
+          const keyOn = !linked && has(p.id);
+          const number = p.id === 'factor2' ? 2 : 3;
+          if (linked) {
+            return (
+              <Panel key={p.id} title={p.title} aside={<Status value="ACTIVE">Uses login factors</Status>}>
+                <p className="small muted">{p.uses}</p>
+                <Notice tone="info" title="Uses your login authenticator and passkey">
+                  For these actions, enter the code from your login authenticator (TOTP 1) or use your login passkey, the same ones you sign in with. Each confirmation still works for one action only.
+                </Notice>
+                <div><Button onClick={() => setFlow({ kind: 'unlink', purpose: p.id })}>Use separate factors instead</Button></div>
+              </Panel>
+            );
+          }
           return (
             <Panel key={p.id} title={p.title} aside={<Status value={totpOn || keyOn ? 'ACTIVE' : 'PENDING'}>{totpOn || keyOn ? 'Protected' : 'Not set up'}</Status>}>
               <p className="small muted">{p.uses}</p>
+              {!totpOn && !keyOn && (
+                <div className="choice-card">
+                  <div>
+                    <strong>Quickest: use your login factors</strong>
+                    <p className="small muted">Confirm Factor {number} actions with the same authenticator code and passkey you sign in with. Nothing else to set up. You can switch to separate factors later.</p>
+                  </div>
+                  <Button variant="primary" onClick={() => setFlow({ kind: 'link', purpose: p.id })}>Use my login factors</Button>
+                </div>
+              )}
+              {!totpOn && !keyOn && <h3 style={{ marginTop: 16 }}>Or set up separate factors (stronger)</h3>}
               <div className="grid-2">
                 <div className="stack">
                   <h3>Authenticator app</h3>
@@ -121,6 +154,16 @@ export default function Identity() {
       {flow?.kind === 'passkey-remove' && (
         <StepUpDialog factor={flow.purpose} actionLabel={`Remove ${flow.credential.device_name}`} confirmLabel="Remove" danger onClose={() => setFlow(null)}
           onSubmit={async (code) => { await api.disablePasskey(flow.credential.credential_id, await api.stepUp(`${flow.purpose}.manage`, code)); await reload('Passkey removed.'); }} />
+      )}
+      {flow?.kind === 'link' && (
+        <StepUpDialog factor="login" actionLabel={`Use your login factors for Factor ${flow.purpose === 'factor2' ? 2 : 3}`} confirmLabel="Use login factors" onClose={() => setFlow(null)}
+          extra={<p className="small">Confirm with your login authenticator code or your login passkey.</p>}
+          onSubmit={async (code) => { await api.useLoginFactorsFor(flow.purpose, await api.stepUp(`${flow.purpose}.link`, code)); await reload(`Factor ${flow.purpose === 'factor2' ? 2 : 3} now uses your login factors.`); }} />
+      )}
+      {flow?.kind === 'unlink' && (
+        <StepUpDialog factor="login" actionLabel={`Use separate factors for Factor ${flow.purpose === 'factor2' ? 2 : 3}`} confirmLabel="Switch" onClose={() => setFlow(null)}
+          extra={<p className="small">Confirm with your login authenticator code or your login passkey. Afterwards, set up the new factor's own authenticator or passkey before you use those actions again.</p>}
+          onSubmit={async (code) => { await api.useSeparateFactorsFor(flow.purpose, await api.stepUp(`${flow.purpose}.link`, code)); await reload(`Factor ${flow.purpose === 'factor2' ? 2 : 3} no longer uses your login factors. Set up its own authenticator or passkey below.`); }} />
       )}
       {flow?.kind === 'reset' && <ResetRequest onClose={() => setFlow(null)} onDone={() => reload('Your request was sent to the administrators.')} />}
     </>

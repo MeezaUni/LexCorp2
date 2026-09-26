@@ -287,6 +287,8 @@ async def reset_user_mfa(db_session):
             user.totp_last_step = None
             user.totp_factor2_last_step = None
             user.totp_factor3_last_step = None
+            user.factor2_uses_login = False
+            user.factor3_uses_login = False
             user.last_activity_at = None
             user.session_version = u_data["session_version"]
             user.is_active = u_data["is_active"]

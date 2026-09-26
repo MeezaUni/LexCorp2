@@ -72,11 +72,12 @@ export default function PhysicalAssets() {
 function RegisterPhysical({ onClose, onDone }) {
   const { user } = useAuth();
   const { data: departments } = useAsync(api.assignableDepartments, []);
-  const [f, setF] = useState({ name: '', serial: '', type: 'EQUIPMENT', hasMac: 'yes', mac: '', unique: '', location: '', department: user.department || '', custodian: '', purpose: '' });
+  const [f, setF] = useState({ name: '', serial: '', type: 'EQUIPMENT', typeOther: '', hasMac: 'yes', mac: '', unique: '', location: '', department: user.department || '', custodian: '', purpose: '' });
   const [stepUp, setStepUp] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const macError = f.hasMac === 'yes' && f.mac && !MAC_RE.test(f.mac.trim()) ? 'Use six pairs of hex digits, for example 00:1A:2B:3C:4D:5E' : '';
-  const valid = f.name.trim() && f.serial.trim() && f.department && (f.hasMac === 'yes' ? MAC_RE.test(f.mac.trim()) : f.unique.trim().length >= 4);
+  const otherOk = f.type !== 'OTHER' || f.typeOther.trim().length >= 2;
+  const valid = f.name.trim() && f.serial.trim() && f.department && otherOk && (f.hasMac === 'yes' ? MAC_RE.test(f.mac.trim()) : f.unique.trim().length >= 4);
 
   return (
     <>
@@ -92,6 +93,11 @@ function RegisterPhysical({ onClose, onDone }) {
               <option value="COMPUTE">Computing unit</option><option value="VEHICLE">Vehicle</option><option value="OTHER">Other</option>
             </select>
           </Field>
+          {f.type === 'OTHER' && (
+            <Field label="What is it?" hint="For example: drone battery, test rig, radio mast">
+              <input className="input" value={f.typeOther} maxLength={40} onChange={set('typeOther')} autoFocus />
+            </Field>
+          )}
           <Field label="Department">
             <select className="select" value={f.department} onChange={set('department')}>
               <option value="">Select</option>{(departments || []).map((d) => <option key={d} value={d}>{d}</option>)}
@@ -117,7 +123,7 @@ function RegisterPhysical({ onClose, onDone }) {
           onSubmit={async (code) => {
             const token = await api.stepUp('document.submit', code);
             const r = await api.proposePhysical({
-              name: f.name.trim(), serial_number: f.serial.trim(), asset_type: f.type, has_mac_address: f.hasMac === 'yes',
+              name: f.name.trim(), serial_number: f.serial.trim(), asset_type: f.type, asset_type_other: f.type === 'OTHER' ? f.typeOther.trim() : null, has_mac_address: f.hasMac === 'yes',
               mac_address: f.hasMac === 'yes' ? f.mac.trim() : null, device_unique_address: f.hasMac === 'no' ? f.unique.trim() : null,
               location: f.location || null, department: f.department, purpose: f.purpose || null,
               recipient_address: f.custodian.trim() || user.wallet_address,
