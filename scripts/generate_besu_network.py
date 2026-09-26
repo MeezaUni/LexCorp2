@@ -1,7 +1,8 @@
 """Generate a fresh 3-validator QBFT network for LexCorp2 (chain id 13371).
 
   python scripts/generate_besu_network.py            # refuses if chain data exists
-  python scripts/generate_besu_network.py --force    # only after archiving network/besu/data
+  python scripts/generate_besu_network.py --force    # moves existing chain data to
+                                                     # network/besu/data_archived_<time>/ first
 
 * New validator node keys are generated locally by Besu itself and written to
   network/besu/networkFiles/keys/ (git-ignored). They are never printed.
@@ -18,6 +19,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -105,9 +107,15 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
     data = BESU / "data"
-    if data.exists() and any(data.rglob("*")) and not a.force:
-        print("network/besu/data is not empty. Archive it first, then re-run with --force.")
-        return 2
+    # Empty node folders (created by an earlier run or by Docker) are not chain data.
+    if data.exists() and any(p.is_file() for p in data.rglob("*")):
+        if not a.force:
+            print("network/besu/data holds chain data from an earlier network. Stop the nodes "
+                  "(npm run besu:down), then re-run with --force: the old data is moved aside, not deleted.")
+            return 2
+        archive = BESU / f"data_archived_{time.strftime('%Y%m%d_%H%M%S')}"
+        shutil.move(str(data), str(archive))
+        print(f"Existing chain data moved to {archive.relative_to(BESU.parent.parent)}")
 
     work = BESU / "_generate"
     shutil.rmtree(work, ignore_errors=True)

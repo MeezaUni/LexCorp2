@@ -82,6 +82,22 @@ not pass `--wallet-address`, their generated wallet is written to
 `secrets/bootstrap_admin_wallet.json`. If the PIN expires before use, run
 `python backend/scripts/bootstrap_admin.py --reissue-pin`.
 
+### If the first run fails
+
+- **`password authentication failed for user "lexcorp"`.** A PostgreSQL volume from an earlier
+  LexCorp setup is being reused. Its password was fixed when that volume was first created, so it
+  doesn't match the new `.env`.
+  - If you don't need that old local database, recreate it (this deletes it):
+    `docker compose down -v`, then `docker compose up -d postgres`.
+  - To keep a copy first, run `docker exec lexcorp_postgres pg_dumpall -U lexcorp > old_db_backup.sql`.
+- **`network/besu/data holds chain data from an earlier network`**, or later
+  **`HH108: Cannot connect to the network besu`** / **`other side closed`.** The validator keys
+  for this machine were never generated, so the nodes keep restarting. Run:
+  `npm run besu:down`, then `python scripts/generate_besu_network.py --force` (old chain data is moved to
+  `network/besu/data_archived_<time>/`, not deleted), then `npm run besu:up && npm run chain:wait`.
+  Wait about 20 seconds, then continue with `npm run contract:deploy`.
+- Run the setup commands one at a time. If one fails, fix it before running the next.
+
 ## Tests
 
 ```bash

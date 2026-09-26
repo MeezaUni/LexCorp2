@@ -1,5 +1,3 @@
-version: "3.9"
-
 # LexCorp2 - local PostgreSQL (bound to localhost; password from the git-ignored .env)
 
 services:
