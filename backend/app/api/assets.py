@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models.domain import Asset, MaintenanceRecord, User, DocumentAction, AuditEvent, AssetAccessGrant
 from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest, DocumentActionRead, DownloadRequest, DocumentRevisionRequest, PhysicalProposalRequest, ShareProposalRequest, AssetRead, OwnerDecisionRequest, FetchDownloadRequest, PhysicalStatusRequest, MintConfirmRequest
 from app.services import access, grants as grant_svc, mfa
-from app.services.alerts import ai_score
+from app.services.alerts import ai_assess, ai_score
 from app.services.action_ids import next_action_id, next_token_id
 from sqlalchemy import select, desc, false, func, or_
 
@@ -1381,7 +1381,8 @@ async def propose_physical_asset_creation(
     )
     db.add(action)
 
-    risk = ai_score("PHYSICAL_ASSET_CREATED", current_user, sensitivity=2)
+    risk = await ai_assess(db, "REGISTER", current_user, asset_serial=serial, client_ip=client_ip,
+                           legacy_event="PHYSICAL_ASSET_CREATED", sensitivity=2)
     await record_audit(db, "PHYSICAL_ASSET_CREATED", actor_did=current_user.did, asset_serial=serial, client_ip=client_ip,
                        risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
                        details={"creation_id": action_id_str, "department": dept, "token_id": reserved_token_id,
@@ -1746,7 +1747,8 @@ async def view_digital_document(
         details={"grant_id": str(grant.id)} if grant is not None else None,
     ))
     owner = (await db.execute(select(User).where(User.id == asset.owner_id))).scalar_one_or_none()
-    risk = ai_score("DOCUMENT_VIEWED", current_user, owner_did=owner.did if owner else None)
+    risk = await ai_assess(db, "VIEW", current_user, asset=asset, client_ip=client_ip,
+                           legacy_event="DOCUMENT_VIEWED", owner_did=owner.did if owner else None)
     await record_audit(db, "DOCUMENT_VIEWED", actor_did=current_user.did, asset_serial=asset.serial_number, client_ip=client_ip,
                        risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
                        details={"action_id": view_id, "asset_version": asset.version_number, "via_grant": grant is not None,
@@ -1981,7 +1983,8 @@ async def _create_revision(
     )
     db.add(action)
     dl.details = {**d, "revision_mod_id": action_id_str}
-    risk = ai_score("REVISION_SUBMITTED", current_user, sensitivity=2)
+    risk = await ai_assess(db, "REVISION", current_user, asset_serial=parent_asset.serial_number, client_ip=client_ip,
+                           legacy_event="REVISION_SUBMITTED", sensitivity=2)
     await record_audit(db, "REVISION_SUBMITTED", actor_did=current_user.did, asset_serial=serial, client_ip=client_ip,
                        risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
                        details={"modification_id": action_id_str, "parent_version": parent_asset.version_number,
@@ -2317,7 +2320,9 @@ async def fetch_approved_download(
     action.watermark_text = "\n".join(ctx.all_lines())
     action.details = {**(action.details or {}), "downloaded_at": datetime.now(UTC).isoformat(), "downloaded_from_ip": client_ip,
                       "watermark_manifest": manifest, "copy_filename": out_name}
-    risk = ai_score("DOCUMENT_DOWNLOADED", current_user, owner_did=owner.did if owner else None, sensitivity=2)
+    risk = await ai_assess(db, "MOD_COPY" if (action.details or {}).get("mode") == "MODIFICATION" else "DOWNLOAD", current_user,
+                           asset=asset, client_ip=client_ip, legacy_event="DOCUMENT_DOWNLOADED",
+                           owner_did=owner.did if owner else None, sensitivity=2)
     await record_audit(db, "DOCUMENT_DOWNLOADED", actor_did=current_user.did, asset_serial=asset.serial_number, client_ip=client_ip,
                        risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
                        details={"download_id": action.action_id, "mode": (action.details or {}).get("mode", "STANDARD"),
@@ -2383,10 +2388,11 @@ async def owner_download(
     action.watermark_text = "\n".join(ctx.all_lines())
     action.details = {**action.details, "watermark_manifest": manifest, "copy_filename": out_name}
     db.add(action)
-    risk = ai_score("DOCUMENT_DOWNLOADED", current_user, owner_did=current_user.did, sensitivity=2)
+    risk = await ai_assess(db, "MOD_COPY" if mode == "MODIFICATION" else "DOWNLOAD", current_user, asset=asset,
+                           client_ip=client_ip, legacy_event="DOCUMENT_DOWNLOADED", owner_did=current_user.did, sensitivity=2)
     await record_audit(db, "DOCUMENT_DOWNLOADED", actor_did=current_user.did, asset_serial=asset.serial_number, client_ip=client_ip,
                        risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
-                       details={"download_id": action.action_id, "mode": "STANDARD", "owner_direct": True,
+                       details={"download_id": action.action_id, "mode": mode, "owner_direct": True,
                                 "asset_version": asset.version_number, **({"ai": risk["ai"]} if risk else {})})
     await db.commit()
     return Response(content=content, media_type=mime, headers={

@@ -199,12 +199,24 @@ async def _issue_session(
 
 
 async def _audit_failure(db: AsyncSession, event: str, request: Request, wallet: Optional[str], reason: str) -> None:
+    client_ip = get_request_client_ip(request)
+    label, score, details = "MEDIUM", 0.5, {"reason": reason}
+    person = await _find_user(db, wallet) if wallet else None
+    if person is not None:
+        # Repeated failures (guessing codes, probing factors) are a behaviour pattern the local
+        # risk model scores against this person's own history.
+        from app.services.alerts import ai_assess
+        risk = await ai_assess(db, "STEP_UP_FAILED" if event == "STEP_UP_FAILED" else "LOGIN_FAILED", person,
+                               client_ip=client_ip, ok=False)
+        if risk.get("risk_label") in ("HIGH", "CRITICAL"):
+            label, score = risk["risk_label"], risk.get("risk_score")
+            details = {**details, "ai": risk["ai"]}
     await record_audit(
         db, event,
         actor_did=auth.expected_did(wallet) if wallet else None,
-        client_ip=get_request_client_ip(request),
-        risk_label="MEDIUM", risk_score=0.5,
-        details={"reason": reason},
+        client_ip=client_ip,
+        risk_label=label, risk_score=score,
+        details=details,
     )
     await db.commit()
 

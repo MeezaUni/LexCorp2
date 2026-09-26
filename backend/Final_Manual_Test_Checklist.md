@@ -773,14 +773,15 @@ never in screenshots.
 
 ## M. AI and rule alerts
 
-### M1 — AI-assisted alert
-- **Purpose:** show that AI analysis raises alerts for unusual behaviour.
-- **Background:** the model's scores are calibrated against ordinary activity, so normal weekday work does not raise alerts.
+### M1 — AI-assisted alert (trained local model)
+- **Purpose:** show that the local risk model raises an explained alert for unusual behaviour and stays quiet for ordinary work.
+- **Preconditions:** the model is trained: in `backend`, run `python ml/simulate.py`, `python ml/train.py`, `python ml/evaluate.py`, then restart `npm start`. Keep `ml/reports/evaluation.md` as evidence.
 - **Steps:**
-  1. **Either** perform a User write outside business hours (before 08:00, after 19:00 or at a weekend), for example USA submitting a revision (I1 to I2).
-  2. **Or**, to see AI alerts on demand: add `AI_ALERT_MODE=raw` to `backend/.env`, restart `npm start`, view a document as USA, then remove the line and restart again.
-- **Expected:** **Security alerts** as AUD shows an alert "Raised by: AI-assisted risk analysis" with a risk score. The detail says the AI score is advice only.
-- **Evidence:** M1.png. Note which option you used.
+  1. As USA do ordinary work for a few minutes (view two or three documents).
+  2. As USB (with delegated access to several documents), view or download many different documents quickly, for example ten in a few minutes.
+  3. As AUD open **Security alerts**.
+- **Expected:** no AI alert for step 1. Step 2 raises one alert "Raised by: AI-assisted risk analysis", whose reason reads in plain words, for example "Unusual activity (DOCUMENT_VIEWED): 11 actions in the last hour (usual about 2); 9 documents never touched before, in 24 h". Further unusual actions within 24 h don't open more alerts for the same person. A brand-new identity may look unusual in its first days (no history yet).
+- **Evidence:** M1.png, plus ml/reports/evaluation.md.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
 ### M2 — Rule-based alert

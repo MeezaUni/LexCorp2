@@ -114,6 +114,21 @@ The setup explains what went wrong and what to run. The usual cases:
   `npm run setup` again. The old chain data is moved to `network/besu/data_archived_<time>/`,
   not deleted.
 
+## AI risk model (local)
+
+Security alerts combine deterministic rules with a local risk model: no paid APIs and no
+internet. To train and evaluate it (a few minutes), run:
+
+```bash
+cd backend
+python ml/simulate.py
+python ml/train.py
+python ml/evaluate.py
+```
+
+Then restart the app. See `backend/ml/README.md` for how it works, the simulated scenarios,
+learning from Auditor feedback, and its honest limits.
+
 ## Tests
 
 ```bash

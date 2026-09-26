@@ -62,3 +62,6 @@ network/vpn/wireguard_data/
 
 # Playwright MCP scratch output (reference screenshots are not committed)
 .playwright-mcp/
+
+# Simulated training data for the risk model (regenerate with backend/ml/simulate.py)
+backend/ml/data/

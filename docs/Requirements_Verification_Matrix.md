@@ -114,7 +114,7 @@ Manual test IDs refer to `backend/Final_Manual_Test_Checklist.md`.
 | An alert for a department without an independent manager is never parked | IMPLEMENTED + VERIFIED | Fixed this round (auditor forward goes to Admin; Admin take-over) | N6 |
 | AI never revokes or blocks by itself | IMPLEMENTED + VERIFIED | The gate only acts on human-escalated alerts | — |
 | Revocation ends live sessions and removes ledger roles | IMPLEMENTED + VERIFIED | Playwright 09; `test_revocation_removes_onchain_roles` | O2, O4 |
-| **AI model quality** | PARTIAL | The bundled Isolation Forest rated 11/11 ordinary actions HIGH/CRITICAL (native tiers). Calibrated alerting (`AI_ALERT_MODE`, default "calibrated") now alerts only on activity more anomalous than ordinary reference activity; the native label is kept. Detection quality is **not established**: no labelled evaluation data exists | M1 |
+| **AI model quality** | PARTIAL (measured on simulated data only) | Rebuilt (27 Sept): one shared feature builder for training and live use (`app/services/risk/features.py`: per-person history from the audit trail: hours, volume vs own usual day, copies, new/other-department documents, failures, new network address, incidents); simulator with 10 labelled misuse scenarios and ordinary messiness (`ml/simulate.py`); Isolation Forest (normal only) + gradient-boosted classifier, combined on a common "unusual vs ordinary" scale with thresholds fixed to a target false-alert share (`ml/train.py`); plain-word reasons for the Auditor; one open AI alert per person per 24 h; Auditor decisions feed retraining (`ml/export_feedback.py`). Development run, evaluated on an UNSEEN simulated organisation: 9/9 behavioural scenarios caught (incl. slow exfiltration), tamper/duplicate caught by rules, about 1.5 false alerts per 100 people per day (`ml/evaluate.py`). Real-world quality unmeasured until trained and reviewed on real activity. The app uses the old model until `ml/train.py` has been run | M1 |
 | Deterministic integrity rules: unregistered or mismatched mint, unapproved anchor, unexpected role grant, relay misuse, role-sync failure | IMPLEMENTED + VERIFIED | Indexer and relay tests; triggered for real during the Playwright run | M2 |
 
 ## 9. Audit trail and indexer
@@ -162,7 +162,7 @@ Manual test IDs refer to `backend/Final_Manual_Test_Checklist.md`.
 ## 13. Known limitations and owner decisions
 
 1. **Git history still contains** the retired validator keys, the public Hardhat keys, personal files that were in `backup_prod/` and `offchain_storage/`, and the WireGuard keys (`wg0.conf`). Some of these commits are on the remote. The retired items are no longer used, but the **WireGuard keys and the wg-easy password must be rotated**. Rewriting published history is the owner's decision.
-2. **AI model quality is not established** (see section 8).
+2. **AI model quality is measured only on simulated data** (see section 8). Run `ml/simulate.py`, `ml/train.py`, `ml/evaluate.py`, then retrain with real activity and Auditor feedback.
 3. **Office rendering** of watermarked copies has not been checked by a person. Office views are text-only PDF renderings; layout is not reproduced.
 4. **react-router advisory** (open redirect via backslash) is fixed only in v7. It was assessed as not exploitable here: link targets are fixed paths and serials are URL-encoded. Tracked.
 5. **Development toolchain advisories** (46 in Hardhat dev dependencies) do not ship.

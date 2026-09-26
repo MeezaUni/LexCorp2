@@ -1,7 +1,7 @@
 """AI high-risk alert escalation chain (spec 39-43, 59)."""
 
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -35,7 +35,7 @@ async def ai_flagged_view(client, db, subject_wallet, approver=MANAGER):
     serial = await flows.approved_document(client, db, b"alert doc " + subject_wallet.encode(), "al.txt",
                                            owner=subject_wallet, approver=approver)
     fake = {"risk_label": "HIGH", "risk_score": 88.0, "ai": {"anomaly_score": -0.31, "model": "IsolationForest(local)"}}
-    with patch("app.api.assets.ai_score", return_value=fake):
+    with patch("app.api.assets.ai_assess", new=AsyncMock(return_value=fake)):
         r = await client.get(f"/api/assets/document/view/{serial}",
                              headers=await mfa_headers(db, flows.token_for(subject_wallet), subject_wallet, "document.view"))
     assert r.status_code == 200, r.text

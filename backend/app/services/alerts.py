@@ -42,13 +42,27 @@ async def raise_alert(db: AsyncSession, event: AuditEvent, source: str = "RULE")
     existing = (await db.execute(select(SecurityAlert).where(SecurityAlert.source_event_id == event.id))).scalar_one_or_none()
     if existing:
         return existing
+    if source == "AI" and event.actor_did:
+        # One incident, one alert: while an AI alert about this person from the last 24 h is still
+        # open, further unusual actions are recorded in the audit trail but don't open new alerts.
+        from datetime import datetime, timedelta, UTC
+        recent = (await db.execute(select(SecurityAlert).where(
+            SecurityAlert.subject_did == event.actor_did, SecurityAlert.source == "AI",
+            SecurityAlert.state.in_(OPEN_STATES), SecurityAlert.created_at >= datetime.now(UTC) - timedelta(hours=24),
+        ))).scalars().first()
+        if recent is not None:
+            return recent
     subject = None
     if event.actor_did:
         subject = (await db.execute(select(User).where(User.did == event.actor_did))).scalar_one_or_none()
     factors = event.risk_factors if isinstance(event.risk_factors, dict) else {}
-    reason = factors.get("reason") or factors.get("explanation") or (
-        f"{event.event_type} scored {event.risk_label} by the local Isolation Forest model"
-        if source == "AI" else f"{event.event_type} flagged {event.risk_label}")
+    ai_reasons = (factors.get("ai") or {}).get("reasons") if isinstance(factors.get("ai"), dict) else None
+    if source == "AI" and ai_reasons:
+        reason = f"Unusual activity ({event.event_type}): " + "; ".join(ai_reasons)
+    else:
+        reason = factors.get("reason") or factors.get("explanation") or (
+            f"{event.event_type} scored {event.risk_label} by the local risk model"
+            if source == "AI" else f"{event.event_type} flagged {event.risk_label}")
     alert = SecurityAlert(
         alert_id=await next_action_id(db, "ALT"), source=source, source_event_id=event.id,
         subject_user_id=subject.id if subject else None, subject_did=event.actor_did,
@@ -179,3 +193,25 @@ def ai_score(event_type: str, actor: Optional[User], *, owner_did: Optional[str]
     except Exception as e:
         logger.warning("AI risk scoring unavailable: %s", e)
         return {}
+
+
+async def ai_assess(db, kind: str, actor: Optional[User], *, asset=None, asset_serial: Optional[str] = None,
+                    client_ip: Optional[str] = None, ok: bool = True, legacy_event: Optional[str] = None,
+                    owner_did: Optional[str] = None, sensitivity: int = 1) -> dict:
+    """Behavioural risk of an action, from the trained local model (app.services.risk) using the
+    person's own recent history. Falls back to the legacy model until a model has been trained
+    (python ml/train.py). Never raises; the AI only advises (alerts go to people)."""
+    from app.core.config import settings
+    try:
+        from app.services.risk.live import assess_action
+        result = await assess_action(db, kind, actor, asset=asset, asset_serial=asset_serial, client_ip=client_ip, ok=ok)
+    except Exception as e:
+        logger.warning("Risk model scoring unavailable: %s", e)
+        result = None
+    if result is not None:
+        label = "LOW" if settings.AI_ALERT_MODE == "off" else result["risk_label"]
+        return {"risk_label": label, "risk_score": result["risk_score"],
+                "ai": {"model": f"LexCorp2 risk model {result.get('model_version')}", "reasons": result["reasons"],
+                       "rarity": result["rarity"], "probability": result["probability"],
+                       "label_basis": "trained thresholds" if settings.AI_ALERT_MODE != "off" else "AI alerting disabled"}}
+    return ai_score(legacy_event, actor, owner_did=owner_did, sensitivity=sensitivity) if legacy_event else {}
