@@ -298,6 +298,11 @@ async def verify_passkey_assertion(
         )
     except Exception as error:
         logger.warning("Passkey assertion rejected (purpose=%s): %s", purpose, error)
+        if "user verification is required" in str(error).lower():
+            raise HTTPException(status_code=401, detail=(
+                "This passkey was used without a PIN, fingerprint or face check, which LexCorp2 requires. "
+                "That usually means it is saved in a browser or extension password manager that skips the check. "
+                "Use your authenticator code, or use a passkey saved in Windows Hello or on your phone."))
         # Outside production the library's reason (no secrets: e.g. "Unexpected RP ID hash") is
         # returned and audited, so a failing real authenticator can be diagnosed.
         reason = "" if settings.is_production else f" ({type(error).__name__}: {error})"
@@ -400,3 +405,23 @@ async def reset_login_factors(db: AsyncSession, target: User) -> tuple[str, date
     target.reset_requested = False
     target.session_version = (target.session_version or 0) + 1  # revoke all sessions
     return pin, expires_at
+
+
+# Well-known passkey providers by AAGUID (the authenticator model id reported at registration;
+# public, not secret). Unknown ones are shown by their AAGUID prefix.
+PASSKEY_PROVIDERS = {
+    "08987058-cadc-4b81-b6e1-30de50dcbe96": "Windows Hello",
+    "9ddd1817-af5a-4672-a2b9-3e3dd95000a9": "Windows Hello",
+    "6028b017-b1d4-4c02-b4b3-afcdafc96bb2": "Windows Hello",
+    "fbfc3007-154e-4ecc-8c0b-6e020557d7bd": "iCloud Keychain",
+    "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4": "Google Password Manager",
+    "d548826e-79b4-db40-a3d8-11116f7e8349": "Bitwarden",
+    "bada5566-a7aa-401f-bd96-45619a55120d": "1Password",
+}
+
+
+def passkey_provider(aaguid: str) -> str:
+    aaguid = (aaguid or "").lower()
+    if not aaguid or aaguid == "00000000-0000-0000-0000-000000000000":
+        return "Passkey provider not disclosed"
+    return PASSKEY_PROVIDERS.get(aaguid, f"Authenticator {aaguid[:8]}")

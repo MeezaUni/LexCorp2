@@ -177,3 +177,19 @@ async def test_physical_asset_type_other_needs_a_description(client, db_session)
     assert ok.status_code == 200, ok.text
     asset = (await db_session.execute(select(Asset).where(Asset.serial_number == ok.json()["asset_serial"]))).scalar_one()
     assert asset.asset_type == "OTHER: Drone battery"
+
+
+@pytest.mark.asyncio
+async def test_passkey_without_user_verification_is_refused_with_a_clear_reason(client, db_session):
+    """A passkey provider that skips the PIN/biometric check (UV flag off) is refused, and the
+    person is told why instead of a generic failure."""
+    from tests.webauthn_soft import FLAG_UP
+    await unprotect(db_session, USER_WALLET, "factor2")
+    key = await enroll(db_session, USER_WALLET, "factor2")
+    h = {**auth(USER_WALLET), "Origin": ORIGIN}
+    opt = await client.post("/api/auth/webauthn/factor2/options", headers=h, json={"action": "document.view"})
+    assert opt.status_code == 200, opt.text
+    ver = await client.post("/api/auth/webauthn/factor2/verify", headers=h,
+                            json={"response": key.assert_(opt.json()["options"], flags=FLAG_UP)})
+    assert ver.status_code == 401
+    assert "PIN, fingerprint or face" in ver.json()["detail"]

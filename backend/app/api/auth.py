@@ -657,16 +657,18 @@ async def verify_webauthn_registration(
         logger.warning("Passkey registration rejected: %s", e)
         raise HTTPException(status_code=400, detail="Passkey registration verification failed.")
 
+    provider = mfa.passkey_provider(verification.aaguid)
     db.add(WebAuthnCredential(
         user_id=user.id,
         credential_id=verification.credential_id.hex(),
         public_key=verification.credential_public_key.hex(),
         sign_count=verification.sign_count,
-        device_name=payload.device_name,
+        # Shows where the passkey lives (Windows Hello, iCloud Keychain, a password manager...).
+        device_name=f"{provider}: {payload.device_name}"[:100] if payload.device_name else provider,
         factor_scope=scope,
     ))
     await record_audit(db, "PASSKEY_REGISTERED", actor_did=user.did, client_ip=get_request_client_ip(request),
-                       details={"purpose": scope})
+                       details={"purpose": scope, "provider": provider, "aaguid": verification.aaguid})
     await db.commit()
     result = {"message": f"{mfa.PURPOSE_LABELS[scope]} passkey registered.", "factor_scope": scope}
     if scope == "login" and user.onboarding_pending and await mfa.login_setup_complete(db, user):
