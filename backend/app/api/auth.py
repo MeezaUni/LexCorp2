@@ -465,7 +465,10 @@ async def _totp_verify(user: User, purpose: str, code: str, request: Request, re
     if mfa.totp_enabled(user, purpose):
         raise HTTPException(status_code=400, detail="TOTP is already enabled.")
     if not mfa.verify_totp_code(user, purpose, code, require_enabled=False):
-        raise HTTPException(status_code=401, detail="Invalid or expired TOTP code. Check your device clock and use a fresh code.")
+        # 400, not 401: a mistyped enrolment code is not the end of the session.
+        raise HTTPException(status_code=400, detail="That code didn't match. Use the newest LexCorp2 entry for this factor in your "
+                                                    "authenticator app (delete older ones from earlier attempts), check your "
+                                                    "phone's clock is set automatically, and try the next code.")
     _, enabled_field, _ = mfa._TOTP_FIELDS[purpose]
     setattr(user, enabled_field, True)
     await record_audit(db, "TOTP_ENROLLED", actor_did=user.did, client_ip=get_request_client_ip(request),

@@ -11,7 +11,8 @@ import axios from 'axios';
 
 export const http = axios.create({ baseURL: '/api', withCredentials: true });
 
-const AUTH_FLOW = ['/auth/login', '/auth/provision', '/auth/webauthn', '/auth/step-up', '/auth/nonce', '/auth/reset-request', '/auth/me'];
+// A refused code or factor on these calls is an answer to that step, never the end of the session.
+const AUTH_FLOW = ['/auth/login', '/auth/provision', '/auth/webauthn', '/auth/step-up', '/auth/nonce', '/auth/reset-request', '/auth/me', '/auth/2fa', '/auth/factors'];
 http.interceptors.response.use(
   (r) => r,
   (error) => {

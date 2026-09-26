@@ -62,6 +62,7 @@ export default function Enrolment() {
                         <img className="qr" src={totp.qr_data_uri} alt="Authenticator enrolment QR code" data-sensitive="true" />
                         <div className="stack" style={{ flex: 1, minWidth: 200 }}>
                           <span className="small muted">Scan the code, or type this key into the app:</span>
+                          <span className="small muted">Only this newest code works. If your app already has a LexCorp2 Login entry from an earlier attempt, delete it.</span>
                           <div className="secret-box" data-sensitive="true" data-testid="totp-secret">{totp.secret}</div>
                         </div>
                       </div>
