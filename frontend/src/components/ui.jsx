@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
@@ -173,7 +174,9 @@ export function Dialog({ title, onClose, children, footer, wide, danger, labelle
     window.addEventListener('keydown', onKey);
     return () => { window.removeEventListener('keydown', onKey); prev?.focus?.(); };
   }, []);
-  return (
+  // Rendered at <body> level so a dialog opened from inside a table row doesn't inherit the
+  // table's layout (e.g. "no wrapping" in action cells), which pushed its text off-screen.
+  return createPortal(
     <div className="dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
       <div ref={ref} className={`dialog${wide ? ' wide' : ''}${danger ? ' danger' : ''}`} role="dialog" aria-modal="true"
         aria-labelledby={labelledBy || id} tabIndex={-1}>
@@ -184,7 +187,8 @@ export function Dialog({ title, onClose, children, footer, wide, danger, labelle
         <div className="dialog-body">{children}</div>
         {footer && <div className="dialog-foot">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

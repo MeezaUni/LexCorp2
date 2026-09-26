@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ethers } from 'ethers';
 import { Button, Dialog, Empty, Facts, Field, Id, Loading, Notice, PageHeader, Panel, Register, Status, StepUpDialog, downloadBlob, errorText, formatDate, shortWallet, useAsync } from '../components/ui';
@@ -18,6 +18,16 @@ export default function DigitalAssetDetail() {
   const registry = useAsync(api.getRegistry, [tick]);
   const lineage = useAsync(() => api.getLineage(serial), [serial, tick]);
   const grants = useAsync(() => api.listGrants(), [tick]);
+  // Delegated access changes elsewhere (another person viewing counts against a limit), so keep
+  // the list current: refresh every 10 seconds and whenever the tab regains focus.
+  const reloadGrants = useRef(grants.reload);
+  reloadGrants.current = grants.reload;
+  useEffect(() => {
+    const t = window.setInterval(() => reloadGrants.current(), 10000);
+    const onFocus = () => reloadGrants.current();
+    window.addEventListener('focus', onFocus);
+    return () => { window.clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, []);
   const mine = useAsync(api.myDownloads, [tick]);
   const logs = useAsync(() => (user.role === 'USER' ? Promise.resolve(null) : api.getDocumentLogs(serial)), [serial, tick]);
 
@@ -33,6 +43,8 @@ export default function DigitalAssetDetail() {
   const myRequests = (mine.data || []).filter((a) => serials.has(a.asset_serial));
   const docGrants = (grants.data || []).filter((g) => serials.has(g.asset_serial));
   const isHolder = asset && asset.owner_wallet?.toLowerCase() === user.wallet_address.toLowerCase();
+  const myGrant = docGrants.find((g) => g.asset_serial === serial && g.grantee_did === user.did && g.status === 'ACTIVE');
+  const viewsLeft = myGrant && myGrant.max_views != null ? `${myGrant.views_remaining} of ${myGrant.max_views}` : null;
   const manages = canApprove; // scope is enforced by the server; the registry already filtered what we can see
   const root = versions[0];
 
@@ -50,6 +62,7 @@ export default function DigitalAssetDetail() {
       const res = await api.viewDocument(serial, token);
       setViewer({ blob: res.blob, type: res.type, actionId: res.actionId });
       setDialog(null);
+      grants.reload();
     } catch (err) { throw new Error(await api.blobError(err)); }
   };
 
@@ -75,6 +88,7 @@ export default function DigitalAssetDetail() {
     { content: <>Approval <strong>{asset.approval_status === 'APPROVED' ? 'granted' : asset.approval_status.replace('_', ' ').toLowerCase()}</strong></> },
     { content: <>Ledger <strong>{recorded(asset) ? 'recorded' : 'not yet recorded'}</strong>{asset.watermark_metadata?.block_number && <>, block {asset.watermark_metadata.block_number}</>}</>, warn: asset.approval_status === 'APPROVED' && !recorded(asset) },
     { content: <>Version <strong>{asset.version_number || 1}</strong> of {versions.length || 1}</> },
+    viewsLeft && { content: <>Views left <strong>{viewsLeft}</strong></>, warn: myGrant.views_remaining <= 1 },
   ];
 
   return (
@@ -173,7 +187,7 @@ export default function DigitalAssetDetail() {
 
       {dialog === 'view' && (
         <StepUpDialog factor="factor2" actionLabel="View this document" confirmLabel="View"
-          extra={<p className="small">A copy watermarked with your identity, wallet, network address, date and a new View ID is generated. Each view is recorded{asset.owner_wallet?.toLowerCase() !== user.wallet_address.toLowerCase() ? ' and may count against a view limit' : ''}.</p>}
+          extra={<p className="small">A copy watermarked with your identity, wallet, network address, date and a new View ID is generated. Each view is recorded{viewsLeft ? `. You have ${viewsLeft} views left` : asset.owner_wallet?.toLowerCase() !== user.wallet_address.toLowerCase() ? ' and may count against a view limit' : ''}.</p>}
           onClose={() => setDialog(null)} onSubmit={view} />
       )}
       {viewer && (
