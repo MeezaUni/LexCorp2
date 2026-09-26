@@ -1573,7 +1573,6 @@ async def approve_document(
 @router.get("/document/view/{identifier}")
 async def view_digital_document(
     identifier: str,
-    totp_code: Optional[str] = None,
     current_user: User = Depends(get_onboarded_user),
     db: AsyncSession = Depends(get_db),
     client_ip: str = Depends(get_request_client_ip),
@@ -1583,7 +1582,9 @@ async def view_digital_document(
 
     # 1. MFA Factor 2 Enforcement
 
-    await mfa.require_factor(db, current_user, "document.view", totp_code=totp_code, step_up_token=step_up_token)
+    # Factor 2 arrives only as a single-use step-up token header (never a code in the URL,
+    # where proxies and access logs would record it).
+    await mfa.require_factor(db, current_user, "document.view", step_up_token=step_up_token)
 
     # 2. Resolve the asset (by creation action ID, serial, or token ID)
     asset = None

@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Optional
 
-from jose import jwt
+import jwt
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -46,8 +46,9 @@ def create_kyc_vc(
     vc_id = f"urn:uuid:{uuid.uuid4()}"
 
     # JWT header
+    # The header states the algorithm actually used (HMAC with the dedicated VC key);
+    # previously it claimed ES256K while the token was HMAC-signed.
     header = {
-        "alg": "ES256K",
         "typ": "JWT",
         "kid": issuer_did,
     }
@@ -118,5 +119,5 @@ def verify_vc_jwt(vc_jwt: str) -> Optional[dict]:
             audience="lexcorp-sih-platform",
         )
         return payload
-    except jwt.JWTError:
+    except jwt.PyJWTError:
         return None

@@ -1,7 +1,7 @@
 import pytest
 import io
 from datetime import datetime, timedelta, UTC
-from jose import jwt
+import jwt
 from app.services.auth import create_jwt
 from tests.conftest import mfa_headers, totp_code
 from app.core.config import settings

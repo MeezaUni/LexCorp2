@@ -18,7 +18,8 @@ from typing import Optional
 
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
