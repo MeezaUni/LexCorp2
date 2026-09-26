@@ -7,8 +7,10 @@ from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_db, get_onboarded_user, get_request_client_ip, get_step_up_token
-from app.models.domain import SecurityAlert, SecurityAlertAction, User
+from fastapi import Response
+
+from app.api.dependencies import get_db, get_onboarded_user, get_request_client_ip, get_step_up_token, record_audit
+from app.models.domain import Asset, AuditEvent, DocumentAction, SecurityAlert, SecurityAlertAction, User
 from app.services import alerts as svc
 from app.services import mfa
 from app.services.watermark import short_wallet
@@ -69,9 +71,64 @@ async def get_alert(alert_id: str, current_user: User = Depends(get_onboarded_us
     subject = (await db.execute(select(User).where(User.id == alert.subject_user_id))).scalar_one_or_none() if alert.subject_user_id else None
     history = (await db.execute(select(SecurityAlertAction).where(SecurityAlertAction.alert_id == alert.id)
                                 .order_by(SecurityAlertAction.created_at))).scalars().all()
-    return {**_row(alert, subject), "history": [{
+    return {**_row(alert, subject), "evidence": await _evidence(db, alert), "history": [{
         "action": h.action, "from": h.from_state, "to": h.to_state, "actor_did": h.actor_did, "actor_role": h.actor_role,
         "note": h.note, "at": h.created_at.isoformat() if h.created_at else None} for h in history]}
+
+
+async def _source_factors(db: AsyncSession, alert: SecurityAlert) -> dict:
+    if not alert.source_event_id:
+        return {}
+    event = (await db.execute(select(AuditEvent).where(AuditEvent.id == alert.source_event_id))).scalar_one_or_none()
+    return event.risk_factors if event is not None and isinstance(event.risk_factors, dict) else {}
+
+
+async def _evidence(db: AsyncSession, alert: SecurityAlert) -> Optional[dict]:
+    """For a watermark tamper alert: what the copy said when it was issued (the record), what
+    was found in the returned file (with page/slide/sheet), and whether the file can be viewed."""
+    if alert.event_type != "WATERMARK_TAMPER_DETECTED":
+        return None
+    f = await _source_factors(db, alert)
+    ev = f.get("evidence") or {}
+    return {"download_id": f.get("download_id"), "modification_id": f.get("modification_id"),
+            "recorded_watermark": f.get("recorded_watermark"), "findings": f.get("findings") or [],
+            "has_file": bool(ev.get("file")), "filename": ev.get("filename")}
+
+
+@router.get("/{alert_id}/evidence")
+async def view_evidence(alert_id: str, request: Request, current_user: User = Depends(get_onboarded_user),
+                        db: AsyncSession = Depends(get_db)):
+    """The file as it was uploaded, as a protected view (watermarked for the reviewer, recorded)."""
+    import os
+    from app.api.assets import OFFCHAIN_STORAGE_DIR, _verify_url
+    from app.services.action_ids import next_action_id
+    from app.services.watermark import UnsupportedDocumentType, WatermarkContext, render_view_copy
+
+    _require_security_role(current_user)
+    alert = await _load(db, alert_id, current_user)
+    ev = (await _source_factors(db, alert)).get("evidence") or {}
+    rel = ev.get("file") or ""
+    path = os.path.normpath(os.path.join(OFFCHAIN_STORAGE_DIR, rel))
+    if not rel or not path.startswith(os.path.normpath(os.path.join(OFFCHAIN_STORAGE_DIR, "evidence"))) or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="No evidence file is stored for this alert.")
+    asset = (await db.execute(select(Asset).where(Asset.serial_number == alert.asset_serial))).scalar_one_or_none()
+    client_ip = get_request_client_ip(request)
+    view_id = await next_action_id(db, "VW")
+    ctx = WatermarkContext(kind="VIEW", actor_name=current_user.name or "Unnamed", actor_wallet=current_user.wallet_address,
+                           client_ip=client_ip, action_id=view_id, verify_url=_verify_url(view_id))
+    try:
+        content, mime, _ = render_view_copy(open(path, "rb").read(), ev.get("filename") or "evidence", ctx)
+    except UnsupportedDocumentType:
+        raise HTTPException(status_code=415, detail="This evidence file can't be shown in the browser.")
+    if asset is not None:
+        db.add(DocumentAction(action_id=view_id, action_type="VIEW", asset_id=asset.id, asset_serial=asset.serial_number,
+                              asset_version=asset.version_number, actor_id=current_user.id, actor_did=current_user.did,
+                              status="COMPLETED", client_ip=client_ip, watermark_text="\n".join(ctx.all_lines()),
+                              details={"evidence_for_alert": alert.alert_id}))
+    await record_audit(db, "ALERT_EVIDENCE_VIEWED", actor_did=current_user.did, asset_serial=alert.asset_serial,
+                       client_ip=client_ip, details={"alert_id": alert.alert_id, "view_id": view_id})
+    await db.commit()
+    return Response(content=content, media_type=mime, headers={"X-LexCorp-Action-Id": view_id, "Cache-Control": "no-store"})
 
 
 @router.post("/{alert_id}/forward")

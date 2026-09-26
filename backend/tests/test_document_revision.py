@@ -36,8 +36,18 @@ async def test_revise_document_success(client, db_session):
     mod = rev.json()
     assert mod["action_id"].startswith("MOD-") and mod["status"] == "PENDING"
     assert mod["details"]["download_id"] == dl
-    assert mod["details"]["file_hash"] == hashlib.sha256(flows.LAST_UPLOAD[dl]).hexdigest()
-    assert "match the record" in mod["details"]["copy_check"]
+    # The version is stored WITHOUT LexCorp2's watermark (layers verified, then removed): it holds the
+    # person's edit, and later copies of it carry one fresh watermark instead of a stack.
+    from app.api.assets import OFFCHAIN_STORAGE_DIR
+    from app.services.copy_integrity import document_text
+    assert mod["details"]["file_hash"] != hashlib.sha256(flows.LAST_UPLOAD[dl]).hexdigest()
+    stored = open(os.path.join(OFFCHAIN_STORAGE_DIR, mod["details"]["offchain_uri"].split("/")[-1]), "rb").read()
+    assert hashlib.sha256(stored).hexdigest() == mod["details"]["file_hash"]
+    text = document_text(stored)
+    assert "version one text" in text and "version two text" in text
+    assert dl not in text and "LexCorp Document Control" not in text and "CONFIDENTIAL" not in text
+    from app.models.domain import SecurityAlert
+    assert not (await db_session.execute(select(SecurityAlert).where(SecurityAlert.related_action_id == mod["action_id"]))).scalars().all()
 
     # The same modification download cannot be reused
     reuse = await flows.upload_revision(client, db_session, serial1, dl, b"version three", "spec.txt")

@@ -236,6 +236,10 @@ export const listAlerts = () => data(http.get('/alerts'));
 export const getAlert = (id) => data(http.get(`/alerts/${id}`));
 export const forwardAlert = (id, note) => data(http.post(`/alerts/${id}/forward`, { note }));
 export const dismissAlert = (id, note) => data(http.post(`/alerts/${id}/dismiss`, { note }));
+export async function alertEvidence(id) {
+  const r = await http.get(`/alerts/${id}/evidence`, { responseType: 'blob' });
+  return { blob: r.data, type: r.headers['content-type'] || r.data.type, actionId: r.headers['x-lexcorp-action-id'] };
+}
 export const revokeFromAlert = (id, note, stepUpToken) => data(http.post(`/alerts/${id}/revoke-identity`, { note }, su(stepUpToken)));
 export const auditEvents = (params) => data(http.get('/audit/events', { params }));
 export const auditStats = () => data(http.get('/audit/stats'));

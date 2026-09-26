@@ -4,6 +4,7 @@ import { refreshCounts, roleName } from '../components/Shell';
 import { humanEvent } from './Dashboard';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
+import ProtectedViewer from '../components/ProtectedViewer';
 
 const STAGE = { AUDITOR: 'AUDITOR_REVIEW', MANAGER: 'MANAGER_REVIEW', ADMIN: 'ADMIN_REVIEW' };
 const NEXT = { AUDITOR: 'the Manager of the department', MANAGER: 'an Administrator' };
@@ -117,6 +118,7 @@ function AlertDetail({ alert, user, onClose, onDone }) {
           ['Identity status', alert.subject.is_active === false ? 'Revoked or disabled' : alert.subject.is_active ? 'Active' : undefined],
           ['Current stage', <Status key="s" value={alert.state} />],
         ]} />
+        {full?.evidence && <TamperEvidence alertId={alert.alert_id} evidence={full.evidence} />}
         {alert.source === 'AI' && <p className="small muted">The AI model scores behaviour against learned patterns. Its score is advice only; it never blocks, forwards or revokes anything by itself.</p>}
         <h3>Escalation history</h3>
         {full ? (
@@ -142,6 +144,49 @@ function AlertDetail({ alert, user, onClose, onDone }) {
             setRevoking(false);
             onDone(`Identity revoked from ${alert.alert_id}.`);
           }} />
+      )}
+    </>
+  );
+}
+
+/** For a watermark tamper alert: the watermark as recorded when the copy was issued, what was
+ *  found in the returned file (with where), and the uploaded file itself, opened at the flagged page. */
+function TamperEvidence({ alertId, evidence }) {
+  const [view, setView] = useState(null);
+  const [error, setError] = useState('');
+  const open = async (page) => {
+    setError('');
+    try { setView({ ...(await api.alertEvidence(alertId)), page }); } catch (err) { setError(await api.blobError(err)); }
+  };
+  const tamper = evidence.findings.filter((f) => f.severity === 'tamper');
+  const review = evidence.findings.filter((f) => f.severity !== 'tamper');
+  return (
+    <>
+      <h3>Watermark evidence</h3>
+      <p className="small muted">Revision {evidence.modification_id} was made from the copy downloaded as {evidence.download_id}. The uploader was not told about this check.</p>
+      {error && <Notice tone="error">{error}</Notice>}
+      <div className="grid-2">
+        <div className="stack">
+          <strong className="small">Watermark as issued (the record)</strong>
+          <pre className="evidence-record">{evidence.recorded_watermark || 'Not recorded'}</pre>
+        </div>
+        <div className="stack">
+          <strong className="small">What was found in the returned file</strong>
+          <ul className="evidence-findings">
+            {tamper.map((f, i) => (
+              <li key={`t${i}`}><Status value="HIGH">Changed</Status> <strong>{f.where}</strong>: {f.detail}
+                {f.page && evidence.has_file && <> <Button size="sm" variant="quiet" onClick={() => open(f.page)}>Go to page {f.page}</Button></>}</li>
+            ))}
+            {review.map((f, i) => <li key={`r${i}`}><Status value="PENDING">Check</Status> <strong>{f.where}</strong>: {f.detail}</li>)}
+          </ul>
+          {evidence.has_file && <div><Button onClick={() => open(null)}>Open the uploaded file</Button></div>}
+        </div>
+      </div>
+      {view && (
+        <Dialog title={`Uploaded file${view.page ? `, page ${view.page}` : ''} (${evidence.filename || 'evidence'})`} wide onClose={() => setView(null)}>
+          <ProtectedViewer blob={view.blob} type={view.type} focusPage={view.page} label="Uploaded revision file" />
+          <p className="small muted">This is the file exactly as it was uploaded, shown view-only and watermarked for you ({view.actionId}). {view.page ? 'The flagged page is outlined.' : ''}</p>
+        </Dialog>
       )}
     </>
   );

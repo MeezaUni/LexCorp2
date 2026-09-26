@@ -28,11 +28,22 @@ carries only a verification reference):
 
 Unsupported formats raise UnsupportedDocumentType; the caller must refuse rather
 than return an unwatermarked original.
+
+Removable, verifiable layers. Every element added is a separate, labelled layer tagged
+with the action ID (PDF: a Form XObject per page drawn from its own content stream, and
+tagged control pages; Word: content controls; PowerPoint: named shapes and a named
+control slide; Excel: the headers/footers set and a named control sheet; images: a
+regenerable overlay and a footer band). render_protected_copy_with_manifest() also
+returns a MANIFEST: fingerprints of every element as issued. When a modified copy comes
+back, app.services.watermark_strip verifies each element against the manifest (reporting
+where anything was changed or removed) and removes the layers, so a revision is stored
+clean and later copies carry one watermark, never a stack.
 """
 
 from __future__ import annotations
 
 
+import hashlib
 import io
 import logging
 import textwrap
@@ -47,6 +58,12 @@ logger = logging.getLogger(__name__)
 
 WATERMARK_TAG = "LexCorpWatermark"
 CONTROL_TITLE = "LexCorp Document Control"
+LAYER_KEY = "/LexCorpWM"          # PDF: marks our content streams and overlay forms
+CONTROL_KEY = "/LexCorpControl"   # PDF: marks our control pages
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 _MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
            "September", "October", "November", "December"]
 
@@ -199,7 +216,7 @@ def _pdf_overlay(width: float, height: float, ctx: WatermarkContext, qr_png: byt
     return buf.getvalue()
 
 
-def _pdf_control_page(width: float, height: float, ctx: WatermarkContext, qr_png: bytes) -> bytes:
+def _pdf_control_pages(width: float, height: float, ctx: WatermarkContext, qr_png: bytes) -> bytes:
     from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
 
@@ -226,8 +243,20 @@ def _pdf_control_page(width: float, height: float, ctx: WatermarkContext, qr_png
     return buf.getvalue()
 
 
-def watermark_pdf(data: bytes, ctx: WatermarkContext) -> bytes:
+def _pdf_stream(data: bytes, tag):
+    from pypdf.generic import DecodedStreamObject, NameObject
+    st = DecodedStreamObject()
+    st.set_data(data)
+    st[NameObject(LAYER_KEY)] = tag
+    return st
+
+
+def watermark_pdf(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] = None) -> bytes:
+    """Each page gets its overlay as a separate Form XObject (/LCWM<n>) drawn by its own
+    tagged content stream; the page's original content is wrapped in q/Q and otherwise
+    untouched. Control pages are appended and tagged. Everything can be found and removed."""
     from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject, TextStringObject
 
     reader = PdfReader(io.BytesIO(data))
     if reader.is_encrypted:
@@ -236,15 +265,46 @@ def watermark_pdf(data: bytes, ctx: WatermarkContext) -> bytes:
         except Exception:
             raise UnsupportedDocumentType("Encrypted PDF cannot be watermarked")
     qr_png = ctx.qr_png()
-    writer = PdfWriter(clone_from=reader)  # pages attached to the writer before merging
-    for page in writer.pages:
-        w, h = float(page.mediabox.width), float(page.mediabox.height)
-        overlay = PdfReader(io.BytesIO(_pdf_overlay(w, h, ctx, qr_png))).pages[0]
-        page.merge_page(overlay)
+    tag = TextStringObject(ctx.action_id)
+    writer = PdfWriter(clone_from=reader)
+    overlays = {}
+    for n, page in enumerate(writer.pages, start=1):
+        box = page.mediabox
+        w, h, x0, y0 = float(box.width), float(box.height), float(box.left), float(box.bottom)
+        ov = PdfReader(io.BytesIO(_pdf_overlay(w, h, ctx, qr_png))).pages[0]
+        form = _pdf_stream(ov.get_contents().get_data(), tag)
+        form.update({
+            NameObject("/Type"): NameObject("/XObject"), NameObject("/Subtype"): NameObject("/Form"),
+            NameObject("/BBox"): ArrayObject([FloatObject(0), FloatObject(0), FloatObject(w), FloatObject(h)]),
+            NameObject("/Resources"): ov["/Resources"].clone(writer),
+        })
+        name = f"LCWM{n}"
+        form_ref = writer._add_object(form)
+        if "/Resources" not in page:
+            page[NameObject("/Resources")] = DictionaryObject()
+        resources = page["/Resources"].get_object()
+        if "/XObject" not in resources:
+            resources[NameObject("/XObject")] = DictionaryObject()
+        resources["/XObject"].get_object()[NameObject("/" + name)] = form_ref
+        original = page.get("/Contents")
+        original = [] if original is None else (list(original.get_object()) if isinstance(original.get_object(), ArrayObject) else [original])
+        opener = writer._add_object(_pdf_stream(b"q\n", tag))
+        closer = writer._add_object(_pdf_stream(f"\nQ\nq 1 0 0 1 {x0:g} {y0:g} cm /{name} Do Q\n".encode(), tag))
+        page[NameObject("/Contents")] = ArrayObject([opener, *original, closer])
+        images = form["/Resources"].get_object().get("/XObject", {})
+        overlays[name] = {"page": n, "form": sha256_hex(form.get_data()),
+                          "images": sorted(sha256_hex(images[k].get_object().get_data()) for k in images)}
+
     first = reader.pages[0].mediabox if reader.pages else None
     cw, ch = (float(first.width), float(first.height)) if first else (595.0, 842.0)
-    writer.add_page(PdfReader(io.BytesIO(_pdf_control_page(cw, ch, ctx, qr_png))).pages[0])
+    controls = []
+    for cp in PdfReader(io.BytesIO(_pdf_control_pages(cw, ch, ctx, qr_png))).pages:
+        added = writer.add_page(cp)
+        added[NameObject(CONTROL_KEY)] = tag
+        controls.append(sha256_hex(added.get_contents().get_data()))
     writer.add_metadata({"/Subject": f"LexCorp {ctx.kind} copy {ctx.action_id}", "/Keywords": WATERMARK_TAG})
+    if manifest is not None:
+        manifest.update({"format": "pdf", "page_count": len(reader.pages), "overlays": overlays, "control_pages": controls})
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue()
@@ -288,52 +348,66 @@ def _font(size: int):
     return ImageFont.load_default(size=size)
 
 
-def watermark_image(data: bytes, ctx: WatermarkContext) -> tuple[bytes, str]:
+def image_overlay_layer(w: int, h: int, text: str, size: int):
+    """The diagonal tiled marking for a w x h image (deterministic, so it can be regenerated
+    exactly to verify and remove it)."""
     from PIL import Image, ImageDraw
-
-    src = Image.open(io.BytesIO(data))
-    fmt = (src.format or "PNG").upper()
-    base = src.convert("RGBA")
-    w, h = base.size
-
-    # Diagonal tiled semi-transparent marking
     diag = int((w ** 2 + h ** 2) ** 0.5)
     layer = Image.new("RGBA", (diag, diag), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    size = max(14, min(w, h) // 18)
     font = _font(size)
-    text = f"CONFIDENTIAL  {ctx.actor_name}  {short_wallet(ctx.actor_wallet)}  {ctx.action_id}"
     step = int(size * 3.2)
     for yy in range(0, diag, step):
         d.text((0 if (yy // step) % 2 else step, yy), (text + "     ") * 6, font=font, fill=(200, 0, 0, 64))
     layer = layer.rotate(45, expand=False)
     left, top = (diag - w) // 2, (diag - h) // 2
-    marked = Image.alpha_composite(base, layer.crop((left, top, left + w, top + h)))
+    return layer.crop((left, top, left + w, top + h))
 
-    # Footer band (does not cover image content): block text + QR
-    lines = ctx.all_lines()
+
+def image_band(w: int, lines: List[str], qr_png: bytes):
+    """The footer band (block text + QR) added below the image (deterministic)."""
+    from PIL import Image, ImageDraw
     fsize = max(11, min(w, 1600) // 70)
     ffont = _font(fsize)
-    qr = Image.open(io.BytesIO(ctx.qr_png())).convert("RGBA")
+    qr = Image.open(io.BytesIO(qr_png)).convert("RGBA")
     band_h = max(len(lines) * (fsize + 4) + 20, int(fsize * 9))
     qr_side = min(band_h - 16, max(96, band_h - 16))
     qr = qr.resize((qr_side, qr_side))
-    canvas = Image.new("RGBA", (w, h + band_h), (255, 255, 255, 255))
-    canvas.paste(marked, (0, 0))
-    dd = ImageDraw.Draw(canvas)
-    dd.rectangle([0, h, w, h + band_h], fill=(253, 242, 242, 255))
-    y = h + 10
+    band = Image.new("RGBA", (w, band_h), (253, 242, 242, 255))
+    dd = ImageDraw.Draw(band)
+    y = 10
     for line in lines:
         dd.text((12, y), line, font=ffont, fill=(127, 29, 29, 255))
         y += fsize + 4
-    canvas.paste(qr, (max(0, w - qr_side - 8), h + 8), qr)
+    band.paste(qr, (max(0, w - qr_side - 8), 8), qr)
+    return band
 
+
+def watermark_image(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] = None) -> tuple[bytes, str]:
+    from PIL import Image
+
+    src = Image.open(io.BytesIO(data))
+    fmt = (src.format or "PNG").upper()
+    base = src.convert("RGBA")
+    w, h = base.size
+    size = max(14, min(w, h) // 18)
+    text = f"CONFIDENTIAL  {ctx.actor_name}  {short_wallet(ctx.actor_wallet)}  {ctx.action_id}"
+    marked = Image.alpha_composite(base, image_overlay_layer(w, h, text, size))
+    lines = ctx.all_lines()
+    band = image_band(w, lines, ctx.qr_png())
+    canvas = Image.new("RGBA", (w, h + band.height), (255, 255, 255, 255))
+    canvas.paste(marked, (0, 0))
+    canvas.paste(band, (0, h))
     out = io.BytesIO()
-    if fmt in ("JPEG", "JPG"):
+    jpeg = fmt in ("JPEG", "JPG")
+    if jpeg:
         canvas.convert("RGB").save(out, format="JPEG", quality=92)
-        return out.getvalue(), "image/jpeg"
-    canvas.save(out, format="PNG")
-    return out.getvalue(), "image/png"
+    else:
+        canvas.save(out, format="PNG")
+    if manifest is not None:
+        manifest.update({"format": "image", "width": w, "height": h, "band_height": band.height, "jpeg": jpeg,
+                         "overlay_text": text, "overlay_size": size, "band_lines": lines})
+    return out.getvalue(), ("image/jpeg" if jpeg else "image/png")
 
 
 # ------------------------------------------------------------------ DOCX
@@ -360,7 +434,26 @@ def _docx_watermark_run(text: str):
     return parse_xml(xml)
 
 
-def watermark_docx(data: bytes, ctx: WatermarkContext) -> bytes:
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def docx_sdt(tag: str, alias: str):
+    """An empty block-level content control carrying our tag (Word keeps tags on save)."""
+    from docx.oxml import parse_xml
+    return parse_xml(f'<w:sdt xmlns:w="{_W_NS}"><w:sdtPr><w:alias w:val="{alias}"/><w:tag w:val="{tag}"/>'
+                     '<w:lock w:val="sdtContentLocked"/></w:sdtPr><w:sdtContent/></w:sdt>')
+
+
+def _into_sdt(elements, tag: str, alias: str):
+    sdt = docx_sdt(tag, alias)
+    elements[0].addprevious(sdt)
+    content = sdt[-1]
+    for el in elements:
+        content.append(el)
+    return sdt
+
+
+def watermark_docx(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] = None) -> bytes:
     import docx
     from docx.enum.text import WD_BREAK
     from docx.shared import Inches, Pt, RGBColor
@@ -382,8 +475,11 @@ def watermark_docx(data: bytes, ctx: WatermarkContext) -> bytes:
             run.font.size = Pt(7)
             run.font.color.rgb = RGBColor(0x99, 0x1B, 0x1B)
             p.add_run().add_picture(io.BytesIO(qr_png), width=Inches(0.55))
+            _into_sdt([p._p], f"LexCorpWM:{ctx.action_id}", "LexCorp watermark")
 
     # Dedicated control section: full block + cumulative history (never overlays content)
+    body = doc.element.body
+    before = len(body)
     doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
     doc.add_heading(CONTROL_TITLE, level=1)
     for line in ctx.all_lines():
@@ -391,6 +487,12 @@ def watermark_docx(data: bytes, ctx: WatermarkContext) -> bytes:
         r = para.add_run(line)
         r.bold = line == "CONFIDENTIAL"
     doc.add_picture(io.BytesIO(qr_png), width=Inches(1.4))
+    added = [el for el in list(body)[before - 1:] if el.tag != f"{{{_W_NS}}}sectPr"][-(len(body) - before):]
+    _into_sdt(added, f"LexCorpControl:{ctx.action_id}", "LexCorp document control")
+    if manifest is not None:
+        manifest.update({"format": "docx", "header_text": (ctx.compact() + "  ").strip(), "shape_string": shape_text,
+                         "headers": len(seen), "control_lines": [CONTROL_TITLE] + [x for x in ctx.all_lines() if x],
+                         "qr": sha256_hex(qr_png)})
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()
@@ -407,7 +509,7 @@ def _set_alpha(run_or_shape_fill_xml_parent, alpha_pct: int):
         return
 
 
-def watermark_pptx(data: bytes, ctx: WatermarkContext) -> bytes:
+def watermark_pptx(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] = None) -> bytes:
     from pptx import Presentation
     from pptx.dml.color import RGBColor
     from pptx.util import Emu, Pt
@@ -417,9 +519,9 @@ def watermark_pptx(data: bytes, ctx: WatermarkContext) -> bytes:
     qr_png = ctx.qr_png()
     text = f"CONFIDENTIAL · {ctx.actor_name} · {short_wallet(ctx.actor_wallet)} · {ctx.action_id}"
     original_slides = list(prs.slides)
-    for slide in original_slides:
+    for n, slide in enumerate(original_slides, start=1):
         box = slide.shapes.add_textbox(Emu(int(sw * 0.05)), Emu(int(sh * 0.4)), Emu(int(sw * 0.9)), Emu(int(sh * 0.2)))
-        box.name = WATERMARK_TAG
+        box.name = f"LexCorpWM:{ctx.action_id}:{n}"
         box.rotation = 315
         tf = box.text_frame
         tf.word_wrap = True
@@ -431,7 +533,7 @@ def watermark_pptx(data: bytes, ctx: WatermarkContext) -> bytes:
         _set_alpha(run._r, 25)
         qr_side = Emu(int(min(sw, sh) * 0.1))
         pic = slide.shapes.add_picture(io.BytesIO(qr_png), sw - qr_side - Emu(60000), sh - qr_side - Emu(60000), qr_side, qr_side)
-        pic.name = f"{WATERMARK_TAG}QR"
+        pic.name = f"LexCorpWMQR:{ctx.action_id}:{n}"
 
     # Appended control slide (original slides untouched otherwise)
     layout = min(prs.slide_layouts, key=lambda l: len(l.placeholders))
@@ -439,7 +541,7 @@ def watermark_pptx(data: bytes, ctx: WatermarkContext) -> bytes:
     for ph in list(control.placeholders):
         ph._element.getparent().remove(ph._element)
     tb = control.shapes.add_textbox(Emu(int(sw * 0.05)), Emu(int(sh * 0.05)), Emu(int(sw * 0.62)), Emu(int(sh * 0.9)))
-    tb.name = "LexCorpControl"
+    tb.name = f"LexCorpControl:{ctx.action_id}"
     tf = tb.text_frame
     tf.word_wrap = True
     tf.paragraphs[0].text = CONTROL_TITLE
@@ -450,7 +552,11 @@ def watermark_pptx(data: bytes, ctx: WatermarkContext) -> bytes:
         if p.runs:
             p.runs[0].font.size = Pt(12)
     side = Emu(int(min(sw, sh) * 0.3))
-    control.shapes.add_picture(io.BytesIO(qr_png), sw - side - Emu(int(sw * 0.05)), Emu(int(sh * 0.08)), side, side)
+    cqr = control.shapes.add_picture(io.BytesIO(qr_png), sw - side - Emu(int(sw * 0.05)), Emu(int(sh * 0.08)), side, side)
+    cqr.name = f"LexCorpControlQR:{ctx.action_id}"
+    if manifest is not None:
+        manifest.update({"format": "pptx", "slide_count": len(original_slides), "box_text": text,
+                         "control_lines": [CONTROL_TITLE] + [x for x in ctx.all_lines() if x], "qr": sha256_hex(qr_png)})
     out = io.BytesIO()
     prs.save(out)
     return out.getvalue()
@@ -493,7 +599,20 @@ def _xlsx_set_header_footer(xml: bytes, header: str, footer: str) -> bytes:
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
-def watermark_xlsx(data: bytes, ctx: WatermarkContext) -> bytes:
+def xlsx_sheet_parts(parts: dict) -> dict:
+    """{sheet name: part path} for worksheets and chartsheets, via workbook.xml and its rels."""
+    from lxml import etree
+    wb = etree.fromstring(parts["xl/workbook.xml"])
+    rels = etree.fromstring(parts["xl/_rels/workbook.xml.rels"])
+    targets = {r.get("Id"): r.get("Target") for r in rels}
+    out = {}
+    for sh in wb.iter(f"{{{_NS_MAIN}}}sheet"):
+        target = targets.get(sh.get(f"{{{_NS_REL}}}id"), "")
+        out[sh.get("name")] = target.lstrip("/") if target.startswith("/") else "xl/" + target
+    return out
+
+
+def watermark_xlsx(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] = None) -> bytes:
     """Package-level XLSX watermark. Every part of the workbook (cells, formulas,
     styles, charts, pivot tables, images, defined names, VBA-free extensions) is
     copied byte-for-byte; only these changes are made:
@@ -511,9 +630,12 @@ def watermark_xlsx(data: bytes, ctx: WatermarkContext) -> bytes:
     # Excel limits a header/footer to 255 characters.
     header = ("&C&8&KC00000" + _hf_escape(ctx.compact()))[:250]
     footer = f"&C&8CONFIDENTIAL - {_hf_escape(ctx.action_id)} - Page &P of &N"
-    for n in names:
-        if (n.startswith("xl/worksheets/sheet") or n.startswith("xl/chartsheets/sheet")) and n.endswith(".xml"):
-            parts[n] = _xlsx_set_header_footer(parts[n], header, footer)
+    original_hf = {}
+    for sheet_name, part in xlsx_sheet_parts(parts).items():
+        if part in parts:
+            existing_hf = etree.fromstring(parts[part]).find(f"{{{_NS_MAIN}}}headerFooter")
+            original_hf[sheet_name] = etree.tostring(existing_hf).decode() if existing_hf is not None else None
+            parts[part] = _xlsx_set_header_footer(parts[part], header, footer)
 
     # ---- workbook: register the control sheet
     wb = etree.fromstring(parts["xl/workbook.xml"])
@@ -587,6 +709,9 @@ def watermark_xlsx(data: bytes, ctx: WatermarkContext) -> bytes:
     etree.SubElement(ct, f"{{{_NS_CT}}}Override", {"PartName": "/" + drawing,
                      "ContentType": "application/vnd.openxmlformats-officedocument.drawing+xml"})
     parts["[Content_Types].xml"] = etree.tostring(ct, xml_declaration=True, encoding="UTF-8", standalone=True)
+    if manifest is not None:
+        manifest.update({"format": "xlsx", "header": header, "footer": footer, "original_headers": original_hf,
+                         "control_sheet": title, "control_lines": [x for x in lines if x], "qr": sha256_hex(parts[media])})
 
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -607,25 +732,33 @@ _MIME = {
 }
 
 
-def render_protected_copy(data: bytes, filename: str, ctx: WatermarkContext) -> tuple[bytes, str, str]:
-    """Return (watermarked_bytes, mime_type, output_filename). Never returns the original."""
+def render_protected_copy_with_manifest(data: bytes, filename: str, ctx: WatermarkContext) -> tuple[bytes, str, str, dict]:
+    """(watermarked_bytes, mime_type, output_filename, manifest). The manifest fingerprints
+    every watermark element so the copy can later be verified and cleanly un-watermarked."""
     kind = detect_type(data, filename)
     stem = filename.rsplit(".", 1)[0] if "." in filename else filename
     tag = f"{stem}.{ctx.action_id}"
+    m: dict = {"action_id": ctx.action_id, "qr_url": ctx.verify_url}
     if kind == "pdf":
-        return watermark_pdf(data, ctx), _MIME["pdf"], f"{tag}.pdf"
+        return watermark_pdf(data, ctx, m), _MIME["pdf"], f"{tag}.pdf", m
     if kind == "text":
-        return watermark_pdf(text_to_pdf(data, filename), ctx), _MIME["pdf"], f"{tag}.pdf"
+        return watermark_pdf(text_to_pdf(data, filename), ctx, m), _MIME["pdf"], f"{tag}.pdf", m
     if kind == "image":
-        out, mime = watermark_image(data, ctx)
-        return out, mime, f"{tag}.{'jpg' if mime == 'image/jpeg' else 'png'}"
+        out, mime = watermark_image(data, ctx, m)
+        return out, mime, f"{tag}.{'jpg' if mime == 'image/jpeg' else 'png'}", m
     if kind == "docx":
-        return watermark_docx(data, ctx), _MIME["docx"], f"{tag}.docx"
+        return watermark_docx(data, ctx, m), _MIME["docx"], f"{tag}.docx", m
     if kind == "pptx":
-        return watermark_pptx(data, ctx), _MIME["pptx"], f"{tag}.pptx"
+        return watermark_pptx(data, ctx, m), _MIME["pptx"], f"{tag}.pptx", m
     if kind == "xlsx":
-        return watermark_xlsx(data, ctx), _MIME["xlsx"], f"{tag}.xlsx"
+        return watermark_xlsx(data, ctx, m), _MIME["xlsx"], f"{tag}.xlsx", m
     raise UnsupportedDocumentType(kind)
+
+
+def render_protected_copy(data: bytes, filename: str, ctx: WatermarkContext) -> tuple[bytes, str, str]:
+    """Return (watermarked_bytes, mime_type, output_filename). Never returns the original."""
+    content, mime, name, _ = render_protected_copy_with_manifest(data, filename, ctx)
+    return content, mime, name
 
 
 # ------------------------------------------------------------------ view-only representation

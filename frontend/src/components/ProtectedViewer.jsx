@@ -12,7 +12,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
  * This removes the easy ways out; it can't stop a screenshot or a camera, which is why
  * every view carries the viewer's name, wallet, IP, time and View ID.
  */
-export default function ProtectedViewer({ blob, type, label }) {
+export default function ProtectedViewer({ blob, type, label, focusPage }) {
   const host = useRef(null);
   const [state, setState] = useState({ loading: true, error: '', pages: 0 });
 
@@ -64,13 +64,17 @@ export default function ProtectedViewer({ blob, type, label }) {
           c.height = Math.floor(viewport.height);
           c.style.width = `${Math.floor(viewport.width / ratio)}px`;
           await page.render({ canvasContext: c.getContext('2d'), viewport }).promise;
+          if (n === focusPage) {
+            c.classList.add('flagged');
+            c.scrollIntoView({ block: 'start' });
+          }
         }
       } catch {
         if (!cancelled) setState({ loading: false, error: 'This view copy could not be displayed.', pages: 0 });
       }
     })();
     return () => { cancelled = true; doc?.destroy(); };
-  }, [blob, type]);
+  }, [blob, type, focusPage]);
 
   return (
     <div className="protected-viewer" onContextMenu={(e) => e.preventDefault()} onDragStart={(e) => e.preventDefault()}

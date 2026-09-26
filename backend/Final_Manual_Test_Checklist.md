@@ -547,17 +547,27 @@ never in screenshots.
 
 ## I. Modification
 
-### I0 — A delegated user's revision cycle (with tamper check)
+### I0 — A delegated user's revision cycle
 - **Preconditions:** USB has delegated access to USA's `DOC-TEST-001` (G1).
 - **Steps:**
   1. As USB: open the document → **Request modification copy** → purpose → Factor 2.
   2. As USA (owner): **My requests** → **Consent** → Factor 3. As MGR: approve it → Factor 3.
   3. As USB: **My requests** → **Download copy** → Factor 3. Try **Download copy** again.
-  4. Edit the downloaded PDF (for example add a page or annotation) but keep its watermark, QR code and last "LexCorp Document Control" page. **Upload revision** → Factor 3.
-  5. Also try uploading (a) the original un-watermarked file and (b) a copy where you changed a watermark detail such as the IP.
-  6. As MGR approve the revision and record it.
-- **Expected:** the request needs the owner's consent and then MGR's approval (only the owner's consent if the owner is a Manager/Admin); the copy downloads once only; step 4 is accepted as version 2; both uploads in step 5 are refused ("Revision refused: …") and each raises a HIGH security alert (Watermark tamper detected); after step 6 the Versions list shows v1 and v2, both owned by USA.
-- **Evidence:** I0.png.
+  4. Edit the downloaded file (add a page or text; leave the watermark alone) → **Upload revision** → Factor 3.
+  5. As MGR approve and record the revision. Then view v2, and download a copy of v2.
+- **Expected:** owner consent, then MGR approval (only the owner's consent if the owner is a Manager/Admin); the copy downloads once only; the revision is accepted with no alert; **v2 shows exactly one watermark** (the viewer's own), not the earlier copy's watermark underneath; the Versions list shows v1 and v2, both owned by USA.
+- **Evidence:** I0.png (the v2 view, single watermark).
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### I0b — A tampered return is flagged silently
+- **Steps:**
+  1. Repeat I0 steps 1–3 to get a new modification copy.
+  2. Change the watermark on the copy (for example edit the IP or name on a page, delete the "LexCorp Document Control" page, or remove the Word/PowerPoint watermark) and upload it as the revision.
+  3. As USB, look at the result. As AUD: **Security alerts** → open the new "Watermark tamper detected" alert.
+  4. In the alert: read **Watermark as issued**, click **Go to page N** on a finding, and **Open the uploaded file**.
+  5. As MGR try to approve that revision. Then as AUD dismiss (or forward) the alert, and try again.
+- **Expected:** USB sees an ordinary "submitted, awaits approval" message (no warning); the alert lists what changed and where (page/slide/sheet); **Go to page** opens the uploaded file at that page with the page outlined; approval is refused ("under security review (ALT-…)") while the alert is open and works once it is closed.
+- **Evidence:** I0b-alert.png, I0b-page.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
 ### I6 — Share chosen versions

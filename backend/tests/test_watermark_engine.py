@@ -136,16 +136,21 @@ def test_pdf_every_page_diagonal_translucent_qr_and_control_page():
         text = page.extract_text()
         assert f"Original page {i + 1} body text" in text  # content preserved
         assert_identity(text, c)
-        content = page.get_contents().get_data()
+        # The overlay is a separate, tagged layer (Form XObject) drawn over the page
+        assert f"/LCWM{i + 1} Do".encode() in page.get_contents().get_data()
+        form = page["/Resources"]["/XObject"][f"/LCWM{i + 1}"].get_object()
+        assert form["/LexCorpWM"] == c.action_id
+        content = form.get_data()
         assert re.search(rb"0?\.7071\d* 0?\.7071\d* -0?\.7071\d* 0?\.7071\d* [\d.]+ [\d.]+ cm", content), "no 45 deg rotation"
-        gs = page["/Resources"]["/ExtGState"]
+        gs = form["/Resources"]["/ExtGState"]
         alphas = [float(v.get_object().get("/ca", 1)) for v in gs.values()]
         assert any(0 < a < 1 for a in alphas), "no semi-transparent fill"
-        xobjs = page["/Resources"]["/XObject"]
+        xobjs = form["/Resources"]["/XObject"]
         assert any(x.get_object()["/Subtype"] == "/Image" for x in xobjs.values()), "no QR image"
     assert "LexCorp Document Control" in r.pages[3].extract_text()
     # QR decodes to the verification reference
-    img = next(x.get_object() for x in r.pages[0]["/Resources"]["/XObject"].values() if x.get_object()["/Subtype"] == "/Image")
+    form0 = r.pages[0]["/Resources"]["/XObject"]["/LCWM1"].get_object()
+    img = next(x.get_object() for x in form0["/Resources"]["/XObject"].values() if x.get_object()["/Subtype"] == "/Image")
     from pypdf.generic import IndirectObject  # noqa
     pil = r.pages[0].images[0].image
     buf = io.BytesIO(); pil.convert("RGB").resize((400, 400)).save(buf, format="PNG")
@@ -186,7 +191,9 @@ def test_docx_structure_preserved_with_native_watermark_and_control_section():
     assert mime.endswith("wordprocessingml.document")
     assert zipfile.ZipFile(io.BytesIO(out)).testzip() is None
     d = docx.Document(io.BytesIO(out))  # reopens
-    texts = [p.text for p in d.paragraphs]
+    from docx.oxml.ns import qn
+    # all body paragraphs, including those inside LexCorp's content controls
+    texts = ["".join(t.text or "" for t in p.iter(qn("w:t"))) for p in d.element.body.iter(qn("w:p"))]
     assert texts[:4] == ["Radar Specification", "Original paragraph 1", "Original paragraph 2", "Original paragraph 3"]
     assert d.tables[0].cell(0, 0).text == "cell-a"
     header_xml = d.sections[0].header._element.xml
@@ -210,11 +217,11 @@ def test_pptx_every_slide_marked_structure_preserved():
         names = [sh.name for sh in s.shapes]
         assert s.shapes.title.text == f"Slide {i + 1} title"
         assert any(sh.has_text_frame and sh.text_frame.text == f"Original body {i + 1}" for sh in s.shapes)
-        wm = next(sh for sh in s.shapes if sh.name == "LexCorpWatermark")
+        wm = next(sh for sh in s.shapes if sh.name == f"LexCorpWM:{c.action_id}:{i + 1}")
         assert wm.rotation == 315
         assert "<a:alpha" in wm._element.xml
         assert c.action_id in wm.text_frame.text and short_wallet(VIEWER_WALLET) in wm.text_frame.text
-        assert "LexCorpWatermarkQR" in names
+        assert f"LexCorpWMQR:{c.action_id}:{i + 1}" in names
     control_text = "\n".join(sh.text_frame.text for sh in slides[3].shapes if sh.has_text_frame)
     assert_identity(control_text, c)
 

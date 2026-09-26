@@ -126,9 +126,11 @@ async def test_rejected_or_pending_documents_not_downloadable(client, db_session
 @pytest.mark.asyncio
 async def test_delegated_user_revision_cycle_owner_consent_approval_and_integrity(client, db_session):
     """A delegated user asks for a modification copy: the owner (a normal user) consents, a
-    Manager approves, the copy is fetched once, and the edited copy comes back as v2. A file
-    whose watermark was stripped or altered is refused and raises an alert."""
-    from app.models.domain import AuditEvent, SecurityAlert
+    Manager approves, the copy is fetched once. A returned copy whose watermark was altered is
+    accepted SILENTLY as pending (the uploader is told nothing) but raises an alert carrying the
+    recorded watermark, the findings (with page) and the uploaded file; the revision can't be
+    approved until the alert is closed."""
+    from app.models.domain import SecurityAlert
     from app.services.watermark import WatermarkContext, render_protected_copy
     serial = await flows.approved_document(client, db_session, b"mod rights body", "m.txt")
     dee = await grantee_with_download(db_session, serial)
@@ -138,38 +140,57 @@ async def test_delegated_user_revision_cycle_owner_consent_approval_and_integrit
     assert r.status_code == 200, r.text
     dl = r.json()["action_id"]
     assert r.json()["status"] == "PENDING" and r.json()["details"]["requires_owner_approval"] is True
-    early = await flows.approve(client, db_session, dl)
-    assert early.status_code == 409  # the owner consents first
+    assert (await flows.approve(client, db_session, dl)).status_code == 409  # the owner consents first
     await flows.owner_consent(client, db_session, dl)
     assert (await flows.approve(client, db_session, dl)).status_code == 200
     got = await flows.fetch(client, db_session, dl, requester=dee)
     assert got.status_code == 200
     assert (await flows.fetch(client, db_session, dl, requester=dee)).status_code == 409  # once only
-    flows.COPIES[dl] = got.content
 
-    # Tampered: same Download ID and QR, but the IP on the watermark was changed
-    rec = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == dl))).scalar_one()
+    # Same Download ID and QR, but the watermark's IP was changed
     forged_ctx = WatermarkContext(kind="DOWNLOAD", actor_name="Downloader Dee", actor_wallet=dee, client_ip="203.0.113.99",
                                   action_id=dl, verify_url=f"http://localhost:5173/verify/action/{dl}")
-    forged, _, _ = render_protected_copy(b"other body", "x.txt", forged_ctx)
-    bad = await flows.upload_revision(client, db_session, serial, dl, forged, "m.pdf", uploader=dee, raw=True)
-    assert bad.status_code == 422 and "IP" in bad.json()["detail"]
-    stripped = await flows.upload_revision(client, db_session, serial, dl, b"plain edited text, no watermark", "m.txt", uploader=dee, raw=True)
-    assert stripped.status_code == 422 and "QR" in stripped.json()["detail"]
-    ev = (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "WATERMARK_TAMPER_DETECTED",
-                                                              AuditEvent.asset_serial == serial))).scalars().all()
-    assert len(ev) == 2 and all(e.risk_label == "HIGH" for e in ev)
-    alerts = (await db_session.execute(select(SecurityAlert).where(SecurityAlert.event_type == "WATERMARK_TAMPER_DETECTED",
-                                                                    SecurityAlert.asset_serial == serial))).scalars().all()
-    assert len(alerts) == 2
+    forged, _, _ = render_protected_copy(b"mod rights body, fixed typos", "x.txt", forged_ctx)
+    up = await flows.upload_revision(client, db_session, serial, dl, forged, "m.pdf", uploader=dee, raw=True)
+    assert up.status_code == 200, up.text
+    mod = up.json()
+    assert mod["status"] == "PENDING" and "findings" not in str(mod) and "tamper" not in str(mod).lower()  # silent
 
-    ok = await flows.upload_revision(client, db_session, serial, dl, b"fixed typos", "m.txt", uploader=dee)
-    assert ok.status_code == 200, ok.text
-    assert (await flows.approve(client, db_session, ok.json()["action_id"])).status_code == 200
-    v2 = (await db_session.execute(select(Asset).where(Asset.serial_number == ok.json()["asset_serial"]))).scalar_one()
-    assert v2.version_number == 2 and v2.approval_status == "APPROVED"
+    alert = (await db_session.execute(select(SecurityAlert).where(SecurityAlert.related_action_id == mod["action_id"]))).scalar_one()
+    assert alert.event_type == "WATERMARK_TAMPER_DETECTED" and alert.risk_level == "HIGH" and alert.subject_did.endswith(dee)
+    auditor = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+    t_aud = flows.token_for(auditor, role="AUDITOR", version=1)
+    detail = (await client.get(f"/api/alerts/{alert.alert_id}", headers={"Authorization": f"Bearer {t_aud}"})).json()
+    ev = detail["evidence"]
+    assert ev["download_id"] == dl and "IP: " in ev["recorded_watermark"] and ev["has_file"] is True
+    assert any(f["severity"] == "tamper" and f.get("page") == 1 for f in ev["findings"])  # located on page 1
+    view = await client.get(f"/api/alerts/{alert.alert_id}/evidence", headers={"Authorization": f"Bearer {t_aud}"})
+    assert view.status_code == 200 and view.headers["content-type"] == "application/pdf"
+    assert "203.0.113.99" in pdf_text(view.content)  # the file exactly as uploaded
+    # A normal user can't see it
+    assert (await client.get(f"/api/alerts/{alert.alert_id}/evidence",
+                             headers={"Authorization": f"Bearer {flows.token_for(dee)}"})).status_code == 403
+
+    blocked = await flows.approve(client, db_session, mod["action_id"])
+    assert blocked.status_code == 409 and alert.alert_id in blocked.json()["detail"]
+    dismissed = await client.post(f"/api/alerts/{alert.alert_id}/dismiss", headers={"Authorization": f"Bearer {t_aud}"},
+                                  json={"note": "checked with the uploader"})
+    assert dismissed.status_code == 200, dismissed.text
+    assert (await flows.approve(client, db_session, mod["action_id"])).status_code == 200
+    v2 = (await db_session.execute(select(Asset).where(Asset.serial_number == mod["asset_serial"]))).scalar_one()
     root = (await db_session.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one()
-    assert v2.owner_id == root.owner_id  # the owner still owns every version
+    assert v2.version_number == 2 and v2.owner_id == root.owner_id
+
+
+@pytest.mark.asyncio
+async def test_returned_copy_without_watermark_is_flagged_silently(client, db_session):
+    from app.models.domain import SecurityAlert
+    serial = await flows.approved_document(client, db_session, b"strip body", "s.txt")
+    dl, _ = await flows.modification_download(client, db_session, serial)
+    up = await flows.upload_revision(client, db_session, serial, dl, b"edited text with the watermark stripped", "s.txt", raw=True)
+    assert up.status_code == 200
+    alert = (await db_session.execute(select(SecurityAlert).where(SecurityAlert.related_action_id == up.json()["action_id"]))).scalar_one()
+    assert alert.event_type == "WATERMARK_TAMPER_DETECTED"
 
 
 @pytest.mark.asyncio

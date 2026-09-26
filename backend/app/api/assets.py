@@ -19,7 +19,9 @@ from app.api.dependencies import get_db, get_current_user, get_current_active_us
 from app.core.config import settings
 from app.services.contract import contract_service
 from app.services import copy_integrity
-from app.services.watermark import HistoryEntry, UnsupportedDocumentType, WatermarkContext, render_protected_copy, render_view_copy
+from app.services.watermark import (HistoryEntry, UnsupportedDocumentType, WatermarkContext, render_protected_copy,
+                                   render_protected_copy_with_manifest, render_view_copy)
+from app.services import watermark_strip
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_physical_card_svg
 from app.services import physical as phys
@@ -1468,6 +1470,15 @@ async def approve_document(
 
     await mfa.require_factor(db, current_user, "asset.approve", totp_code=request.totp_code, step_up_token=step_up_token)
 
+    if action.action_type == "MODIFICATION" and request.decision.upper() == "APPROVE":
+        from app.models.domain import SecurityAlert
+        from app.services.alerts import OPEN_STATES
+        open_alert = (await db.execute(select(SecurityAlert).where(
+            SecurityAlert.related_action_id == action.action_id, SecurityAlert.state.in_(OPEN_STATES)))).scalars().first()
+        if open_alert is not None:
+            raise HTTPException(status_code=409, detail=f"This revision is under security review ({open_alert.alert_id}). "
+                                                        "It can be approved once that alert is closed.")
+
     # Only creation/modification decisions change the document's own approval state;
     # approving a share or download request must never mark the document approved.
     changes_asset_state = action.action_type in ("CREATION", "MODIFICATION")
@@ -1866,8 +1877,8 @@ async def _require_may_revise(db, user, parent) -> None:
 
 async def _create_revision(
     db: AsyncSession, current_user: User, parent_asset: Asset, download_action_id: Optional[str],
-    file_hash: str, offchain_uri: str, name: Optional[str], purpose: Optional[str],
-    client_ip: str, requested_serial: Optional[str] = None, *, content: bytes,
+    content: bytes, filename: str, name: Optional[str], purpose: Optional[str],
+    client_ip: str, requested_serial: Optional[str] = None,
 ) -> DocumentAction:
     """Pending revision = NEW asset row (v+1). Requires an approved, completed MODIFICATION
     download of the parent by this user (owner, Manager/Admin, or a delegated user whose
@@ -1893,20 +1904,27 @@ async def _create_revision(
         raise HTTPException(status_code=409, detail=f"Revisions must be based on the latest approved version (v{latest}).")
     if pending:
         raise HTTPException(status_code=409, detail="A revision of this document is already pending approval.")
-    lineage_hashes = set((await db.execute(select(Asset.file_hash).where(or_(Asset.root_asset_id == root_id, Asset.id == root_id)))).scalars().all())
-    if file_hash in lineage_hashes:
-        raise HTTPException(status_code=400, detail="The uploaded file is identical to an existing version (same SHA-256).")
-
-    # The file must be the modification copy LexCorp2 issued (QR + watermark intact).
+    # Verify every watermark element against what was issued, then remove LexCorp2's layers:
+    # the version is stored clean, so later copies carry one watermark instead of a stack.
+    manifest = d.get("watermark_manifest")
     check = copy_integrity.check_copy(content, dl.action_id, dl.watermark_text or "")
-    if not check.ok:
-        await record_audit(db, "WATERMARK_TAMPER_DETECTED", actor_did=current_user.did, asset_serial=parent_asset.serial_number,
-                           client_ip=client_ip, risk_label="HIGH", risk_score=0.8,
-                           details={"action_id": dl.action_id, "reason": check.reason, "mismatched_fields": check.mismatches,
-                                    "qr_found": check.qr_found, "control_block_found": check.block_found,
-                                    "source": "revision upload"})
-        await db.commit()
-        raise HTTPException(status_code=422, detail=f"Revision refused: {check.reason}")
+    findings = [] if check.ok else [watermark_strip.finding("tamper", "QR code / Document Control", check.reason)]
+    if manifest:
+        clean, strip_findings = watermark_strip.strip_watermark(content, filename, manifest)
+        findings += strip_findings
+    else:
+        clean = content  # a copy issued before removable layers existed: kept as returned
+    file_hash = hashlib.sha256(clean).hexdigest()
+    lineage_hashes = set((await db.execute(select(Asset.file_hash).where(or_(Asset.root_asset_id == root_id, Asset.id == root_id)))).scalars().all())
+    if file_hash in lineage_hashes or hashlib.sha256(content).hexdigest() in lineage_hashes:
+        raise HTTPException(status_code=400, detail="The uploaded file is identical to an existing version (same SHA-256).")
+    safe_name = os.path.basename(filename or "revision")
+    stored = f"{file_hash}_{safe_name}"
+    offchain_uri = f"secure-vault://documents/{stored}"
+    path = os.path.join(OFFCHAIN_STORAGE_DIR, stored)
+    if not os.path.exists(path):  # content-addressed: never overwrite existing bytes
+        with open(path, "xb") as f:
+            f.write(clean)
 
     root = (await db.execute(select(Asset).where(Asset.id == root_id))).scalar_one()
     new_version = latest + 1
@@ -1933,7 +1951,6 @@ async def _create_revision(
             "name": revised.name, "parent_asset_serial": parent_asset.serial_number, "parent_asset_id": str(parent_asset.id),
             "parent_version": parent_asset.version_number, "version": new_version, "parent_file_hash": parent_asset.file_hash,
             "file_hash": file_hash, "offchain_uri": offchain_uri, "download_id": dl.action_id,
-            "copy_check": check.reason,
         },
     )
     db.add(action)
@@ -1944,6 +1961,28 @@ async def _create_revision(
                        details={"modification_id": action_id_str, "parent_version": parent_asset.version_number,
                                 "version": new_version, "file_hash": file_hash, "download_id": dl.action_id,
                                 **({"ai": risk["ai"]} if risk else {})})
+    if any(f["severity"] == "tamper" for f in findings):
+        # Silent to the uploader: the revision is accepted as pending, but an alert goes to the
+        # Auditor with the evidence, and the revision can't be approved while it is open.
+        evidence_name = f"{hashlib.sha256(content).hexdigest()}_{safe_name}"
+        evidence_dir = os.path.join(OFFCHAIN_STORAGE_DIR, "evidence")
+        os.makedirs(evidence_dir, exist_ok=True)
+        evidence_path = os.path.join(evidence_dir, evidence_name)
+        if not os.path.exists(evidence_path):
+            with open(evidence_path, "xb") as f:
+                f.write(content)
+        tampered = [f for f in findings if f["severity"] == "tamper"]
+        await record_audit(db, "WATERMARK_TAMPER_DETECTED", actor_did=current_user.did, asset_serial=serial, client_ip=client_ip,
+                           risk_label="HIGH", risk_score=0.8,
+                           details={"action_id": action_id_str, "modification_id": action_id_str, "download_id": dl.action_id,
+                                    "reason": f"Revision {action_id_str}: watermark of {dl.action_id} altered or removed "
+                                              f"({'; '.join(f['where'] for f in tampered)[:300]})",
+                                    "findings": findings, "recorded_watermark": dl.watermark_text,
+                                    "evidence": {"file": f"evidence/{evidence_name}", "filename": safe_name},
+                                    "source": "revision upload"})
+    elif findings:
+        await record_audit(db, "REVISION_WATERMARK_NOTES", actor_did=current_user.did, asset_serial=serial, client_ip=client_ip,
+                           details={"modification_id": action_id_str, "download_id": dl.action_id, "findings": findings})
     return action
 
 
@@ -1969,9 +2008,9 @@ async def revise_document(
     actual = hashlib.sha256(stored_bytes).hexdigest()
     if actual != request.new_file_hash:
         raise HTTPException(status_code=400, detail="new_file_hash does not match the stored file (server-computed SHA-256).")
-    action = await _create_revision(db, current_user, parent_asset, request.modification_download_id, actual,
-                                    request.new_offchain_uri, request.name, request.purpose, client_ip,
-                                    requested_serial=request.new_serial_number, content=stored_bytes)
+    action = await _create_revision(db, current_user, parent_asset, request.modification_download_id, stored_bytes,
+                                    _original_filename(probe), request.name, request.purpose, client_ip,
+                                    requested_serial=request.new_serial_number)
     await db.commit()
     await db.refresh(action)
     return action
@@ -2003,16 +2042,8 @@ async def upload_revision(
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File size exceeds maximum permitted limit (50MB).")
-    digest = hashlib.sha256(content).hexdigest()
-    safe_name = os.path.basename(file.filename or "revision")
-    stored = f"{digest}_{safe_name}"
-    action = await _create_revision(db, current_user, parent_asset, modification_download_id, digest,
-                                    f"secure-vault://documents/{stored}", name, purpose, get_request_client_ip(request),
-                                    content=content)
-    path = os.path.join(OFFCHAIN_STORAGE_DIR, stored)
-    if not os.path.exists(path):  # content-addressed: never overwrite existing bytes; stored only once accepted
-        with open(path, "xb") as f:
-            f.write(content)
+    action = await _create_revision(db, current_user, parent_asset, modification_download_id, content,
+                                    os.path.basename(file.filename or "revision"), name, purpose, get_request_client_ip(request))
     await db.commit()
     await db.refresh(action)
     return action
@@ -2247,12 +2278,13 @@ async def fetch_approved_download(
         history=await _modification_history(db, asset),
     )
     try:
-        content, mime, out_name = render_protected_copy(file_bytes, _original_filename(asset), ctx)
+        content, mime, out_name, manifest = render_protected_copy_with_manifest(file_bytes, _original_filename(asset), ctx)
     except UnsupportedDocumentType as e:
         raise HTTPException(status_code=415, detail=f"This document type cannot be served as a protected copy: {e}")
     action.status = "COMPLETED"
     action.watermark_text = "\n".join(ctx.all_lines())
-    action.details = {**(action.details or {}), "downloaded_at": datetime.now(UTC).isoformat(), "downloaded_from_ip": client_ip}
+    action.details = {**(action.details or {}), "downloaded_at": datetime.now(UTC).isoformat(), "downloaded_from_ip": client_ip,
+                      "watermark_manifest": manifest, "copy_filename": out_name}
     risk = ai_score("DOCUMENT_DOWNLOADED", current_user, owner_did=owner.did if owner else None, sensitivity=2)
     await record_audit(db, "DOCUMENT_DOWNLOADED", actor_did=current_user.did, asset_serial=asset.serial_number, client_ip=client_ip,
                        risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
@@ -2300,10 +2332,11 @@ async def owner_download(
         history=await _modification_history(db, asset),
     )
     try:
-        content, mime, out_name = render_protected_copy(_read_vault_file(asset), _original_filename(asset), ctx)
+        content, mime, out_name, manifest = render_protected_copy_with_manifest(_read_vault_file(asset), _original_filename(asset), ctx)
     except UnsupportedDocumentType as e:
         raise HTTPException(status_code=415, detail=f"This document type cannot be served as a protected copy: {e}")
     action.watermark_text = "\n".join(ctx.all_lines())
+    action.details = {**action.details, "watermark_manifest": manifest, "copy_filename": out_name}
     db.add(action)
     risk = ai_score("DOCUMENT_DOWNLOADED", current_user, owner_did=current_user.did, sensitivity=2)
     await record_audit(db, "DOCUMENT_DOWNLOADED", actor_did=current_user.did, asset_serial=asset.serial_number, client_ip=client_ip,

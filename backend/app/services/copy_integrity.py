@@ -42,8 +42,10 @@ def _pdf_text(data: bytes) -> str:
 
 def _docx_text(data: bytes) -> str:
     from docx import Document
+    from docx.oxml.ns import qn
     doc = Document(io.BytesIO(data))
-    return "\n".join(p.text for p in doc.paragraphs)
+    # every body paragraph, including those inside content controls (where LexCorp's block lives)
+    return "\n".join("".join(t.text or "" for t in p.iter(qn("w:t"))) for p in doc.element.body.iter(qn("w:p")))
 
 
 def _pptx_text(data: bytes) -> str:
