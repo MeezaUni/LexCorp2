@@ -51,6 +51,20 @@ async def request_download(client, db, serial, requester=USER, mode="STANDARD"):
     return r.json()["action_id"]
 
 
+async def owner_consent(client, db, dl_id, owner=USER):
+    """The document's owner consents (Factor 3) to someone else's download request."""
+    r = await client.post(f"/api/assets/document/download/{dl_id}/owner-approval",
+                          headers=await mfa_headers(db, token_for(owner), owner, "asset.approve"), json={"decision": "APPROVE"})
+    assert r.status_code == 200, r.text
+    return r
+
+
+async def owner_download(client, db, serial, owner=USER):
+    """The owner's own watermarked copy: Factor 3, no approval, new Download ID."""
+    return await client.post(f"/api/assets/document/{serial}/owner-download",
+                             headers=await mfa_headers(db, token_for(owner), owner, "document.download"))
+
+
 async def fetch(client, db, dl_id, requester=USER):
     return await client.post(f"/api/assets/document/download/{dl_id}/fetch",
                              headers=await mfa_headers(db, token_for(requester), requester, "document.download"), json={})

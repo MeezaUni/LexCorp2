@@ -6,6 +6,7 @@ import { refreshCounts } from '../components/Shell';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
 import { signAndConfirm } from '../services/chainActions';
+import ProtectedViewer from '../components/ProtectedViewer';
 
 export const recorded = (a) => ['MINTED', 'ANCHORED'].includes(a?.lifecycle_status) || Boolean(a?.watermark_metadata?.chain_tx);
 
@@ -47,7 +48,7 @@ export default function DigitalAssetDetail() {
     const token = await api.stepUp('document.view', code);
     try {
       const res = await api.viewDocument(serial, token);
-      setViewer({ url: URL.createObjectURL(res.blob), type: res.type, actionId: res.actionId });
+      setViewer({ blob: res.blob, type: res.type, actionId: res.actionId });
       setDialog(null);
     } catch (err) { throw new Error(await api.blobError(err)); }
   };
@@ -84,7 +85,9 @@ export default function DigitalAssetDetail() {
         ribbon={ribbon}
         actions={<>
           <Button variant="primary" onClick={() => setDialog('view')}>View document</Button>
-          {user.role !== 'AUDITOR' && <Button onClick={() => setDialog('download')}>Request download</Button>}
+          {isHolder
+            ? <Button onClick={() => setDialog('own-download')}>Download my copy</Button>
+            : user.role !== 'AUDITOR' && <Button onClick={() => setDialog('download')}>Request download</Button>}
           {user.role !== 'AUDITOR' && <Button onClick={() => setDialog('modify')}>Request modification copy</Button>}
           {(isHolder || manages) && <Button onClick={() => setDialog('share')}>Delegate access</Button>}
         </>} />
@@ -174,13 +177,22 @@ export default function DigitalAssetDetail() {
           onClose={() => setDialog(null)} onSubmit={view} />
       )}
       {viewer && (
-        <Dialog title={`Protected view, ${viewer.actionId || ''}`} wide onClose={() => { URL.revokeObjectURL(viewer.url); setViewer(null); }}>
-          <div className="viewer">
-            {viewer.type.startsWith('image/') ? <img src={viewer.url} alt={`Watermarked view of ${asset.serial_number}`} />
-              : <iframe title={`Watermarked view of ${asset.serial_number}`} src={viewer.url} />}
-          </div>
-          <p className="small muted">This view copy is watermarked and traceable by its View ID. Downloading a full copy requires approval.</p>
+        <Dialog title={`Protected view, ${viewer.actionId || ''}`} wide onClose={() => setViewer(null)}>
+          <ProtectedViewer blob={viewer.blob} type={viewer.type} label={`Watermarked view of ${asset.serial_number}`} />
+          <p className="small muted">View only: this copy can't be saved or printed from here, and it is watermarked and traceable by its View ID. {isHolder ? 'As the owner, use "Download my copy" for a copy you can keep.' : 'A copy you can keep needs an approved download.'}</p>
         </Dialog>
+      )}
+      {dialog === 'own-download' && (
+        <StepUpDialog factor="factor3" actionLabel="Download your copy" confirmLabel="Download"
+          extra={<p className="small">You own this document, so no approval is needed. You get a copy watermarked with your name, wallet, network address, date and a new Download ID. The original file stays in the vault.</p>}
+          onClose={() => setDialog(null)}
+          onSubmit={async (code) => {
+            try {
+              const { blob, filename, actionId } = await api.ownerDownload(asset.serial_number, await api.stepUp('document.download', code));
+              downloadBlob(blob, filename);
+              done(`Downloaded your watermarked copy (${actionId}).`);
+            } catch (err) { throw new Error(await api.blobError(err)); }
+          }} />
       )}
       {(dialog === 'download' || dialog === 'modify') && (
         <RequestCopy mode={dialog === 'modify' ? 'MODIFICATION' : 'STANDARD'} serial={asset.serial_number} onClose={() => setDialog(null)} onDone={done} />

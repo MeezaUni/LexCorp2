@@ -298,7 +298,10 @@ async def verify_passkey_assertion(
         )
     except Exception as error:
         logger.warning("Passkey assertion rejected (purpose=%s): %s", purpose, error)
-        raise HTTPException(status_code=401, detail="Passkey verification failed.")
+        # Outside production the library's reason (no secrets: e.g. "Unexpected RP ID hash") is
+        # returned and audited, so a failing real authenticator can be diagnosed.
+        reason = "" if settings.is_production else f" ({type(error).__name__}: {error})"
+        raise HTTPException(status_code=401, detail=f"Passkey verification failed.{reason}")
     credential.sign_count = verification.new_sign_count
     return challenge
 

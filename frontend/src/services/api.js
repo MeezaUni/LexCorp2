@@ -205,6 +205,11 @@ export async function fetchDownload(actionId, stepUpToken) {
   const m = (r.headers['content-disposition'] || '').match(/filename="([^"]+)"/);
   return { blob: r.data, filename: m ? m[1] : `${actionId}.bin` };
 }
+export async function ownerDownload(serial, stepUpToken) {
+  const r = await http.post(`/assets/document/${encodeURIComponent(serial)}/owner-download`, {}, { responseType: 'blob', ...su(stepUpToken) });
+  const m = (r.headers['content-disposition'] || '').match(/filename="([^"]+)"/);
+  return { blob: r.data, filename: m ? m[1] : `${serial}.bin`, actionId: r.headers['x-lexcorp-action-id'] };
+}
 export async function uploadRevision(parentSerial, modificationDownloadId, file, purpose, stepUpToken) {
   const form = new FormData();
   form.append('file', file);

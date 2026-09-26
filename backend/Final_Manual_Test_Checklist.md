@@ -196,6 +196,8 @@ never in screenshots.
   2. The view opens.
   3. The repeated code is refused; the next code works.
   4. The panel returns to "Not set up", and viewing is refused until a Factor 2 authenticator or passkey is set up.
+  5. With a fresh identity whose Factor 2 isn't set up, try to view a document.
+- **Also expected (step 5):** instead of asking for a Factor 2 code, a "Set up Factor 2 first" dialog offers **Use my login factors** (then the view continues) or a link to **My identity**.
 - **Evidence:** C4b.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -407,6 +409,13 @@ never in screenshots.
 - **Evidence:** F1.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
+### F1b — The view can't be saved or printed from the page
+- **Steps:** in the open view: look for a toolbar, right-click the page, press Ctrl+S, press Ctrl+P.
+- **Expected:** no PDF toolbar (no save, print or download buttons); pages appear as pictures with no selectable text; right-click shows no menu; Ctrl+S does nothing; Ctrl+P prints only "Printing is disabled for protected LexCorp2 views."
+- **Note:** a screenshot or a phone camera can't be prevented by any web page. That's why every view carries the viewer's name, wallet, IP, date and View ID.
+- **Evidence:** F1b.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
 ### F2 — View watermark contents
 - **Steps:** zoom into the PDF in F1.
 - **Expected:** you can read:
@@ -473,6 +482,12 @@ never in screenshots.
 ---
 
 ## H. Download approval
+
+### H0 — The owner downloads their own copy (no approval)
+- **Steps:** as USA open their own `DOC-TEST-001` → **Download my copy** → Factor 3.
+- **Expected:** no **Request download** button for the owner. The file downloads immediately with a new `DL-` ID in its name; it's the watermarked copy naming USA (not the original file). The Audit trail shows "Document downloaded".
+- **Evidence:** H0.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
 
 ### H1 — Non-owner requests a download
 - **Preconditions:** USB has an active delegation with download allowed on `DOC-TEST-004`. Create one as in G1 with "Allow this identity to request downloads" ticked.

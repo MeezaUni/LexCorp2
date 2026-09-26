@@ -24,13 +24,16 @@ async def test_download_workflow_success(client, db_session):
     single-use, watermarked with the Download ID; approvers cannot fetch it."""
     from tests import flows
     from pypdf import PdfReader
+    from tests.test_download_modification_workflow import grantee_with_download
     serial = await flows.approved_document(client, db_session, b"sensitive content", "report.txt")
-    dl = await flows.request_download(client, db_session, serial)
+    dee = await grantee_with_download(db_session, serial)  # a non-owner allowed to request downloads
+    dl = await flows.request_download(client, db_session, serial, requester=dee)
     assert dl.startswith("DL-")
 
-    early = await flows.fetch(client, db_session, dl)
+    early = await flows.fetch(client, db_session, dl, requester=dee)
     assert early.status_code == 403  # not approved yet
 
+    await flows.owner_consent(client, db_session, dl)
     appr = await flows.approve(client, db_session, dl)
     assert appr.status_code == 200 and appr.json()["download_token"] is None  # no bearer token handed out
 
@@ -39,17 +42,17 @@ async def test_download_workflow_success(client, db_session):
     assert mgr_try.status_code == 404
     # Fetch without Factor 3 is refused
     no_f3 = await client.post(f"/api/assets/document/download/{dl}/fetch",
-                              headers={"Authorization": f"Bearer {flows.token_for(flows.USER)}"}, json={})
+                              headers={"Authorization": f"Bearer {flows.token_for(dee)}"}, json={})
     assert no_f3.status_code == 401
 
-    got = await flows.fetch(client, db_session, dl)
+    got = await flows.fetch(client, db_session, dl, requester=dee)
     assert got.status_code == 200, got.text
     assert got.headers["content-type"] == "application/pdf"
     text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(got.content)).pages)
     assert "sensitive content" in text
     assert f"Download ID: {dl}" in text and "Downloaded by:" in text
 
-    again = await flows.fetch(client, db_session, dl)
+    again = await flows.fetch(client, db_session, dl, requester=dee)
     assert again.status_code == 409  # single use
 
 

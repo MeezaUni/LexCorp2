@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import * as api from '../services/api';
 
 /* ------------------------------------------------------------------ formatting */
 
@@ -208,6 +209,9 @@ export function StepUpDialog({ factor, actionLabel, onSubmit, onClose, extra, co
     try { await onSubmit(method === 'passkey' ? null : code.trim()); }
     catch (err) { setError(errorText(err)); setBusy(false); }
   };
+  if ((factor === 'factor2' || factor === 'factor3') && user && user[`${factor}_ready`] === false) {
+    return <FactorSetupFirst factor={factor} onClose={onClose} />;
+  }
   return (
     <Dialog title={actionLabel} onClose={busy ? undefined : onClose} danger={danger}
       footer={<>
@@ -221,6 +225,44 @@ export function StepUpDialog({ factor, actionLabel, onSubmit, onClose, extra, co
         <input className="input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
           onKeyDown={(e) => { if (e.key === 'Enter' && code.length === 6) submit('code'); }} />
+      </Field>
+      {error && <Notice tone="error">{error}</Notice>}
+    </Dialog>
+  );
+}
+
+/**
+ * Shown instead of the factor prompt when the action's factor isn't set up yet: turn on
+ * "use my login factors" right here (proven with the login factor), or go set up separate
+ * factors in My identity. Once set, the original prompt appears.
+ */
+function FactorSetupFirst({ factor, onClose }) {
+  const { refresh } = useAuth();
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const n = factor === 'factor3' ? 3 : 2;
+  const link = async (method) => {
+    setBusy(true); setError('');
+    try {
+      const token = await api.stepUp(`${factor}.link`, method === 'passkey' ? null : code.trim());
+      await api.useLoginFactorsFor(factor, token);
+      await refresh();
+    } catch (err) { setError(errorText(err)); setBusy(false); }
+  };
+  return (
+    <Dialog title={`Set up Factor ${n} first`} onClose={busy ? undefined : onClose}
+      footer={<>
+        <Button onClick={onClose} disabled={busy}>Cancel</Button>
+        <Button variant="secondary" busy={busy} onClick={() => link('passkey')}>Use login passkey</Button>
+        <Button variant="primary" busy={busy} disabled={code.length !== 6} onClick={() => link('code')}>Use my login factors</Button>
+      </>}>
+      <p className="small">This action needs Factor {n} ({factor === 'factor3' ? 'approve, mint, modify, download' : 'view and submit'}), which you haven't set up yet.</p>
+      <p className="small muted">Quickest: confirm Factor {n} actions with the same authenticator code and passkey you sign in with. Enter your login authenticator code (or use your login passkey) to turn this on, then carry on. For separate, stronger factors, go to <Link to="/identity" onClick={onClose}>My identity</Link> instead.</p>
+      <Field label="Code from your login authenticator (TOTP 1)">
+        <input className="input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+          onKeyDown={(e) => { if (e.key === 'Enter' && code.length === 6) link('code'); }} />
       </Field>
       {error && <Notice tone="error">{error}</Notice>}
     </Dialog>

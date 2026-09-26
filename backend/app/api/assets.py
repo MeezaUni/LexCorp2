@@ -1763,6 +1763,8 @@ async def request_document_download(
             raise HTTPException(status_code=409, detail=f"Modifications must start from the latest approved version (v{latest}).")
         if pending:
             raise HTTPException(status_code=409, detail="A revision of this document is already pending approval.")
+    if mode == "STANDARD" and asset.owner_id == current_user.id:
+        raise HTTPException(status_code=409, detail="You own this document: download your watermarked copy directly, no approval needed.")
     requires_owner = settings.DOWNLOAD_REQUIRES_OWNER_APPROVAL and asset.owner_id != current_user.id
 
     # 4. Action Creation
@@ -2179,6 +2181,58 @@ async def fetch_approved_download(
     await record_audit(db, "DOCUMENT_DOWNLOADED", actor_did=current_user.did, asset_serial=asset.serial_number, client_ip=client_ip,
                        risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
                        details={"download_id": action.action_id, "mode": (action.details or {}).get("mode", "STANDARD"),
+                                "asset_version": asset.version_number, **({"ai": risk["ai"]} if risk else {})})
+    await db.commit()
+    return Response(content=content, media_type=mime, headers={
+        "Content-Disposition": f'attachment; filename="{out_name}"', "X-LexCorp-Action-Id": action.action_id, "Cache-Control": "no-store",
+    })
+
+
+@router.post("/document/{serial}/owner-download")
+async def owner_download(
+    serial: str,
+    req: Request,
+    body: FetchDownloadRequest = FetchDownloadRequest(),
+    current_user: User = Depends(get_onboarded_user),
+    db: AsyncSession = Depends(get_db),
+    step_up_token: Optional[str] = Depends(get_step_up_token),
+):
+    """The document's owner downloads a copy without an approval step. Still Factor 3, still a
+    new Download ID, and still a watermarked copy naming them; the original file never leaves
+    the vault."""
+    asset = (await db.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one_or_none()
+    if not asset or asset.asset_type not in ("DIGITAL", "DOCUMENT"):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    if asset.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the document's owner can download without approval. Request a download instead.")
+    if asset.approval_status not in ("APPROVED", "ACTIVE"):
+        raise HTTPException(status_code=409, detail="Only approved document versions can be downloaded.")
+    await mfa.require_factor(db, current_user, "document.download", totp_code=body.totp_code, step_up_token=step_up_token)
+
+    client_ip = get_request_client_ip(req)
+    action = DocumentAction(
+        action_id=await next_action_id(db, "DL"), action_type="DOWNLOAD", asset_id=asset.id,
+        asset_serial=asset.serial_number, asset_version=asset.version_number, actor_id=current_user.id,
+        actor_did=current_user.did, status="COMPLETED", purpose="Owner's own copy", client_ip=client_ip,
+        details={"mode": "STANDARD", "owner_direct": True, "downloaded_at": datetime.now(UTC).isoformat(),
+                 "downloaded_from_ip": client_ip},
+    )
+    ctx = WatermarkContext(
+        kind="DOWNLOAD", actor_name=current_user.name or "Unnamed", actor_wallet=current_user.wallet_address,
+        client_ip=client_ip, action_id=action.action_id, verify_url=_verify_url(action.action_id),
+        owner_name=current_user.name, owner_wallet=current_user.wallet_address,
+        history=await _modification_history(db, asset),
+    )
+    try:
+        content, mime, out_name = render_protected_copy(_read_vault_file(asset), _original_filename(asset), ctx)
+    except UnsupportedDocumentType as e:
+        raise HTTPException(status_code=415, detail=f"This document type cannot be served as a protected copy: {e}")
+    action.watermark_text = "\n".join(ctx.all_lines())
+    db.add(action)
+    risk = ai_score("DOCUMENT_DOWNLOADED", current_user, owner_did=current_user.did, sensitivity=2)
+    await record_audit(db, "DOCUMENT_DOWNLOADED", actor_did=current_user.did, asset_serial=asset.serial_number, client_ip=client_ip,
+                       risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
+                       details={"download_id": action.action_id, "mode": "STANDARD", "owner_direct": True,
                                 "asset_version": asset.version_number, **({"ai": risk["ai"]} if risk else {})})
     await db.commit()
     return Response(content=content, media_type=mime, headers={

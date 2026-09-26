@@ -90,16 +90,17 @@ async def test_creation_view_download_modification_ids_and_versions(client, db_s
     assert len(vw) == 1 and id_re("VW").match(vw[0].action_id)
     assert vw[0].client_ip == "198.51.100.23" and vw[0].asset_version == 1
 
-    dl = await client.post("/api/assets/document/download/request", headers=await mfa_headers(db_session, user_t, USER, "download.request"),
-                           json={"asset_serial": serial, "purpose": "ids"})
+    # The owner doesn't request downloads (refused), they take a watermarked copy directly: still a DL ID
+    refused = await client.post("/api/assets/document/download/request", headers=await mfa_headers(db_session, user_t, USER, "download.request"),
+                                json={"asset_serial": serial, "purpose": "ids"})
+    assert refused.status_code == 409
+    dl = await client.post(f"/api/assets/document/{serial}/owner-download", headers=await mfa_headers(db_session, user_t, USER, "document.download"))
     assert dl.status_code == 200, dl.text
-    assert id_re("DL").match(dl.json()["action_id"])
+    assert id_re("DL").match(dl.headers["x-lexcorp-action-id"])
 
     # Revisions: v2 then v3 through the controlled flow, each a new row linked to parent and root
     from tests import flows
     from app.api.assets import OFFCHAIN_STORAGE_DIR as _S
-    appr_dl = await flows.approve(client, db_session, dl.json()["action_id"])
-    assert appr_dl.status_code == 200
     mdl1, _ = await flows.modification_download(client, db_session, serial)
     r1 = await flows.upload_revision(client, db_session, serial, mdl1, b"revision one bytes", "ids.txt")
     assert r1.status_code == 200, r1.text

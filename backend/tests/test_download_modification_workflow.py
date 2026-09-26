@@ -70,13 +70,45 @@ async def test_non_owner_download_needs_owner_consent_then_manager(client, db_se
 @pytest.mark.asyncio
 async def test_download_cannot_bypass_approval_or_expiry(client, db_session):
     serial = await flows.approved_document(client, db_session, b"expiry body", "e.txt")
-    dl = await flows.request_download(client, db_session, serial)
-    assert (await flows.fetch(client, db_session, dl)).status_code == 403
+    dee = await grantee_with_download(db_session, serial)
+    dl = await flows.request_download(client, db_session, serial, requester=dee)
+    assert (await flows.fetch(client, db_session, dl, requester=dee)).status_code == 403
+    await flows.owner_consent(client, db_session, dl)
+    assert (await flows.fetch(client, db_session, dl, requester=dee)).status_code == 403  # consent alone is not approval
     assert (await flows.approve(client, db_session, dl)).status_code == 200
     action = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == dl))).scalar_one()
     action.token_expires_at = datetime.now(UTC) - timedelta(seconds=1)
     await db_session.commit()
-    assert (await flows.fetch(client, db_session, dl)).status_code == 410
+    assert (await flows.fetch(client, db_session, dl, requester=dee)).status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_owner_downloads_own_copy_directly_watermarked(client, db_session):
+    """The owner never requests their own download (refused) and needs no approval: Factor 3
+    gives a new DL ID and a copy watermarked with their name; the vault original is unchanged."""
+    body = b"owner direct body"
+    serial = await flows.approved_document(client, db_session, body, "o.txt")
+    refused = await client.post("/api/assets/document/download/request",
+                                headers=await mfa_headers(db_session, flows.token_for(flows.USER), flows.USER, "download.request"),
+                                json={"asset_serial": serial, "purpose": "mine", "mode": "STANDARD"})
+    assert refused.status_code == 409
+    no_factor = await client.post(f"/api/assets/document/{serial}/owner-download",
+                                  headers={"Authorization": f"Bearer {flows.token_for(flows.USER)}"})
+    assert no_factor.status_code == 401
+    # Only the owner: a Manager in scope still goes through the request flow
+    not_owner = await flows.owner_download(client, db_session, serial, owner=flows.MANAGER)
+    assert not_owner.status_code == 403
+    got = await flows.owner_download(client, db_session, serial)
+    assert got.status_code == 200, got.text
+    dl = got.headers["x-lexcorp-action-id"]
+    assert dl.startswith("DL-")
+    text = pdf_text(got.content)
+    assert "owner direct body" in text and f"Download ID: {dl}" in text and "Downloaded by:" in text
+    rec = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == dl))).scalar_one()
+    assert rec.status == "COMPLETED" and rec.details.get("owner_direct") is True
+    asset = (await db_session.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one()
+    stored = [f for f in os.listdir(OFFCHAIN_STORAGE_DIR) if f.startswith(asset.file_hash)]
+    assert stored and hashlib.sha256(open(os.path.join(OFFCHAIN_STORAGE_DIR, stored[0]), "rb").read()).hexdigest() == asset.file_hash
 
 
 @pytest.mark.asyncio
@@ -187,9 +219,8 @@ async def test_modification_watermark_history_cumulative(client, db_session):
     await flows.approve(client, db_session, mod2)
     s3 = r2.json()["asset_serial"]
 
-    dl3 = await flows.request_download(client, db_session, s3)
-    await flows.approve(client, db_session, dl3)
-    got3 = await flows.fetch(client, db_session, dl3)
+    got3 = await flows.owner_download(client, db_session, s3)
+    assert got3.status_code == 200, got3.text
     t3 = pdf_text(got3.content)
     assert "history rev two" in t3
     i1, i2 = t3.index(f"Modification ID: {mod1}"), t3.index(f"Modification ID: {mod2}")
@@ -211,9 +242,9 @@ async def test_uploaded_file_watermark_text_is_not_trusted(client, db_session):
     forged = b"Modification ID: MOD-19990101-9999\nModified by wallet: 0xdead...beef\nreal content"
     r = await flows.upload_revision(client, db_session, serial, dl, forged, "t.txt")
     await flows.approve(client, db_session, r.json()["action_id"])
-    dl2 = await flows.request_download(client, db_session, r.json()["asset_serial"])
-    await flows.approve(client, db_session, dl2)
-    text = pdf_text((await flows.fetch(client, db_session, dl2)).content)
+    got = await flows.owner_download(client, db_session, r.json()["asset_serial"])
+    assert got.status_code == 200, got.text
+    text = pdf_text(got.content)
     control = text[text.index("LexCorp Document Control"):]
     assert "MOD-19990101-9999" not in control           # forged entry not in the authoritative block
     assert f"Modification ID: {r.json()['action_id']}" in control
