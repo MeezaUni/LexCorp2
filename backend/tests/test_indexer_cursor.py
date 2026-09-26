@@ -120,3 +120,13 @@ async def test_onchain_revoke_keeps_registry_record(db_session, indexer):
     row = (await db_session.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one()
     await db_session.refresh(row)
     assert row.lifecycle_status == "REVOKED"
+
+
+@pytest.mark.asyncio
+async def test_no_state_starts_at_the_contract_deployment_block(indexer):
+    ix, _ = indexer
+    ix.w3.eth.block_number = 20_000
+    with patch("app.services.chain.load_deployment", return_value={"address": CONTRACT, "deployBlock": 19_338}):
+        assert await ix._validated_cursor() == 19_337
+    with patch("app.services.chain.load_deployment", return_value={"address": "0x" + "9" * 40, "deployBlock": 19_338}):
+        assert await ix._validated_cursor() == 0  # record belongs to another contract: scan everything

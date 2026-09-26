@@ -1,86 +1,167 @@
 # LexCorp2 — Requirements Verification Matrix
 
-State at commit `6a0bbbb` + docs commit (2026-09-26). Automated suite: **189 passed, 0 failed** (`backend/tests`, isolated `lexcorp_sih_test` DB, real TOTP codes and real ES256 WebAuthn signatures via a software authenticator — no MFA bypass). Live DB at Alembic `0010_indexer_state`.
+Updated 2026-09-26 against the final code on branch `feature/security-workflow-upgrades`.
 
-Legend: ✅ IMPLEMENTED + VERIFIED · ⚠️ IMPLEMENTED — MANUAL TEST REQUIRED · ⚠️ PARTIAL · ❌ NOT IMPLEMENTED · ❓ UNVERIFIED
+## Statuses and evidence
 
-"Manual" column refers to sections of `backend/Final_Manual_Test_Checklist.md` (none executed yet — manual status is therefore open everywhere).
+**Statuses used:**
+- IMPLEMENTED + VERIFIED: automated tests and/or browser verification exercise the behaviour.
+- IMPLEMENTED — MANUAL TEST REQUIRED: implemented, but a necessary part can only be checked
+  by a person with real devices.
+- PARTIAL, NOT IMPLEMENTED, UNVERIFIED, BLOCKED: as named.
 
-## Identity & authentication
+"VERIFIED" here means automated or browser evidence. **No manual test has been executed yet.**
+Manual test IDs refer to `backend/Final_Manual_Test_Checklist.md`.
 
-| Req (spec §) | Status | Evidence | Files | Automated tests | Manual | Notes |
-|---|---|---|---|---|---|---|
-| Wallet-based identity, DID `did:ethr:13371:<wallet>` (8, 50) | ✅ | all 22 live users on 13371; legacy DIDs reported, never rewritten | services/auth.py | test_security_regression::test_legacy_dids_reported_not_rewritten | 1.2 | no 31337 DIDs exist live |
-| Unknown wallets never auto-created (8) | ✅ | provision rejects, no row | api/auth.py | test_auth_identity::test_unknown_wallet_cannot_provision_or_autocreate, test_siwe_flow | — | was auto-creating USERs |
-| Wallet address typed manually for login (8) | ⚠️ | modal never pre-fills | WalletModal.jsx | test_auth_identity login tests | 1.4 | UI behaviour |
-| Encrypted wallet at rest (8) | ⚠️ | scrypt keystore unlocked by server-held secret released only to a session; round-trip verified in Node with the real walletCore.js | walletCore.js, auth.py `/wallet-key`, migration 0004 | test_wallet_key_released_only_to_session_and_rotated_on_reset | 1.2 | was plaintext private key in localStorage |
-| First-time import with 3h single-use hashed PIN bound to wallet (9) | ✅ | scrypt hash, atomic consume, expiry, wrong-wallet | api/auth.py, core/crypto.py, migration 0003 | 6 tests in test_auth_identity (success/invalid/expired/reused/bound/nonce replay) | 1.2 | exact 3h lifetime tested |
-| Mandatory Login TOTP1 + Passkey1 before any access; server-enforced; direct URL blocked (10) | ✅ | "setup" JWT scope rejected by every app endpoint | dependencies.py, SetupWizard.jsx | test_wallet_import_success_gives_setup_only_session, test_setup_requires_both… | 1.3 | |
-| Three purpose-specific factors; no cross-satisfaction (11) | ✅ | per-purpose TOTP secrets + passkey scopes + action-bound single-use step-up | services/mfa.py | test_factor1_cannot_satisfy_factor2, test_passkey3…factor2_cannot_satisfy_factor3, test_totp3_and_factor2_totp…, test_step_up_token_bound_to_action_and_single_use, test_passkey_factors | 1.6 | passkey 1 previously satisfied F3 |
-| Real passkeys: challenge→assertion→verify→purpose (12) | ✅ (server) / ⚠️ (browser) | py_webauthn verification with UV required, DB challenges | services/mfa.py, api.js | Passkey1 login, Passkey2 view+submit, Passkey3 mint+approve+modify, wrong purpose, invalid sig, no-UV, replay — test_auth_identity | 1.3–1.6 | real Windows Hello not automatable |
-| No self-service login reset; admin reset w/ Factor 3, new PIN, sessions revoked, setup forced (13, 14) | ✅ | | api/auth.py, Identity.jsx | test_user_cannot_self_reset_login_factors, test_admin_reset_flow…, test_admin_cannot_reset_without_request_or_self, test_non_admin_cannot_approve_reset | 1.7 | |
-| Sessions: JWT expiry, versioning, one session, inactivity, disabled, logout, revocation (15) | ✅ | | dependencies.py | test_single_active_session_and_logout, test_inactivity_timeout, test_disabled_account_rejected, test_security_regression session tests | 1.8 | |
-| IP binding terminates session; trusted-proxy handling (15) | ✅ (logic) / ⚠️ (real network) | X-Forwarded-For only from TRUSTED_PROXIES | dependencies.py, vite.config.js | test_ip_change_terminates_session, test_forwarded_for_ignored_from_untrusted_peer | 1.8 | VPN/proxy deployments must set TRUSTED_PROXIES |
-| TOTP replay protection & secrets encrypted | ⚠️ PARTIAL | replay blocked; new secrets encrypted; **legacy plaintext secrets are re-encrypted only on next successful use** | services/mfa.py, core/crypto.py | test_login_with_totp1… (replay), test_totp_secrets_encrypted_at_rest | — | see limitations |
+**Evidence sources:**
+- Backend pytest: 248 passed and 3 live tests skipped by default. The 3 live-Besu tests pass
+  when `LEXCORP_LIVE_BESU=1` is set.
+- Contract tests: 23 passing.
+- Browser verification: `docs/Playwright_Verification_Report.md`.
+- Integrity checker: `backend/scripts/verify_integrity.py`, 9/9 on the hand-off environment.
+- Infrastructure record: `docs/Infrastructure_Rebuild_Record.md`.
 
-## RBAC & departments
+## 1. Release blockers from the previous report
 
-| Req | Status | Evidence | Files | Tests | Manual | Notes |
-|---|---|---|---|---|---|---|
-| Roles enforced server-side (6) | ✅ | | services/access.py | test_rbac_scoping (10), role tests across suite | 5 | |
-| Department scoping incl. manager extra depts; no API bypass (7, 37) | ✅ | filtered in SQL; out-of-scope = 404 | access.py, assets.py, users.py, audit.py | test_registry_scoped_by_role, test_manager_direct_api_bypass_rejected, test_managed_departments_extend_manager_scope | 3.5, 5.2–5.4 | |
-| Manager user creation: dropdown from server, backend re-validates (7) | ✅ | departments table (0005) | users.py, AdminDashboard.jsx | test_user_creation_department_validated_server_side | 5.4 | |
-| Previously unauthenticated endpoints closed (52) | ✅ | registry, cards, QR, audit, indexer, VC, check-access… | assets.py, audit.py, indexer.py | test_previously_public_endpoints_require_session | 5.1 | |
+| Blocker | Status | Evidence | Manual |
+|---|---|---|---|
+| Contract admin was the publicly known Hardhat #0 key | IMPLEMENTED + VERIFIED | A new governance key is generated locally (`secrets/chain.env`); `deploy.js` refuses public dev accounts; `verify_deployment.js` confirms no public dev account holds any role; `test_besu_live::test_deployed_contract_integrity`; `test_repo_hygiene` | Q1 |
+| Anyone with gas could mint | IMPLEMENTED + VERIFIED | AssetNFT v3 roles (MINTER/ANCHOR/MANAGER/AUDITOR under REGISTRAR); 23 Hardhat tests. On the live Besu contract an unauthorized mint, physical mint and anchor each land with receipt status 0; an authorized mint succeeds, then fails after revocation (`test_besu_live`) | Q2, Q3 |
+| Development secrets and a JWT-derived encryption key | IMPLEMENTED + VERIFIED | No secret defaults. `ENVIRONMENT` defaults to production and fails closed. JWT, VC-signing, data-encryption and chain-operator keys are separate. A MultiFernet key ring with a migration script covers legacy JWT-derived, retired and plaintext secrets. Config errors never echo values (`test_secret_config`, 16 tests) | A2 |
+| No manual testing | IMPLEMENTED — MANUAL TEST REQUIRED | The checklist is ready and has **not** been executed | All |
 
-## Digital assets
+## 2. Identity and authentication
 
-| Req | Status | Evidence | Files | Tests | Manual | Notes |
-|---|---|---|---|---|---|---|
-| Creation: CRT ID, server SHA-256, immutable content-addressed storage, audit (17) | ✅ | hash recomputed from stored bytes | assets.py | test_document_workflow, test_action_ids, test_protected_copies_api | 2.1 | client hash was trusted |
-| View requires Factor 2 + policy; VW ID persisted (18) | ✅ | | assets.py | test_document_viewing, test_passkey2_view_and_submit | 2.3 | |
-| Delegated access via Manager/Admin approval (19) | ✅ | ACR IDs, separation of duties | assets.py, grants.py | test_delegated_access (10) | 2.5 | |
-| Max view count, atomic, only successful views (20) | ✅ | 8 parallel views vs limit 3 → exactly 3 | grants.py | test_view_limit_is_atomic_under_concurrency, test_view_limit_counts_only_successful_views, test_unsupported_type_refused_without_consuming_view | 2.5 | |
-| Accessible-until expiry, tz-aware (21) | ✅ | | assets.py | test_expiry | 2.5 | |
-| View ≠ download (22) | ✅ | | grants.py | test_view_permission_separate_from_download | 2.5 | |
-| View watermark = viewer, short wallet, trusted IP, date, VW ID, QR; owner never shown (23) | ✅ | | watermark.py | test_view_watermark_names_viewer_not_owner…, test_view_watermark_never_shows_owner… | 2.3 | |
-| Controlled download: request, owner consent, Manager/Admin approval, requester Factor 3, DL ID, single use (24) | ✅ | token-URL & direct-vault downloads removed (410) | assets.py | test_download_workflow_success, test_non_owner_download_needs_owner_consent…, test_download_cannot_bypass_approval_or_expiry | 2.6 | |
-| Modification: request→approval→F3 download→upload→hash→MOD ID→pending→approval (25, 27) | ✅ | | assets.py `_create_revision` | test_revise_document_success, test_revision_rules…, test_download_modification_workflow | 2.7 | UI revision flow was calling a non-existent endpoint |
-| Revision lineage v1,v2,v3; original never overwritten (26, 48) | ✅ | byte-level SHA-256 checks | assets.py, migration 0006 | test_creation_view_download_modification_ids_and_versions, test_modification_watermark_history_cumulative | 2.7 | |
-| Cumulative, deterministic modification history in watermarks; uploaded watermark text not trusted (28, 29, 61) | ✅ | | watermark.py, assets.py | test_modification_watermark_history_cumulative, test_uploaded_file_watermark_text_is_not_trusted, test_modification_history_cumulative… | 2.7 | |
-| Format support PDF/DOCX/PPTX/XLSX/images/TXT (30, 60) | ✅ (structure) / ⚠️ (open in Office) | reopened with pypdf/python-docx/python-pptx/openpyxl; rotation, alpha, fields, QR decoded (OpenCV) | watermark.py | test_watermark_engine (10) | 2.4 | XLSX: openpyxl drops charts/pivots/images; unsupported types → 415 |
-| Digital QR verification + tamper detection (31, 46, 62) | ✅ | | api/verify.py, VerifyAction.jsx | test_qr_verification (5) | 2.8 | |
-| Action IDs CRT/VW/DL/MOD unique, persisted, linked (45) | ✅ | atomic per-day counter | action_ids.py | test_action_id_format_and_uniqueness_under_concurrency | — | legacy-format IDs kept |
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| Wallet identity, DID `did:ethr:13371:<wallet>`; unknown wallets never authenticate | IMPLEMENTED + VERIFIED | `test_auth_identity::test_unknown_wallet_cannot…`; the indexer no longer creates identities from chain events (`test_unregistered_mint_raises_integrity_alert_and_creates_no_identity`) | C3 |
+| Wallet provisioning with a hashed, single-use PIN valid 3 hours | IMPLEMENTED + VERIFIED | scrypt hash with atomic consume, expiry and reissue (`bootstrap_admin.py --reissue-pin`); auth tests; Playwright 01 and 03 | B1, R5 |
+| Self-generated wallet (the admin never sees the key) | IMPLEMENTED + VERIFIED | "Create a wallet" tab; the admin registers the address only (Playwright 03). A custodial "generate for them" path remains, with an explicit warning | D2 |
+| Mandatory Login TOTP 1 + Passkey 1 before any access | IMPLEMENTED + VERIFIED | The setup-scope session is rejected by application endpoints; the UI shows only enrolment (Playwright 03: app unreachable for all 4 identities) | B2, B3, B4 |
+| Passkey 1 with Windows Hello or a physical authenticator | IMPLEMENTED — MANUAL TEST REQUIRED | Server WebAuthn verification is tested with a software authenticator and a CDP virtual authenticator; real platform authenticator not tested | B3, C2 |
+| Purpose-bound Factor 2 and Factor 3; no cross-satisfaction; single-use action-bound step-up | IMPLEMENTED + VERIFIED | Auth tests (passkey/TOTP purpose matrix); Playwright 12 (login passkey refused for Factor 2; Passkey 3 accepted for a Factor 3 action) | C5, R3 |
+| Adding a factor to an already-protected purpose requires that purpose's own proof | IMPLEMENTED + VERIFIED | Fixed in this round for TOTP enrolment next to an existing passkey (`test_factor_totp_cannot_be_added_to_passkey_protected_purpose…`) | C4 |
+| Identity administration requires Factor 3 (provision, role change, revoke) | IMPLEMENTED + VERIFIED | `test_chain_roles_and_relay`, `test_security_alerts`; Playwright 02 | D2, D9 |
+| No self-service login reset; admin approves with Factor 3; new PIN; sessions revoked | IMPLEMENTED + VERIFIED | Auth tests; UI in My identity, Administration and Sign in → Locked out | C10, C11 |
+| Session in an HttpOnly, SameSite=Strict cookie only (Secure in production); no token in JS or responses | IMPLEMENTED + VERIFIED | `test_session_is_httponly_cookie_only`; the frontend holds no token | — |
+| One active session; logout revokes; disabled/revoked identity refused | IMPLEMENTED + VERIFIED | Auth tests; Playwright 09 and 12 | C6, O2, O3 |
+| Inactivity timeout (15 min) and absolute lifetime (30 min) | IMPLEMENTED + VERIFIED | `test_inactivity_timeout`; observed during the Playwright run | C7, C8 |
+| Session ends when the client IP changes (trusted proxies only) | IMPLEMENTED — MANUAL TEST REQUIRED | Logic tested (`test_ip_change_terminates_session`); a real network change is not reproducible in automation | C9 |
+| TOTP replay protection; secrets encrypted; plaintext refused | IMPLEMENTED + VERIFIED | Tests; the integrity checker reports 0 plaintext values | P4 |
 
-## Physical assets
+## 3. RBAC and departments
 
-| Req | Status | Evidence | Files | Tests | Manual | Notes |
-|---|---|---|---|---|---|---|
-| Admin/Manager only; Serial + (MAC xor Unique Address) (32, 33) | ✅ | | assets.py, physical.py | test_physical_assets (13) | 3.1 | |
-| Global normalised uniqueness, DB-level; duplicates audited without raw values; no partial creation (34) | ✅ | functional unique indexes (0008) | physical.py, migration 0008 | test_duplicate_*_attempt_audited, test_uniqueness_is_global…, test_database_rejects_normalised_duplicates_directly | 3.2 | 8 legacy live assets lack both identifiers (not modified) |
-| NFT card: only 5 fields (35) | ✅ | | asset_card.py | test_asset_certificate_svg_card_success, test_card_has_only_allowed_fields_and_scope | 3.3 | |
-| Verification redaction (36) | ✅ | | assets.py verify-data | test_verification_public_minimal_authorized_detailed | 3.4 | |
-| Lifecycle audit events (38) | ✅ | CREATED/APPROVED/MINTED/CUSTODIAN/STATUS/MAINTENANCE/VERIFIED; on-chain AssetTransferred via indexer | assets.py | test_physical_lifecycle (6) | 3.5 | ASSET_TRANSFERRED is recorded as the indexer's `AssetTransferred` |
-| Mint only after approval, confirmed against chain (49) | ✅ (server) / ⚠️ (UI signing) | receipt + contract state checks; fabricated tx rejected by live node | assets.py `_confirm_on_chain`, ManagerDashboard.jsx | test_chain_confirm (4), test_mint_confirm_* | 2.2, 3.3 | approval calldata was never submitted before |
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| USER, MANAGER, AUDITOR and ADMIN enforced server-side; SQL-level department scoping | IMPLEMENTED + VERIFIED | `test_rbac_scoping` (12); Playwright 10 API refusals | D7 |
+| UI navigation per role (hiding only; never treated as security) | IMPLEMENTED + VERIFIED | Playwright 10 (5, 7, 8 and 8 nav items; direct URLs show "Not available") | D6 |
+| Manager extra departments; departments from a server table | IMPLEMENTED + VERIFIED | Tests; Administration → Departments | D1, D8 |
+| Audit statistics scoped like audit events | IMPLEMENTED + VERIFIED | Fixed this round (`test_audit_stats_are_scoped_like_events`) | P1 |
+| Revoked identities listed only for Admin/Auditor on request | IMPLEMENTED + VERIFIED | `test_revoked_identities_listed_only_for_admin_auditor…` | O5 |
 
-## AI, audit, blockchain
+## 4. Digital assets
 
-| Req | Status | Evidence | Files | Tests | Manual | Notes |
-|---|---|---|---|---|---|---|
-| Local Isolation Forest preserved (39, 53) | ✅ | model unchanged; now also scores API views/downloads/revisions/physical registration | services/ai.py, alerts.py | test_ai_high_risk_raises_alert… | 4 | model quality not evaluated |
-| Dedicated alert; Auditor→Manager→Admin; dismiss/forward; revoke via existing mechanism; history (39–43, 59) | ✅ | | services/alerts.py, identity.py, AlertQueue.jsx | test_security_alerts (9) | 4 | |
-| AI never replaces deterministic auth (53) | ✅ | transfer/revoke gate now only on human-escalated alerts | services/ai.py | test_subject_cannot_act_and_escalated_alert_gates_sensitive_ops | — | behaviour change |
-| Audit filters (44) | ✅ | | api/audit.py, AuditorDashboard.jsx | test_audit_filters (3) | — | |
-| Audit fields per event (63) | ⚠️ PARTIAL | actor, asset, action ID, IP, result, chain refs on chain events; **role is resolved by join, not stored per event** | dependencies.record_audit | across suite | — | |
-| Besu 13371, 3 QBFT validators, contract, receipts (49) | ✅ | eth_chainId 0x343b, 3 validators, contract code present, live receipts read | — | test_*_real_besu_rejects_fabricated_tx | 0.2 | no redeploy / reset performed |
-| Indexer complete & non-destructive | ✅ | all asset events of the live contract indexed; wipe paths removed | event_indexer.py, migration 0010 | test_indexer_cursor (7), test_event_indexer (4) | — | |
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| Registration: server SHA-256, byte-detected supported types only, 50 MB streaming cap, CRT ID | IMPLEMENTED + VERIFIED | `test_upload_accepts_only_watermarkable_types`; Playwright 04 | E1, E2, E3 |
+| The recipient must be a registered active identity; registry owner = on-chain holder = owner DID | IMPLEMENTED + VERIFIED | Fixed this round, after Playwright exposed a mismatch the indexer flagged (`test_physical_asset_approval_calldata`, `test_asset_for_unregistered_recipient_is_refused`) | E1, L11 |
+| Approval by Manager/Admin with Factor 3; separation of duties; approver's wallet signs; recorded only after receipt + state verification | IMPLEMENTED + VERIFIED | Tests; Playwright 04 (block 17893) | E4, E5, E6 |
+| View: Factor 2 (header only, never a code in the URL); VW ID; watermark shows viewer, not owner | IMPLEMENTED + VERIFIED | Watermark and API tests; Playwright 04 (screenshot) | F1, F2 |
+| View never hands out a native Office file | IMPLEMENTED + VERIFIED | Fixed this round: Office views render as a watermarked PDF of the text content (`test_view_copy_of_office_documents…`) | F3 |
+| Delegated access with view limit (atomic), expiry, view ≠ download | IMPLEMENTED + VERIFIED | `test_delegated_access` (10); Playwright 05 (view 2 refused) | G1–G5 |
+| Controlled download: request → owner consent → Manager/Admin approval → requester Factor 3 → single use | IMPLEMENTED + VERIFIED | Tests; Playwright 05 (second fetch 409) | H1–H6 |
+| Modification copy → revision upload (Factor 3) → approval → anchor on the root token; originals never overwritten | IMPLEMENTED + VERIFIED | Tests; Playwright 05 (v2 anchored in block 17943) | I1–I4 |
+| Cumulative modification history in watermarks, from DB records only | IMPLEMENTED + VERIFIED | Watermark tests | I5 |
 
-## Process requirements
+## 5. Watermarking
 
-| Req | Status | Notes |
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| PDF: every page diagonal + QR + control page | IMPLEMENTED + VERIFIED | Tests; downloaded files checked at file level (Playwright 05b) | J1 |
+| DOCX, PPTX: native watermark shapes, structure preserved | IMPLEMENTED — MANUAL TEST REQUIRED | Reopened with python-docx and python-pptx; not opened in desktop Office | J2, J3 |
+| XLSX: charts, pivots and images preserved (edited at package level); header/footer + control sheet | IMPLEMENTED — MANUAL TEST REQUIRED | Fixed this round (`test_xlsx_charts_images_and_parts_preserved_byte_for_byte`); Excel rendering not tested | J4 |
+| Images: tiled overlay + band + QR; text rendered to protected PDF | IMPLEMENTED + VERIFIED | Tests | J5 |
+| Unsupported types refused (never passed through) | IMPLEMENTED + VERIFIED | Refused at upload and at view time | E3 |
+| Tamper detection of a copy's watermark fields | IMPLEMENTED + VERIFIED | `test_qr_verification`; compare UI on the verify page | J6, R1 |
+
+## 6. QR verification
+
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| QR carries only a verification reference; the public page shows minimal fields; signed-in employees see role-scoped detail | IMPLEMENTED + VERIFIED | Tests; Playwright 07 and 07b (no MAC, location, viewer name or IP when public) | K3 |
+| Invalid references fail safely | IMPLEMENTED + VERIFIED | Playwright 07 | K4 |
+| Scanning with a real phone camera over the LAN | IMPLEMENTED — MANUAL TEST REQUIRED | QR URLs use the LAN address when `PUBLIC_BASE_URL` is localhost | K1, K2, L8 |
+
+## 7. Physical assets
+
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| Manager/Admin only; serial + (MAC xor unique address); global normalised uniqueness enforced by the DB | IMPLEMENTED + VERIFIED | `test_physical_assets` (14); Playwright 06 (MAC in another notation refused, serial refused) | L1–L5 |
+| One alert per duplicate attempt; raw identifiers never logged | IMPLEMENTED + VERIFIED | Fixed this round (double alerting) | L3 |
+| NFT card with exactly 5 fields (LexCorp2 styling) | IMPLEMENTED + VERIFIED | `test_asset_cards`; Playwright 07 | L7 |
+| Role-based redaction (MAC, unique address, location) | IMPLEMENTED + VERIFIED | Playwright 07 (hidden from custodian user and public; shown to Manager/Auditor) | L9 |
+| Lifecycle, status (Factor 3), maintenance, audit | IMPLEMENTED + VERIFIED | `test_physical_lifecycle`; Playwright 06 and 12 | L10 |
+
+## 8. AI risk detection and alert escalation
+
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| Alert chain Auditor → Manager → Admin; dismiss (with note) or forward; Admin revokes with Factor 3 through the shared revocation mechanism; history append-only | IMPLEMENTED + VERIFIED | `test_security_alerts` (11); Playwright 08 and 09 | N1–N6, O1–O5 |
+| An alert for a department without an independent manager is never parked | IMPLEMENTED + VERIFIED | Fixed this round (auditor forward goes to Admin; Admin take-over) | N6 |
+| AI never revokes or blocks by itself | IMPLEMENTED + VERIFIED | The gate only acts on human-escalated alerts | — |
+| Revocation ends live sessions and removes ledger roles | IMPLEMENTED + VERIFIED | Playwright 09; `test_revocation_removes_onchain_roles` | O2, O4 |
+| **AI model quality** | PARTIAL | The bundled Isolation Forest rated 11/11 ordinary actions HIGH/CRITICAL (native tiers). Calibrated alerting (`AI_ALERT_MODE`, default "calibrated") now alerts only on activity more anomalous than ordinary reference activity; the native label is kept. Detection quality is **not established**: no labelled evaluation data exists | M1 |
+| Deterministic integrity rules: unregistered or mismatched mint, unapproved anchor, unexpected role grant, relay misuse, role-sync failure | IMPLEMENTED + VERIFIED | Indexer and relay tests; triggered for real during the Playwright run | M2 |
+
+## 9. Audit trail and indexer
+
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| Audit history append-only in the database (UPDATE, DELETE and TRUNCATE rejected, even for the owner) | IMPLEMENTED + VERIFIED | Migration 0011; `test_audit_append_only` (5); integrity checker | P2 |
+| Audit filters (category, risk, result, escalation, asset, identity, dates) | IMPLEMENTED + VERIFIED | `test_audit_filters`; Playwright 12 | P1 |
+| Indexer: per-log de-duplication, verified cursor, retries failed windows, never rewrites the registry, never creates identities, starts at the deployment block | IMPLEMENTED + VERIFIED | Fixed this round: several events in one transaction were being dropped (`test_every_event_in_one_transaction_is_recorded`); `test_indexer_cursor` (8) | P3 |
+| Mint actor = transaction sender | IMPLEMENTED + VERIFIED | Fixed this round | — |
+| Role of the actor stored per audit event | PARTIAL | Resolved by joining the current identity, not stored at event time (unchanged from the previous report) | — |
+
+## 10. Blockchain and infrastructure
+
+| Requirement | Status | Evidence / tests | Manual |
+|---|---|---|---|
+| Besu 13371, 3 new validators (keys generated locally, git-ignored), empty alloc, zero-fee | IMPLEMENTED + VERIFIED | Rebuild record; `qbft_getValidatorsByBlockNumber` | Q1 |
+| RPC on 127.0.0.1 only; ETH/NET/WEB3/QBFT only; no CORS; host allow-list | IMPLEMENTED + VERIFIED | curl probes (403 CORS / Host; admin and debug methods disabled) | Q4, R6 |
+| Browser chain access only through the authenticated relay (method allow-list; own-wallet signer; LexCorp2 contract only) | IMPLEMENTED + VERIFIED | `test_chain_roles_and_relay` (11); all Playwright transactions went through it | Q5 |
+| On-chain roles follow the identity registry (grant, demote, revoke, periodic reconcile, orphan removal) | IMPLEMENTED + VERIFIED | Tests; orphan revoked live; integrity checker | D9, O4 |
+| Registrar key rotation | IMPLEMENTED + VERIFIED | Performed live after an in-session exposure (`rotate_registrar.js`) | — |
+| Postgres on 127.0.0.1 with a generated password; development password rejected | IMPLEMENTED + VERIFIED | Rebuild record | R6 |
+| Production configuration fails closed | IMPLEMENTED + VERIFIED | `test_secret_config`; production smoke run refused to start with the development `.env` | A2 |
+| Container image | UNVERIFIED | Non-root user and production default are written, but the image was not built or run in this session | — |
+
+## 11. Frontend
+
+| Requirement | Status | Evidence | Manual |
+|---|---|---|---|
+| Original LexCorp2 institutional design system; no third-party branding | IMPLEMENTED + VERIFIED | `frontend/src/styles/app.css`; screenshots; the organisation default changed to "LexCorp2" | D6 |
+| All major pages redesigned and wired to real data (no invented statistics) | IMPLEMENTED + VERIFIED | Playwright 01–12 | — |
+| Responsive at 1920, 1366, 768 and 390 px | IMPLEMENTED + VERIFIED | Playwright 10 and 11 (no overflow, no off-screen controls, drawer works) | — |
+| No console errors or failed critical requests | IMPLEMENTED + VERIFIED | Playwright 10 and 11 | — |
+| Accessibility basics (labels, focus rings, dialogs, reduced motion, skip link, status not by colour alone) | PARTIAL | Built in; no full audit with assistive technology | — |
+
+## 12. Process
+
+| Item | Status | Notes |
 |---|---|---|
-| Migrations, no data wipe (51) | ✅ | Alembic 0002–0010; backups before irreversible/backfilling steps in `db_backups/` |
-| Tests not weakened / deleted (54) | ✅ | tests changed only to (a) present real factors instead of the removed bypass, (b) assert spec-required behaviour that replaced old behaviour — each listed in commit messages |
-| Manual checklist (64) | ⚠️ | written; **not executed** |
-| Local commits only (67) | ✅ | nothing pushed |
+| Tests not weakened | IMPLEMENTED + VERIFIED | Changed only to (a) present real factors or credentials where new controls require them, (b) assert stricter or corrected behaviour (for example one alert instead of two, alerts reaching Admin instead of being parked), or (c) move 3 config tests into the stricter `test_secret_config.py` |
+| Secrets never printed | PARTIAL | One exposure occurred in-session (a diagnostic imported another local project's package, whose validation error echoed three values). All three were rotated, including an on-chain registrar handover, and the root cause was fixed (`hide_input_in_errors`). The wg-easy portal password appeared once via a tracked comment that was already public in git history |
+| Local commits only; nothing pushed | IMPLEMENTED + VERIFIED | `git status` shows the branch ahead of origin |
+| Manual checklist executed | NOT IMPLEMENTED | Ready for the owner; not executed |
 
-**NIST:** NIST SP 800-63-aligned practices are observed (phishing-resistant authenticators with UV, replay protection, session binding and timeouts); full compliance has not been independently established.
+## 13. Known limitations and owner decisions
+
+1. **Git history still contains** the retired validator keys, the public Hardhat keys, personal files that were in `backup_prod/` and `offchain_storage/`, and the WireGuard keys (`wg0.conf`). Some of these commits are on the remote. The retired items are no longer used, but the **WireGuard keys and the wg-easy password must be rotated**. Rewriting published history is the owner's decision.
+2. **AI model quality is not established** (see section 8).
+3. **Office rendering** of watermarked copies has not been checked by a person. Office views are text-only PDF renderings; layout is not reproduced.
+4. **react-router advisory** (open redirect via backslash) is fixed only in v7. It was assessed as not exploitable here: link targets are fixed paths and serials are URL-encoded. Tracked.
+5. **Development toolchain advisories** (46 in Hardhat dev dependencies) do not ship.
+6. **Old Postgres container** `lexcorp_postgres_legacy_sihv2` and its volume are kept (stopped). Other local LexCorp copies that used it will not connect with the development password.
+7. **A globally installed editable package** from another local project (`lexcorp_sih_backend`) provides a top-level `app` module. It can shadow imports when scripts run from other directories. LexCorp2's scripts insert `backend/` first.
+8. **Backups** in `db_backups/` contain data from retired test identities. Delete them after validation.

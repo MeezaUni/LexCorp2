@@ -1,265 +1,912 @@
 # LexCorp2 — Final Manual Test Checklist
 
-Written for someone who has **not** used LexCorp2 before. Every test says what to do, what you should see, what must be rejected, and what evidence to capture. Automated tests (189, `backend/tests`) already cover the server rules; this checklist covers what only a person can confirm: real browsers, real Windows Hello passkeys, real phones scanning QR codes, and real on-chain transactions.
+This checklist is for a person who has never used LexCorp2. It is **not executed yet**.
+Automated tests (248 backend, 23 contract, 3 live-ledger) and browser automation
+(`docs/Playwright_Verification_Report.md`) have covered the server rules and UI flows.
+This checklist covers what only you can confirm:
+- real Windows Hello passkeys and a real phone authenticator app;
+- scanning QR codes with a real phone camera;
+- opening downloaded files in desktop Office;
+- a real network change;
+- your own judgement on whether the product is acceptable.
 
-Record for every test: ✅ pass / ❌ fail, date, tester, and the screenshot file names.
+For each test, tick **PASS** or **FAIL**, write notes, and save the evidence named. Keep
+screenshots under `docs/evidence/manual/<test-id>.png`.
 
----
-
-## 0. Before you start
-
-### 0.1 Start the system (in this order)
-
-| Component | Command (from the repo root `LexCorp2/`) | You should see |
-|---|---|---|
-| PostgreSQL | `docker compose -f docker-compose.yml up -d postgres` | `docker ps` shows `lexcorp_postgres` **(healthy)** on port 5432 |
-| Besu (3 QBFT validators) | `docker compose -f network/besu/docker-compose-active.yml up -d` | `besu_node1..3` **(healthy)**; RPC on `127.0.0.1:8545` |
-| DB schema | `cd backend && python -m alembic upgrade head` | ends at `0010_indexer_state (head)` |
-| Backend | `cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000` | `http://127.0.0.1:8000/health` → `{"status":"ok",...,"indexer":"running"}` |
-| Frontend | `cd frontend && npm run dev` | Vite prints `http://localhost:5173` and a LAN URL |
-
-**Never** run `init.sh`/`init.bat`, delete `network/besu/data`, or redeploy the contract — that destroys the chain.
-
-### 0.2 Sanity checks (capture a screenshot of each result)
-
-1. Chain ID — `curl -s -X POST -H "content-type: application/json" --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_chainId\",\"params\":[],\"id\":1}" http://127.0.0.1:8545` → `"result":"0x343b"` (= 13371).
-2. Validators — same call with `"method":"qbft_getValidatorsByBlockNumber","params":["latest"]` → exactly **3** addresses.
-3. Contract — `contracts/deployments/localhost.json` address is `0x0165878A594ca255338adfa4d48449f69242Eb8F`.
-4. Open `http://localhost:5173` → the **LexCorp Authentication** dialog appears (no dashboard behind it).
-
-### 0.3 What you need
-
-- A Windows PC with **Windows Hello** (PIN / fingerprint / face) — passkeys are platform passkeys.
-- A phone with **Google Authenticator** or **Microsoft Authenticator** (you will add up to 3 entries per test identity).
-- A phone camera for QR tests (phone on the same network as the PC).
-- One existing **ADMIN** identity able to sign in, plus these test identities created by that admin during the tests:
-
-| Name to create | Role | Department |
-|---|---|---|
-| Test Manager Avi | MANAGER | Avionics |
-| Test User A | USER | Avionics |
-| Test User B | USER | Avionics |
-| Test Auditor | AUDITOR | Cyber |
-
-Keep each identity's recovery phrase / private key (shown once by the admin's **Generate Wallet** helper) and its PIN private and off screenshots.
-
-> **Screenshot rule:** never capture PINs, recovery phrases, private keys or TOTP secret/QR screens.
+> **Screenshot rule:** never capture a provisioning PIN, recovery phrase, private key,
+> TOTP secret or TOTP enrolment QR. Crop or cover them first.
 
 ---
 
-## 1. Identity & authentication
+## What you need
 
-### 1.1 Create an identity and its provisioning PIN (Admin)
-1. Admin → **Admin** tab → create **Test User A** (USER, Avionics). The **Department** list shows only real departments.
-2. **See:** a one-time PIN, shown once, "valid 3 hours".
-3. **Must be rejected:** creating a second user with the same wallet (409).
-4. **Evidence:** screenshot of the created row (not the PIN).
+- The Windows PC this repository is on, with **Windows Hello** set up (PIN, fingerprint or face).
+- **Docker Desktop** running.
+- A phone with **Microsoft Authenticator** or **Google Authenticator**, on the same Wi-Fi as the PC.
+  Each identity adds 3 entries: login, Factor 2 and Factor 3.
+- Microsoft Word, PowerPoint and Excel for section J.
+- **Five separate browser profiles**, because each browser profile holds exactly one
+  identity's wallet. In Chrome use Profile menu → Add → "Continue without an account",
+  creating one profile per identity: Admin, Manager, User A, User B, Auditor. Do not use
+  private windows: closing them deletes the wallet.
+- Always open **http://localhost:5173**. Passkeys are bound to `localhost`, so they do not
+  work at `127.0.0.1` or at the LAN address. The phone uses the LAN address only for QR pages.
 
-### 1.2 First-time wallet import
-1. In a private browser window: **First-Time Import** → paste Test User A's recovery phrase/key + the PIN.
-2. **See:** you are taken to **Mandatory Security Setup** (not a dashboard).
-3. **Must be rejected (repeat separately):**
-   - a wrong PIN → "Invalid provisioning PIN";
-   - the correct PIN a **second** time after success → "already been used";
-   - a PIN older than 3 hours (ask the admin for a new identity and wait, or test later) → "expired";
-   - a different wallet's key with this PIN → rejected.
-4. **Evidence:** screenshot of each rejection message.
+### Identities you will create
 
-### 1.3 Mandatory setup: Login TOTP 1 + Login Passkey 1
-1. On the setup screen: **Set up authenticator app** → scan the QR with your phone → enter the code → **Verify & enable**.
-2. Status stays **REQUIRED** for the passkey; the dashboard is still not reachable.
-3. While setup is incomplete, type `http://localhost:5173/` into the address bar and refresh → you still land on the setup screen.
-4. **Register Login Passkey** → Windows Hello prompt → approve.
-5. **See:** you land on the dashboard.
-6. **Evidence:** setup screen with TOTP CONFIGURED + passkey REQUIRED; then the dashboard.
-
-### 1.4 Login
-1. Sign out. **Sign In** → type the wallet address by hand → TOTP 1 code → **Sign in with Authenticator** → dashboard.
-2. Sign out → type address → **Sign in with Login Passkey** → Windows Hello → dashboard.
-3. **Must be rejected:** wrong 6 digits; the same code used twice within 30 s; a wallet address you mistyped by one character; an address that was never provisioned. All show the same generic failure.
-4. **Evidence:** both successes, one failure.
-
-### 1.5 Factor 2 and Factor 3 enrollment (My Identity)
-1. **My Identity** → set up **View/Submission Auth (Factor 2)** TOTP (new phone entry) and **Mint/Approval Auth (Factor 3)** TOTP.
-2. Passkeys card → purpose **Factor 2** → register (Windows Hello); then **Factor 3** → register (you will be asked for a current Factor 3 code if Factor 3 TOTP already exists).
-3. **See:** passkeys listed with [FACTOR 2] / [FACTOR 3] tags; the Login passkey has **no Remove button**.
-4. **Evidence:** My Identity page with all factors active.
-
-### 1.6 Wrong-purpose factors (must all be rejected)
-Use the **Submit Document** form (needs Factor 2) and a Manager approval (needs Factor 3):
-1. Enter a **TOTP 1** code where Factor 2 is asked → rejected "Invalid Factor 2 …".
-2. Enter a **TOTP 2** code where Factor 3 is asked → rejected "Invalid Factor 3 …".
-3. Choose **Use Passkey** for Factor 2 and pick your **Login** passkey in the Windows prompt → rejected "Wrong-purpose passkey".
-4. Same with your Factor 2 passkey where Factor 3 is required → rejected.
-5. **Evidence:** each rejection message.
-
-### 1.7 Login reset (admin assistance)
-1. As Test User A: **My Identity** → the Login Authenticator card says "cannot be reset self-service". Click **REQUEST ADMIN ASSISTANCE**.
-2. As Admin: **Admin** tab → pending reset → approve with **Factor 3** (6-digit code, or leave empty to use Passkey 3).
-3. **See:** a **new** PIN (shown once). Test User A's open browser session is signed out on its next action.
-4. Test User A: old TOTP 1 and old login passkey no longer sign in. **First-Time Import** with the new PIN → setup screen again → configure new TOTP 1 + Passkey 1.
-5. **Must be rejected:** approving the reset without Factor 3; an admin approving their own reset; the old PIN.
-6. **Evidence:** reset request row, approval screen (no PIN in shot), post-reset setup screen.
-
-### 1.8 Sessions
-1. **Single session:** sign in as Test User A in Chrome, then in Edge → Chrome's next click returns to the sign-in dialog.
-2. **Inactivity:** stay idle 15 minutes → signed out ("inactivity").
-3. **IP change:** sign in on the PC via `http://<PC-LAN-IP>:5173`, then switch the PC to a different network (e.g. phone hotspot) and click anything → "Session terminated: client IP address changed"; signing in again works. (On a single machine you can also: sign in via `http://localhost:5173`, then copy the `lexcorp_token` value from DevTools → Application → Local Storage and replay it from another machine with `curl -H "Authorization: Bearer <token>" http://<PC-LAN-IP>:8000/api/auth/me` → 401, and the original browser session is then also dead.)
-4. **Logout:** Sign out, press the browser Back button → no data, sign-in dialog.
-5. **Evidence:** each message.
-
----
-
-## 2. Digital documents
-
-Use Test User A (owner), Test Manager Avi (approver), Test User B (grantee), Admin.
-
-### 2.1 Create → submit
-1. Test User A → **Submit Document** → choose a **PDF** → upload → fill title/serial/recipient → Factor 2 → submit.
-2. **See:** "Document proposal CRT-YYYYMMDD-NNNN submitted". Note the CRT ID.
-3. Repeat later with a **DOCX**, **PPTX**, **XLSX**, **PNG/JPG** and **TXT** (used in 2.4).
-
-### 2.2 Approval + on-chain mint
-1. Test Manager Avi → **Manager** tab → pending document → **Approve** with Factor 3.
-2. **See:** "Unlocking your wallet… Transaction … sent… approved and minted on-chain (token #…, block …)".
-3. **Must be rejected:** Test User A approving their own document; a manager from another department.
-4. **Evidence:** success message with token and block number. Cross-check: Auditor → audit log filter **Category = DIGITAL** shows `DOCUMENT_MINTED` with the tx hash.
-
-### 2.3 Controlled view + watermark + QR
-1. Test User A → **My Assets** → **View (Watermarked)** → Factor 2 (code or passkey).
-2. **See:** the document opens in a new tab with a **diagonal, semi-transparent** "CONFIDENTIAL" marking on every page, a QR in the corner, and a final **LexCorp Document Control** page listing: *Viewed by: <your name>*, *Wallet: 0x1234...abcd* (shortened), *IP: <your IP>*, *Date: DD Month YYYY*, *View ID: VW-YYYYMMDD-NNNN*.
-3. The **owner's** name does **not** appear unless the viewer is the owner.
-4. Scan the QR with your phone → **LexCorp Record Verification** page opens showing "Authentic LexCorp record (public view)" — no names, no IPs.
-5. **Evidence:** watermarked page, control page, phone screenshot of the verification page.
-
-### 2.4 Watermark per format (repeat 2.3 for each file type)
-| Type | Expect |
-|---|---|
-| PDF | every page marked; control page appended; QR scannable |
-| DOCX | opens in Word; faint diagonal watermark in the page background (header layer); header line + QR; control section at the end; original paragraphs/tables intact |
-| PPTX | opens in PowerPoint; every slide has rotated faint text + QR; one extra control slide at the end |
-| XLSX | opens in Excel; **Page Layout** view/print preview shows the watermark header/footer; extra **LexCorp Control** sheet with QR; original values/formulas intact (charts/pivots are **not** preserved — known limitation) |
-| PNG/JPG | faint diagonal text over the image; a pink band added **below** the image with the block + QR |
-| TXT | delivered as a watermarked **PDF** |
-| other (e.g. .zip, .exe) | refused: "cannot be served as a protected copy" |
-
-Evidence: one screenshot per type.
-
-### 2.5 Delegated access (request → approval → limits)
-1. Test User A → **Grant Access** → target Test User B's DID → purpose → (optionally tick "Also request download") → Factor 2 → submit (**ACR-…** ID).
-2. Before approval: Test User B tries **View** → rejected "You have no approved access…".
-3. Test Manager Avi → approve the ACR with Factor 3, setting **Max Allowed Views = 2** and **Accessible Until** = 10 minutes from now; leave "allow download" unticked.
-4. Test User B → View twice → both succeed; third time → "View limit reached (2 successful views)".
-5. Enter a wrong Factor 2 code once before viewing → rejected, and it does **not** use up a view.
-6. Create another grant with a 3-minute expiry; after it passes → "Your access to this document expired".
-7. With a view-only grant, Test User B → **Request Download** → "view-only; download is not permitted".
-8. **Evidence:** each message; Auditor → audit filter **Category = ACCESS** shows `ACCESS_GRANTED`, `ACCESS_LIMIT_REACHED`, `ACCESS_EXPIRED`.
-
-### 2.6 Controlled download
-1. Test User B (grant **with** download) → **Request Download** → Factor 2 → **DL-…**.
-2. **My download & modification requests** shows "awaiting owner consent". Test User A (owner) → **Download requests awaiting your consent** → **Approve** (Factor 3).
-3. Test Manager Avi → approve the DL with Factor 3.
-4. Test User B → **Download (Factor 3)** → file saves; its control block says *Downloaded by: Test User B*, *Download ID: DL-…* and *Owner: Test User A (0x…)*.
-5. **Must be rejected:** downloading before approval; downloading the same DL twice ("already been used"); the manager trying to fetch it; an approval older than 24 h ("expired").
-6. **Evidence:** downloaded file control block; rejection messages.
-
-### 2.7 Modification → revision → approval
-1. Test User A → **Request Modification** → Factor 2 → **DL-…** (MODIFICATION).
-2. Manager approves (Factor 3). Test User A → **Download (Factor 3)**.
-3. Edit the downloaded content in its editor, save a **new** file.
-4. **My download & modification requests** → "Upload revised file" → pick the edited file → Factor 3.
-5. **See:** "Revision MOD-YYYYMMDD-NNNN submitted as version 2 (pending approval)" and a SHA-256 prefix.
-6. **Must be rejected:** uploading the unchanged original ("identical to an existing version"); reusing the same modification download; a second modification request while v2 is pending.
-7. Manager approves the MOD (Factor 3) → the wallet anchors the new hash on-chain ("anchored on-chain").
-8. Repeat 1–7 once more to create **version 3**.
-9. View version 3 → the control page lists *Modification ID: MOD-…(v2)* then *Modification ID: MOD-…(v3)*, oldest first, with *Modified by wallet* and date; nothing overlaps the document body.
-10. **Evidence:** lineage in My Assets (v1, v2, v3), the control page of v3.
-
-### 2.8 QR verification & tamper detection
-1. Scan the QR on any protected copy (or open `/verify/action/<VW-or-DL-ID>`).
-2. Signed out: public view only. Signed in as the owner or Manager: creator, versions with hashes, modification trail.
-3. On the verification page, type the watermark fields exactly → "Matches the authoritative record". Change **Viewed by** to another name → "Does NOT match … possible tampering".
-4. Upload the genuine downloaded PDF → MATCH. Open it in any PDF editor, change the name on the control page, save, upload → MISMATCH.
-5. Visit `/verify/action/VW-19990101-0001` and `/verify/action/hello` → "No LexCorp record" / not a reference.
-6. **Evidence:** MATCH and MISMATCH screens; Auditor alert queue shows the tamper alert (§4).
-
----
-
-## 3. Physical assets
-
-### 3.1 Registration (Admin / Manager only)
-1. Test Manager Avi → **Submit Hardware** → Serial, "Does this asset have a MAC address?" **Yes** → MAC `00:1A:2B:3C:4D:5E` → Factor 2 → submit (**CRT-…**).
-2. Again with **No** → Unique Address `UA-TEST-0001`.
-3. **Must be rejected:** Yes without a MAC; No without a Unique Address; a malformed MAC (`ZZ:…`); Test User A (USER) or the Auditor trying to register at all.
-4. **Evidence:** both CRT IDs; rejection messages.
-
-### 3.2 Global uniqueness
-Each must be rejected with a clear message and **no** new row in the registry:
-1. Same serial in lower case / with spaces.
-2. Same MAC written differently (`00-1a-2b-3c-4d-5e`, `001A.2B3C.4D5E`).
-3. Same Unique Address in different case.
-4. A MAC already used by a **Cyber** asset, registered from Avionics (uniqueness is global).
-5. **Evidence:** messages; Auditor → filter **Category = PHYSICAL, Result = DENIED** shows `DUPLICATE_*_ATTEMPT` rows — open one: it shows a *value_fingerprint*, **not** the MAC.
-
-### 3.3 Approval, mint and NFT card
-1. Admin approves Test Manager Avi's hardware (Factor 3) → wallet sends the mint → "approved and minted on-chain".
-2. Registry → the asset → **Card**. **See ONLY:** Serial Number, NFT / Token ID, Creation Date, Department, QR. **Must NOT appear:** MAC, Unique Address, CRT ID, any 0x wallet, DID, hash, asset name.
-3. **Evidence:** the card (print preview is fine).
-
-### 3.4 Physical verification
-1. Scan the card's QR while signed out → Serial, Token ID, Department, status, dates only.
-2. Signed in as Test Manager Avi (same dept) or Admin/Auditor → also MAC/Unique Address, Creation ID, approval (proposer/approver), lifecycle history.
-3. Signed in as Test User A (no scope) → still the public view.
-4. **Evidence:** the three views.
-
-### 3.5 Lifecycle & scoping
-1. Manager → assign custody, record maintenance, change status to **MAINTENANCE** (Factor 3). Each appears in the verification page's lifecycle and in the audit log.
-2. A manager of another department cannot see, assign, maintain or change the asset (not found / 403), even by editing URLs or request bodies.
-
----
-
-## 4. AI high-risk alert chain
-
-A high-risk alert appears automatically when the AI engine or a security rule flags an event HIGH (the tamper test in §2.8 and the duplicate tests in §3.2 are reliable triggers).
-
-1. **Auditor** → dashboard → **High-Risk Security Alerts — AUDITOR REVIEW** lists the alert: identity, role, short wallet, risk level/score, reason, time, IP, related asset/action.
-2. Auditor → **Dismiss — False Alarm** (a reason is required) on one alert.
-3. Auditor → **Forward to Manager** on another.
-4. **Manager** of that department → the alert appears in their queue → **Forward to Admin** (or dismiss another one).
-5. **Admin** → **Revoke Identity** → confirm → reason → Factor 3.
-6. **See:** the subject is signed out on their next click and can no longer sign in with TOTP or passkey.
-7. **History** button shows RAISED → FORWARDED_TO_MANAGER → FORWARDED_TO_ADMIN → IDENTITY_REVOKED with who/when/notes.
-8. **Must be rejected:** a manager from another department seeing the alert; the Auditor acting after forwarding; anyone acting on an alert about themselves; revocation without Factor 3.
-9. **Evidence:** each queue, the history panel, the revoked user's rejected sign-in.
-
----
-
-## 5. Security checks (all must be rejected)
-
-| # | Try | Expected |
-|---|---|---|
-| 5.1 | Open `http://localhost:8000/api/assets/registry` in a fresh private window | 401 |
-| 5.2 | As Test User A, call `GET /api/assets/by-owner/<Admin wallet>` (DevTools console `fetch`) | 403 |
-| 5.3 | As Test Manager Avi, `GET /api/assets/<token of a Cyber asset>` | 404 |
-| 5.4 | As a Manager, create a user with `"department":"Cyber"` in the request body | 403 |
-| 5.5 | `GET /api/assets/document/download/anything.pdf` | 410 (direct vault download disabled) |
-| 5.6 | Replay a used `X-Step-Up-Token` header | 401 |
-| 5.7 | Use a step-up token minted for **view** on a **submit** | 401 |
-| 5.8 | Open the dashboard URL while in setup-only state | setup screen only |
-| 5.9 | Expired access / exhausted view count | 403 with reason |
-| 5.10 | Changed IP | session terminated (§1.8) |
-| 5.11 | Invalid QR reference | "No LexCorp record" |
-| 5.12 | Revised file whose text claims a fake history | verification & control page show only the database history |
-
----
-
-## 6. Sign-off
-
-| Area | Result | Tester | Date | Evidence files |
+| ID | Name | Role | Department | How the wallet is created |
 |---|---|---|---|---|
-| Startup & chain checks | | | | |
-| Identity & authentication | | | | |
-| Digital documents | | | | |
-| Physical assets | | | | |
-| AI alert chain | | | | |
-| Security checks | | | | |
+| ADM | Security Administrator | Administrator | Cyber Security | Bootstrap script (already done; see A3) |
+| MGR | Test Manager | Manager | Avionics | By the person, in the Manager profile ("Create a wallet") |
+| USA | Test User A | User | Avionics | By the admin ("generate a wallet for them"), custodial path |
+| USB | Test User B | User | Radar Systems | By the person ("Create a wallet") |
+| AUD | Test Auditor | Auditor | Cyber Security | By the person ("Create a wallet") |
+
+Keep each identity's wallet address, recovery phrase and PIN in a password manager,
+never in screenshots.
+
+---
+
+## A. Environment startup
+
+### A1 — Start all services
+- **Purpose:** bring up PostgreSQL, Besu, the backend and the frontend.
+- **Preconditions:** Docker Desktop running; a terminal (Git Bash or PowerShell) in the repository root `LexCorp2/`.
+- **Steps:**
+  1. `docker compose up -d postgres`
+  2. `npm run besu:up`, then `npm run chain:wait`
+  3. `npm run contract:verify`
+  4. `npm run migrate`
+  5. `npm start`. Leave this terminal open; it runs the backend and frontend. (`npm start` also repeats steps 1–4 on its own, so on later days `npm start` alone is enough.)
+- **Expected:**
+  - `docker ps` shows `lexcorp_postgres (healthy)` and `besu_node1`, `besu_node2`, `besu_node3` Up.
+  - Step 3 prints 14 lines, all starting `PASS`.
+  - Step 4 ends at `0012_audit_log_index`.
+  - Step 5 prints a frontend "Network" URL such as `http://192.168.x.x:5173`.
+- **Evidence:** A1-docker-ps.png, A1-verify-deployment.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### A2 — Health and integrity
+- **Purpose:** confirm the stack is consistent before testing.
+- **Preconditions:** A1 passed.
+- **Steps:**
+  1. Open `http://127.0.0.1:8000/health` in a browser.
+  2. In a second terminal: `cd backend && python scripts/verify_integrity.py`
+- **Expected:**
+  - Health shows `"chain_verified": true`, `"indexer": "running"`, `"environment": "development"`.
+  - The integrity script ends with `9/9 checks passed`.
+- **Evidence:** A2-health.png, A2-integrity.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### A3 — Bootstrap administrator material is available
+- **Purpose:** the first administrator's wallet and PIN exist only on this PC.
+- **Preconditions:** A1.
+- **Steps:**
+  1. Open `secrets/bootstrap_admin_wallet.json` (recovery phrase) and `secrets/bootstrap_admin_pin.txt` (PIN and expiry) in a text editor.
+  2. If the PIN has expired, run `cd backend && python scripts/bootstrap_admin.py --reissue-pin`, then reopen the PIN file.
+- **Expected:** both files exist. The PIN expiry is in the future.
+- **Evidence:** A3-files-listed.png, showing the file names only, never the contents.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### A4 — Phone can reach the PC
+- **Purpose:** QR tests need the phone to reach the PC over Wi-Fi.
+- **Preconditions:** A1; phone on the same Wi-Fi.
+- **Steps:** on the phone, open `http://<the Network address from A1>:5173/verify/token/1`.
+- **Expected:** the LexCorp2 "Asset verification" page opens and shows "Not verified: Asset not found". If it does not load, allow port 5173 through Windows Defender Firewall for private networks and retry.
+- **Evidence:** A4-phone.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## B. First-time provisioning
+
+### B1 — Provision the first Administrator
+- **Purpose:** wallet plus single-use PIN provisioning.
+- **Preconditions:** A3; Admin browser profile.
+- **Steps:**
+  1. Open `http://localhost:5173`, then the **First-time provisioning** tab.
+  2. Paste the recovery phrase from `bootstrap_admin_wallet.json` and the PIN.
+  3. Click **Provision wallet and continue to security setup**.
+- **Expected:** the **Security enrolment** screen appears, with "Login authenticator (TOTP 1): Required" and "Login passkey (Passkey 1): Required". No menu or dashboard is visible.
+- **Evidence:** B1-enrolment.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### B2 — Login TOTP 1 enrolment
+- **Purpose:** first login factor.
+- **Preconditions:** B1.
+- **Steps:**
+  1. **Start authenticator setup**.
+  2. Scan the QR with the phone app.
+  3. Type the 6-digit code, then **Confirm authenticator**.
+- **Expected:** step 1 turns green ("Configured"). The phone app entry is named "LexCorp2 Login (Factor 1)".
+- **Evidence:** B2-step1-done.png, taken after enrolment so no QR is visible.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### B3 — Login Passkey 1 with Windows Hello
+- **Purpose:** real platform passkey.
+- **Preconditions:** B2.
+- **Steps:**
+  1. **Register login passkey**.
+  2. Complete the Windows Hello prompt.
+- **Expected:** Windows Hello appears. Afterwards the dashboard opens: masthead "LexCorp2", sidebar, and the greeting "Good …, Security Administrator".
+- **Evidence:** B3-windows-hello.png (the prompt), B3-dashboard.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### B4 — Enrolment cannot be skipped
+- **Purpose:** the application is unreachable before both login factors exist.
+- **Preconditions:** do this during D5 for any new identity, after provisioning and before enrolment.
+- **Steps:** in the address bar open `http://localhost:5173/digital`, then `/admin`.
+- **Expected:** the enrolment screen is still shown; no data pages open.
+- **Evidence:** B4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### B5 — PIN is single use
+- **Purpose:** a used PIN cannot be used again.
+- **Preconditions:** B1 done; any other browser profile.
+- **Steps:** First-time provisioning, using the same recovery phrase and the same PIN.
+- **Expected:** refused, with a message that the PIN is invalid or already used.
+- **Evidence:** B5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## C. Authentication
+
+### C1 — Sign in with Login TOTP 1
+- **Preconditions:** B3.
+- **Steps:**
+  1. Sidebar → **Sign out**.
+  2. Type the admin wallet address (do not paste from the screen) and a fresh 6-digit code.
+  3. **Sign in with authenticator code**.
+- **Expected:** the dashboard opens.
+- **Evidence:** C1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C2 — Sign in with Login Passkey 1
+- **Steps:** Sign out → type the wallet address → **Sign in with login passkey** → Windows Hello.
+- **Expected:** the dashboard opens.
+- **Evidence:** C2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C3 — Wrong factor and unknown wallet refused
+- **Steps:**
+  1. Sign in with a wrong 6-digit code.
+  2. Sign in with an invented address `0x1111111111111111111111111111111111111111` and any code.
+- **Expected:** both are refused with the same generic message, which does not reveal whether the wallet exists.
+- **Evidence:** C3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C4 — Set up Factor 2 and Factor 3
+- **Preconditions:** signed in as ADM.
+- **Steps:** **My identity** → "Factor 2: view and submit" → **Set up authenticator** → **Generate key** → scan → **Confirm**. Repeat for Factor 3. Then, in the Factor 3 panel, **Register passkey on this device**: enter the Factor 3 code → **Continue** → Windows Hello.
+- **Expected:** both panels show "Protected". Factor 3 lists a passkey. Registering the passkey asked for the Factor 3 code first.
+- **Evidence:** C4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C5 — Factors cannot stand in for each other
+- **Preconditions:** a document exists (E4), and USA has no Factor 2 passkey.
+- **Steps:**
+  1. As USA open the document → **View document** → enter the **Factor 3** code in the Factor 2 box.
+  2. Click **Use Passkey 2** when no Passkey 2 is registered.
+- **Expected:** both are refused ("Invalid Factor 2 …" or "No active Factor 2 passkey…").
+- **Evidence:** C5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C6 — Logout revokes the session
+- **Steps:** Sign out, then press the browser Back button and reload.
+- **Expected:** the sign-in screen shows "You signed out." No data is displayed.
+- **Evidence:** C6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C7 — 15-minute inactivity limit
+- **Steps:** sign in, leave the tab untouched for 16 minutes, then click any menu item.
+- **Expected:** you are returned to sign-in with a message that the session ended after inactivity.
+- **Evidence:** C7.png, with the clock visible.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C8 — 30-minute absolute session lifetime
+- **Steps:** sign in and keep working, clicking at least every 10 minutes, for 31 minutes.
+- **Expected:** after 30 minutes the next action returns you to sign-in. This is intended: sessions last at most 30 minutes.
+- **Evidence:** C8.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C9 — Session ends when your network address changes
+- **Purpose:** IP binding.
+- **Preconditions:** a laptop that can switch networks (for example Wi-Fi to a phone hotspot), signed in at `http://localhost:5173` on that laptop.
+- **Steps:** sign in, switch the laptop to the other network, then click a menu item.
+- **Expected:** if the effective address the backend sees changes, the session ends ("client IP address changed"). Running everything on `localhost`, the backend always sees `127.0.0.1`, so no change is detectable. In that case mark **N/A (single-host setup)** and note it.
+- **Evidence:** C9.png, or a note.
+- [ ] PASS  [ ] FAIL  [ ] N/A — Notes: ______
+
+### C10 — Login reset by an administrator
+- **Preconditions:** USA is fully set up (D5).
+- **Steps:**
+  1. As USA: **My identity** → **Ask an administrator to reset my login factors** → reason → **Send request**.
+  2. As ADM: **Administration** → "Login reset requests" → **Approve reset** → Factor 3.
+  3. Note the new PIN (do not screenshot it).
+  4. As USA, reload.
+- **Expected:**
+  - USA's session ends.
+  - USA can no longer sign in with the old TOTP 1 or Passkey 1.
+  - USA provisions again with the new PIN, and must enrol new login factors.
+- **Evidence:** C10-request.png, C10-approved.png (PIN masked), C10-reenrol.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### C11 — Locked-out request from the sign-in screen
+- **Steps:** Sign in → **Locked out** tab → paste USB's recovery phrase → reason → **Send signed reset request**.
+- **Expected:** "Request recorded". ADM sees USB under "Login reset requests".
+- **Evidence:** C11.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## D. Roles and departments
+
+### D1 — Departments
+- **Steps:** as ADM, **Administration** → **Add department** → "Test Range" → **Add**.
+- **Expected:** "Test Range" appears in the list and in the department drop-downs.
+- **Evidence:** D1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### D2 — Register the Manager with a self-generated wallet
+- **Steps:**
+  1. In the Manager profile: sign-in screen → **Create a wallet** → **Generate wallet on this device**. Record the recovery phrase privately, tick the box, then **Clear it from the screen**. Copy only the address.
+  2. As ADM: **Administration** → **Register identity**. Name "Test Manager", role Manager, department Avionics; paste the address → **Register** → Factor 3.
+- **Expected:**
+  - A dialog shows the PIN "once".
+  - Ledger roles read `ANCHOR_ROLE, MANAGER_ROLE, MINTER_ROLE`.
+  - The admin never saw the recovery phrase.
+- **Evidence:** D2-registered.png (PIN masked).
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### D3 — Register the Auditor and User B (self-generated)
+- **Steps:** repeat D2 for AUD (Auditor, Cyber Security) and USB (User, Radar Systems).
+- **Expected:** ledger roles are `AUDITOR_ROLE` for AUD and "None (user role)" for USB.
+- **Evidence:** D3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### D4 — Register User A with the custodial path
+- **Steps:** **Register identity** → name, role User, department Avionics → **The person cannot create one: generate a wallet for them**. Record the phrase privately, tick the acknowledgement → Register → Factor 3.
+- **Expected:** a warning that you now know this person's recovery phrase. The PIN is shown once.
+- **Evidence:** D4.png (phrase and PIN masked).
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### D5 — Each identity provisions and enrols
+- **Steps:** in each identity's own profile, run B1, B2 and B3 using that identity's recovery phrase and PIN, then set up Factor 2 and Factor 3 as in C4.
+- **Expected:** all four reach their dashboard.
+- **Evidence:** D5-<id>.png for each.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### D6 — Navigation per role
+- **Steps:** note the sidebar items for each identity.
+- **Expected:**
+
+  | Role | Sidebar items |
+  |---|---|
+  | User | Dashboard, Digital assets, Physical assets, My requests, My identity |
+  | Auditor | the User items plus Security alerts and Audit trail |
+  | Manager | Dashboard, Digital assets, Physical assets, Requests & approvals, Security alerts, Audit trail, My identity, People |
+  | Admin | as Manager, with Administration instead of People |
+
+  Nothing refers to any other organisation's branding.
+- **Evidence:** D6-<role>.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### D7 — A User cannot reach restricted areas
+- **Steps:**
+  1. As USA open `http://localhost:5173/admin`, then `/alerts`, then `/audit`.
+  2. In the same browser open `http://localhost:5173/api/alerts` and `http://localhost:5173/api/audit/stats`.
+- **Expected:** the pages show "Not available for your role". The API URLs return `{"detail":"Not authorized…"}` (HTTP 403).
+- **Evidence:** D7.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### D8 — Manager scope and extra departments
+- **Steps:**
+  1. As MGR, note which physical and digital assets are visible (only Avionics, plus assets MGR owns).
+  2. As ADM: **Administration** → Test Manager → **Departments** → tick "Radar Systems" → Save.
+  3. MGR signs out and back in.
+- **Expected:** before the change MGR cannot see Radar Systems items. After it, Radar Systems items are visible.
+- **Evidence:** D8-before.png, D8-after.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### D9 — Role change updates ledger roles
+- **Steps:** as ADM: **Change role** on USB → Manager → Factor 3. Then change USB back to User.
+- **Expected:**
+  - USB's session ends at each change.
+  - The Audit trail (category "Identity administration") shows ROLE_CHANGED.
+  - Category "Ledger and roles" shows the ledger roles granted, then revoked.
+- **Evidence:** D9.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## E. Digital asset creation
+
+### E1 — Register a PDF document
+- **Steps:**
+  1. As USA: **Digital assets** → **Register document** → choose a PDF.
+  2. Wait for "Stored in the vault".
+  3. Title "Test specification", Asset ID `DOC-TEST-001`, department Avionics.
+  4. **Submit for approval** → Factor 2.
+- **Expected:** "Submitted for approval" with a `CRT-YYYYMMDD-NNNN` ID. The row shows "Pending approval" and "Not yet recorded".
+- **Evidence:** E1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### E2 — Register DOCX, PPTX and XLSX documents
+- **Steps:** repeat E1 with a Word file (`DOC-TEST-002`), a PowerPoint file (`DOC-TEST-003`) and an Excel file that contains a chart (`DOC-TEST-004`).
+- **Expected:** each is accepted and pending.
+- **Evidence:** E2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### E3 — Unsupported type refused
+- **Steps:** Register document → choose a `.zip` or `.exe` file.
+- **Expected:** "Unsupported document type…". Nothing is stored.
+- **Evidence:** E3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### E4 — Approval signs the ledger transaction
+- **Steps:** as MGR: **Requests & approvals** → `DOC-TEST-001` → **Review** → Approve → Factor 3 → **Approve and sign**.
+- **Expected:**
+  - "approved and recorded on the ledger (block N)".
+  - The document shows "Approved", Lifecycle "Minted", a ledger transaction hash, and "Ledger recorded" in the blue ribbon.
+- **Evidence:** E4.png. Repeat for DOC-TEST-002 to 004.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### E5 — Rejection
+- **Steps:**
+  1. As USA register `DOC-TEST-005`.
+  2. As MGR, Review → **Reject** → reason → Factor 3 → **Confirm rejection**.
+- **Expected:** status Rejected. It cannot be viewed by anyone other than the owner and managers.
+- **Evidence:** E5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### E6 — No self-approval
+- **Steps:**
+  1. As MGR register a document `DOC-TEST-006`.
+  2. In MGR's own queue look at that row.
+  3. Approve it as ADM.
+- **Expected:** MGR sees "Another approver must decide". ADM can approve it.
+- **Evidence:** E6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## F. Digital viewing
+
+### F1 — Owner views a document
+- **Steps:** as USA open `DOC-TEST-001` → **View document** → Factor 2 code (or **Use Passkey 2** if you registered one).
+- **Expected:** the "Protected view, VW-YYYYMMDD-NNNN" dialog shows the PDF with a diagonal watermark.
+- **Evidence:** F1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### F2 — View watermark contents
+- **Steps:** zoom into the PDF in F1.
+- **Expected:** you can read:
+  - "CONFIDENTIAL";
+  - "Viewed by: Test User A";
+  - "Wallet: 0x…" (short form);
+  - "IP: …";
+  - "Date: DD Month YYYY";
+  - "View ID: VW-…";
+  - a QR code.
+
+  The owner is **not** named in a view copy. The last page is a "LexCorp Document Control" page.
+- **Evidence:** F2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### F3 — Viewing Office documents
+- **Steps:** view `DOC-TEST-002` (Word).
+- **Expected:** a watermarked **PDF** rendering of the text appears (not a .docx), headed "View rendering of … (text content only; layout not reproduced)".
+- **Evidence:** F3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### F4 — View without Factor 2 is impossible
+- **Steps:** open `http://localhost:5173/api/assets/document/view/DOC-TEST-001` directly while signed in.
+- **Expected:** a JSON error that Factor 2 is required. No document bytes.
+- **Evidence:** F4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## G. Delegated access
+
+### G1 — Delegate with limits
+- **Steps:**
+  1. As USA open `DOC-TEST-001` → **Delegate access** → paste USB's wallet address → suggested view limit 2 → Factor 2.
+  2. As MGR (with Radar Systems scope from D8, or as ADM): Review → View limit 2 → Accessible until = 1 hour from now → Approve → Factor 3.
+- **Expected:** `DOC-TEST-001` → "Delegated access" shows USB with "0 of 2 views" and the expiry.
+- **Evidence:** G1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### G2 — View limit enforced
+- **Steps:** as USB open `DOC-TEST-001` → view three times.
+- **Expected:** views 1 and 2 succeed, each with its own VW ID. View 3 is refused ("View limit reached").
+- **Evidence:** G2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### G3 — Expiry enforced
+- **Steps:** repeat G1 for `DOC-TEST-002` with "Accessible until" 5 minutes ahead. Wait 6 minutes, then view as USB.
+- **Expected:** refused as expired.
+- **Evidence:** G3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### G4 — Revoke a grant
+- **Steps:** as USA, `DOC-TEST-002` → Delegated access → **Revoke** on an active grant. Then view as USB.
+- **Expected:** refused.
+- **Evidence:** G4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### G5 — Other documents stay invisible
+- **Steps:** as USB open **Digital assets**.
+- **Expected:** only delegated documents appear. Opening `/digital/DOC-TEST-003` shows "This document is not in your scope".
+- **Evidence:** G5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## H. Download approval
+
+### H1 — Non-owner requests a download
+- **Preconditions:** USB has an active delegation with download allowed on `DOC-TEST-004`. Create one as in G1 with "Allow this identity to request downloads" ticked.
+- **Steps:** as USB open `DOC-TEST-004` → **Request download** → purpose → Factor 2.
+- **Expected:** "Request DL-… sent". My requests shows "Awaiting owner consent".
+- **Evidence:** H1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### H2 — Owner consent, then Manager approval
+- **Steps:**
+  1. As USA: **My requests** → "Download requests for documents you own" → **Consent** → Factor 3.
+  2. As MGR: Requests & approvals → Review → **Confirm approval** → Factor 3.
+- **Expected:** the MGR queue shows the request only after owner consent. The request then reads "Approved, ready" for USB.
+- **Evidence:** H2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### H3 — Fetch with Factor 3
+- **Steps:** as USB: My requests → **Download copy** → Factor 3 → the file downloads.
+- **Expected:** the file name contains the DL ID (for example `…DL-YYYYMMDD-NNNN.xlsx`).
+- **Evidence:** H3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### H4 — Single use
+- **Steps:** try **Download copy** on the same request again, if shown, or reload My requests.
+- **Expected:** it is completed and cannot be downloaded again.
+- **Evidence:** H4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### H5 — Download watermark
+- **Steps:** open the downloaded file. For a PDF, request and download `DOC-TEST-001` the same way.
+- **Expected:**
+  - "Downloaded by: Test User B", wallet, IP, date and "Download ID: DL-…".
+  - In download copies the owner **is** shown ("Owner: Test User A…").
+  - A QR code, and the control page, section or sheet.
+- **Evidence:** H5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### H6 — Refusals
+- **Steps:** repeat H1 and have the owner **Refuse**. Repeat again and have MGR **Reject**.
+- **Expected:** the request ends Rejected in both cases, and nothing is downloadable.
+- **Evidence:** H6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## I. Modification
+
+### I1 — Modification copy
+- **Steps:**
+  1. As USA open `DOC-TEST-001` → **Request modification copy** → purpose → Factor 2.
+  2. MGR approves.
+  3. USA → My requests → **Download copy** → Factor 3.
+- **Expected:** the modification copy is downloaded, watermarked.
+- **Evidence:** I1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### I2 — Upload the revision
+- **Steps:** edit the original PDF locally (or use any second PDF) → My requests → **Upload revision** → choose the file → Factor 3.
+- **Expected:** "Revision MOD-… submitted as version 2; it awaits approval".
+- **Evidence:** I2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### I3 — Revision approval and anchoring
+- **Steps:** as MGR: Review the MOD request → **Approve and sign** → Factor 3.
+- **Expected:** "approved and recorded on the ledger (block N)".
+- **Evidence:** I3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### I4 — Version history
+- **Steps:** open `DOC-TEST-001`.
+- **Expected:**
+  - "Versions" lists v1 (Obsolete) and v2 (Anchored) with different SHA-256 values.
+  - A notice points to the newer version.
+  - v1 still shows "Ledger recorded".
+- **Evidence:** I4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### I5 — Modification history in later copies
+- **Steps:** view v2 (`DOC-TEST-001-V2`) and look at the control page.
+- **Expected:** it lists "Modification ID: MOD-…", "Modified by wallet: 0x…" and the date.
+- **Evidence:** I5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## J. Watermark per format
+
+### J1 — PDF
+- **Steps:** open an H5 PDF in Edge or Adobe Reader.
+- **Expected:** every page has the diagonal mark and a QR, and page content is not covered.
+- **Evidence:** J1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### J2 — Word
+- **Steps:** download `DOC-TEST-002` (process H) and open it in **Word**.
+- **Expected:** it opens without a repair prompt. A faint diagonal watermark and header line appear on every page, and a final "Document Control" section. The original text is intact.
+- **Evidence:** J2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### J3 — PowerPoint
+- **Steps:** download `DOC-TEST-003` and open it in **PowerPoint**.
+- **Expected:** it opens without a repair prompt. Every slide carries the mark and a QR, the original shapes are editable, and a control slide is appended.
+- **Evidence:** J3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### J4 — Excel (charts preserved)
+- **Steps:** download `DOC-TEST-004` and open it in **Excel**. View → Page Layout.
+- **Expected:**
+  - It opens without a repair prompt.
+  - Cells, formulas **and the chart** are intact.
+  - The header shows the watermark line and the footer "CONFIDENTIAL – DL-… – Page x of y".
+  - A "LexCorp Control" sheet with a QR is added.
+- **Evidence:** J4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### J5 — Image
+- **Steps:** register, approve and view a PNG or JPEG image.
+- **Expected:** a tiled diagonal mark, and a band below the image with the details and a QR. The picture itself is not cropped.
+- **Evidence:** J5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### J6 — Tamper detection
+- **Steps:**
+  1. Open the QR page of a download (section K), then **Check a copy against this record**.
+  2. Type "Downloaded by" exactly as printed → **Compare typed values**.
+  3. Change one letter and compare again.
+- **Expected:** "Matches the authoritative record", then "Does not match the record: possible tampering".
+- **Evidence:** J6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## K. QR verification (real phone)
+
+### K1 — Scan a view watermark QR
+- **Steps:** show the F1 view copy on the PC screen and scan its QR with the phone camera.
+- **Expected:** the phone opens `http://<LAN address>:5173/verify/action/VW-…` and shows "Authentic LexCorp2 record (public view)". It does not show the viewer's name, wallet or IP.
+- **Evidence:** K1-phone.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### K2 — Scan a download watermark QR
+- **Steps:** print, or show on screen, the H5 PDF and scan its QR.
+- **Expected:** the same public record page for the DL ID.
+- **Evidence:** K2-phone.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### K3 — Authorized detail when signed in
+- **Steps:** on the PC, signed in as ADM, open the same `/verify/action/…` URL, replacing the LAN address with `localhost`.
+- **Expected:** "(authorized detail)", with creator, performer and network address shown.
+- **Evidence:** K3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### K4 — Invalid reference
+- **Steps:** on the phone open `/verify/action/VW-20000101-0001`.
+- **Expected:** "Not verified", with no stack trace or internal details.
+- **Evidence:** K4-phone.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## L. Physical assets
+
+### L1 — Register with a MAC address
+- **Steps:**
+  1. As MGR: **Physical assets** → **Register asset**.
+  2. Name "Navigation unit", serial `PHY-TEST-001`, department Avionics.
+  3. "Yes, it has a MAC address" → `02:1A:2B:3C:4D:5E`; location "Lab 1".
+  4. Custodian wallet = USA's address → **Submit for approval** → Factor 2.
+- **Expected:** "Submitted for approval".
+- **Evidence:** L1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L2 — Register with a unique address
+- **Steps:** as L1 with serial `PHY-TEST-002` and "No, use a unique address" → `CHIP-TEST-0002`.
+- **Expected:** accepted.
+- **Evidence:** L2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L3 — Duplicate serial refused
+- **Steps:** register `phy-test-001` (lower case) with a new MAC.
+- **Expected:** "Asset serial number already exists". Nothing is created, and exactly **one** alert appears for the Auditor.
+- **Evidence:** L3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L4 — Duplicate MAC in another notation refused
+- **Steps:** register `PHY-TEST-003` with MAC `021a2b3c4d5e`.
+- **Expected:** "MAC address is already registered". The audit details show a fingerprint, never the MAC itself.
+- **Evidence:** L4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L5 — Duplicate unique address refused
+- **Steps:** register `PHY-TEST-004` with unique address ` chip-test-0002 ` (different case, with spaces).
+- **Expected:** "Device unique address is already registered".
+- **Evidence:** L5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L6 — Approve and mint
+- **Steps:** as ADM (MGR cannot approve their own), Review `PHY-TEST-001` → **Approve and sign** → Factor 3. Do the same for `PHY-TEST-002`.
+- **Expected:** recorded on the ledger. The asset page shows Minted, the token, and the ledger transaction.
+- **Evidence:** L6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L7 — NFT card
+- **Steps:** as MGR open `PHY-TEST-001` → **Download NFT card** and open the SVG.
+- **Expected:** exactly Serial Number, NFT/Token ID, Creation Date, Department and a QR. No MAC, location, wallet or creation ID.
+- **Evidence:** L7.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L8 — Scan the physical asset QR with the phone
+- **Steps:** scan the card's QR, from screen or print.
+- **Expected:** "Registered LexCorp2 asset, confirmed on the ledger" with minimal public fields. No MAC or location.
+- **Evidence:** L8-phone.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L9 — Role-based redaction
+- **Steps:** open `PHY-TEST-001` as MGR, as AUD and as USA (the custodian).
+- **Expected:** MGR and AUD see the MAC and location. USA sees the asset but not the MAC or location, and gets no status, maintenance or card controls. USB cannot open it at all.
+- **Evidence:** L9-<role>.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L10 — Status and maintenance
+- **Steps:** as MGR: **Change status** → Maintenance → reason → Factor 3. Then **Record maintenance** → "Calibration".
+- **Expected:** the Lifecycle timeline and Maintenance log show both entries.
+- **Evidence:** L10.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### L11 — Unregistered custodian refused
+- **Steps:** register `PHY-TEST-005` with custodian wallet `0x1212121212121212121212121212121212121212`.
+- **Expected:** "The recipient must be a registered, active LexCorp2 identity."
+- **Evidence:** L11.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## M. AI and rule alerts
+
+### M1 — AI-assisted alert
+- **Purpose:** show that AI analysis raises alerts for unusual behaviour.
+- **Background:** the model's scores are calibrated against ordinary activity, so normal weekday work does not raise alerts.
+- **Steps:**
+  1. **Either** perform a User write outside business hours (before 08:00, after 19:00 or at a weekend), for example USA submitting a revision (I1 to I2).
+  2. **Or**, to see AI alerts on demand: add `AI_ALERT_MODE=raw` to `backend/.env`, restart `npm start`, view a document as USA, then remove the line and restart again.
+- **Expected:** **Security alerts** as AUD shows an alert "Raised by: AI-assisted risk analysis" with a risk score. The detail says the AI score is advice only.
+- **Evidence:** M1.png. Note which option you used.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### M2 — Rule-based alert
+- **Steps:** L3 or L4 already produced one.
+- **Expected:** "Raised by: Integrity or security rule", severity High.
+- **Evidence:** M2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## N. Alert escalation
+
+### N1 — Auditor forwards to the Manager
+- **Steps:** as AUD: Security alerts → "Waiting for me" → open an alert about USA (Avionics) → note → **Forward to Manager**.
+- **Expected:** it leaves AUD's queue and appears in MGR's queue (Manager review).
+- **Evidence:** N1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### N2 — Manager dismisses
+- **Steps:** as MGR open it → note "confirmed legitimate" → **Dismiss as false alarm**.
+- **Expected:** state Dismissed. The history lists Raised, Forwarded (Auditor) and Dismissed (Manager).
+- **Evidence:** N2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### N3 — Manager forwards to the Administrator
+- **Steps:** AUD forwards another Avionics alert, then MGR clicks **Forward to Administrator**.
+- **Expected:** it appears in ADM's queue.
+- **Evidence:** N3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### N4 — Earlier stages become read-only
+- **Steps:** as AUD open the alert from N3 with "All visible".
+- **Expected:** "You can read it but not act on it". No action buttons.
+- **Evidence:** N4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### N5 — Nobody decides on an alert about themselves
+- **Steps:** as MGR open an alert whose subject is Test Manager (for example the L3 duplicate attempt).
+- **Expected:** "This alert concerns your own identity. Another reviewer must decide."
+- **Evidence:** N5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### N6 — Department with no Manager goes straight to Admin
+- **Steps:** as AUD forward an alert about USB (Radar Systems). If you gave MGR the Radar Systems scope in D8, remove it first.
+- **Expected:** it goes directly to Administrator review, with the note "[no independent manager covers this department]".
+- **Evidence:** N6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## O. Administrator revocation
+
+### O1 — Revoke from an alert
+- **Preconditions:** USB is signed in in their own profile.
+- **Steps:** as ADM open the N6 alert → decision note → **Revoke identity** → Factor 3 (code, or **Use Passkey 3** with Windows Hello) → **Revoke identity**.
+- **Expected:** "Identity revoked from ALT-…".
+- **Evidence:** O1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### O2 — The live session ends
+- **Steps:** in USB's profile, click any menu item.
+- **Expected:** you are returned to sign-in, with a message that the identity was revoked or the session ended.
+- **Evidence:** O2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### O3 — Sign-in refused
+- **Steps:** try USB's TOTP 1 and Passkey 1.
+- **Expected:** both are refused (generic message).
+- **Evidence:** O3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### O4 — Ledger roles removed
+- **Steps:** as ADM, Audit trail → category "Ledger and roles". Then run `cd backend && python scripts/verify_integrity.py`.
+- **Expected:** role changes are recorded (USB had none as a User; for a revoked Manager you would see revocations). The integrity check passes the "on-chain roles match" check.
+- **Evidence:** O4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### O5 — History preserved
+- **Steps:** as ADM, **Administration** shows USB as "Revoked". Open the alert history and USB's earlier audit events.
+- **Expected:** all history is intact.
+- **Evidence:** O5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## P. Audit and indexer
+
+### P1 — Audit filters
+- **Steps:** as AUD, **Audit trail**. Filter by Category = Downloads, then Risk = High, then Result = Denied or failed, then a date range, then Asset ID = `DOC-TEST-001`. Open one event.
+- **Expected:** each filter narrows the list correctly. The event dialog shows actor, time, asset, risk, alert state and reference.
+- **Evidence:** P1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### P2 — Audit history cannot be changed, even in the database
+- **Steps:** in a terminal: `docker exec -it lexcorp_postgres psql -U lexcorp -d lexcorp_sih -c "DELETE FROM audit_events WHERE true;"`
+- **Expected:** `ERROR: LexCorp2 audit history is append-only (DELETE on audit_events rejected)`. Try `UPDATE audit_events SET risk_label='LOW';` too: rejected.
+- **Evidence:** P2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### P3 — Indexer catches up after a restart
+- **Steps:**
+  1. Stop `npm start` (Ctrl+C). The ledger keeps producing blocks while the backend is down.
+  2. Wait 2 minutes, then run `npm start` again.
+  3. Check `http://127.0.0.1:8000/health`, then run the integrity script.
+- **Expected:** the indexer is running and "indexer cursor on this chain and contract" passes (lag under 200 blocks).
+- **Evidence:** P3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### P4 — Integrity script
+- **Steps:** `cd backend && python scripts/verify_integrity.py` at the end of your session.
+- **Expected:** `9/9 checks passed`.
+- **Evidence:** P4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## Q. Blockchain
+
+### Q1 — Deployment and roles
+- **Steps:** `npm run contract:verify`.
+- **Expected:** 14 PASS lines, including "no publicly known dev account holds any role".
+- **Evidence:** Q1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### Q2 — Live ledger tests
+- **Steps:** `npm run test:live` (works in PowerShell and Git Bash).
+- **Expected:** `3 passed`.
+- **Evidence:** Q2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### Q3 — Unauthorized mint is rejected by the contract itself
+- **Steps:** Q2 includes this: a wallet without a role sends a real mint transaction.
+- **Expected:** covered by Q2 passing. The receipt status is 0 and no token exists.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### Q4 — Node RPC not exposed to browsers or the network
+- **Steps:**
+  1. From the phone browser open `http://<PC LAN address>:8545`.
+  2. On the PC run `curl -s -H "Origin: http://evil.example" -X OPTIONS -i http://127.0.0.1:8545 | head -1`
+- **Expected:** the phone cannot connect. The PC shows `403 CORS Rejected`.
+- **Evidence:** Q4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### Q5 — Transactions appear in the audit trail
+- **Steps:** Audit trail → Category "Digital assets" and "Physical assets" → look for "Ledger: document minted" and "Ledger: physical asset minted".
+- **Expected:** each E4, I3 and L6 transaction appears with its ledger block.
+- **Evidence:** Q5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## R. Negative and security tests
+
+### R1 — Edited watermark detected
+- Covered by J6. Also upload an edited PDF copy with **Upload copy** on the verify page.
+- **Expected:** a mismatch is reported.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### R2 — A step-up proof cannot be reused
+- **Steps:** use the same 6-digit Factor 3 code twice within 30 seconds, for two approvals.
+- **Expected:** the second is refused (replay protection).
+- **Evidence:** R2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### R3 — Wrong-purpose factor
+- Covered by C5.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### R4 — No access without a session
+- **Steps:** in a fresh profile (signed out), open `http://localhost:5173/api/assets/registry` and `http://localhost:5173/api/users`.
+- **Expected:** `{"detail":"Authentication required"}`.
+- **Evidence:** R4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### R5 — PIN reuse
+- Covered by B5.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### R6 — Database and ledger bound to this PC only
+- **Steps:** from another device on the Wi-Fi, try to connect to `<PC LAN address>:5432` and `:8545`, for example with the phone browser.
+- **Expected:** both refused or time out.
+- **Evidence:** R6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+---
+
+## S. Cleanup
+
+### S1 — Stop services
+- **Steps:** Ctrl+C in the `npm start` terminal; `npm run besu:down`; `docker compose stop postgres`.
+- [ ] Done
+
+### S2 — Reset to a clean state (only if you want to test again from scratch)
+This destroys the test data you created. It is not needed otherwise.
+1. `docker compose up -d postgres`
+2. `docker exec lexcorp_postgres psql -U lexcorp -d postgres -c "DROP DATABASE lexcorp_sih" -c "CREATE DATABASE lexcorp_sih OWNER lexcorp"`
+3. `npm run besu:up && npm run chain:wait && npm run contract:deploy && npm run contract:verify`. A fresh contract avoids old test tokens showing as "unregistered mint" alerts.
+4. `npm run migrate`
+5. Delete `secrets/bootstrap_admin_pin.txt` and `secrets/bootstrap_admin_wallet.json`, then run `cd backend && python scripts/bootstrap_admin.py --name "Security Administrator" --department "Cyber Security"`
+- [ ] Done
+
+### S3 — Sensitive leftovers
+- Delete `db_backups/` once you no longer need to roll back. It holds retired test data.
+- Rotate the **WireGuard** keys and the **wg-easy** password. They are in git history (see the matrix, section 13).
+- Remove the E2E vault files kept in `_scratch_archive/` when no longer needed.
+- [ ] Done
+
+---
+
+## Release decision
+
+Choose one, after completing the checklist:
+
+- [ ] **PASS — ready for release**: every test passed, and the open items in matrix section 13 are resolved or accepted by the owner in writing.
+- [ ] **PASS WITH KNOWN LIMITATIONS**: every critical test passed. List the accepted limitations (for example AI model quality, Office view rendering, git history):
+      ______________________________________________
+- [ ] **FAIL — blocking issues remain**: list the failed test IDs: ______________________
+
+Automated results do not decide this on their own. Decide based on your manual results.
+
+Tester: ____________  Date: ____________  Signature: ____________

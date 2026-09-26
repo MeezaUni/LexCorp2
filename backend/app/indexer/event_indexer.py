@@ -108,8 +108,15 @@ class EventIndexer:
         Nothing is ever deleted (events are de-duplicated by tx hash; pre-reset history stays)."""
         state = await self._load_state()
         head = self.w3.eth.block_number
+        # Nothing can precede the contract's deployment block (recorded by deploy.js).
+        try:
+            from app.services.chain import load_deployment
+            dep = load_deployment()
+            genesis = max(0, int(dep.get("deployBlock") or 0) - 1) if dep.get("address", "").lower() == self.contract.address.lower() else 0
+        except Exception:
+            genesis = 0
         if state is None:
-            return 0
+            return genesis
         reason = None
         if state.contract_address.lower() != self.contract.address.lower():
             reason = "contract changed"
@@ -119,7 +126,7 @@ class EventIndexer:
             reason = f"block {state.last_block} hash differs"
         if reason is None:
             return state.last_block
-        logger.warning(f"Indexer cursor invalid ({reason}); rescanning from block 0 without deleting any rows")
+        logger.warning(f"Indexer cursor invalid ({reason}); rescanning from block {genesis} without deleting any rows")
         session = await self._get_session()
         try:
             import hashlib, time
@@ -132,7 +139,7 @@ class EventIndexer:
             await session.commit()
         finally:
             await session.close()
-        return 0
+        return genesis
 
     async def _is_indexed(self, session: AsyncSession, tx_hash: str, log_index: Optional[int] = None) -> bool:
         """Is this exact chain LOG (tx hash + log index) already in the audit trail?

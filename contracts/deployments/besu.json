@@ -1,13 +1,13 @@
 {
-  "address": "0x113904450c2E72A1E1602F733D9140eAB9Db35aD",
+  "address": "0x9017fB8bC1721aF8F1F4Af622dF86fD24E736213",
   "chainId": 13371,
   "contractVersion": 3,
   "admin": "0x76799054c237Ea4B5AF457DcDC9B7bEB74F894E3",
   "registrar": "0x27D9A8A3657F5B34A0924C5278D51C4BA76f7eE0",
-  "deployTxHash": "0x4fa7fad29d4fa7314e5dee0321dd360431009fd94c94a80cb222e81fed0dcfde",
-  "deployBlock": 13,
+  "deployTxHash": "0xfdd4f5479391369c20013505d2f34cd2fb466dc11d19066ac255ec563fb1a760",
+  "deployBlock": 19338,
   "runtimeBytecodeKeccak": "0x78faa5411e1877e2064f6ac1a7c33cc2641f314ad0b941a6a858fe3b1703b8ef",
-  "deployedAt": "2026-09-25T21:45:53.310Z",
+  "deployedAt": "2026-09-26T08:30:03.172Z",
   "abi": [
     {
       "type": "constructor",
@@ -1243,6 +1243,5 @@
       ],
       "outputs": []
     }
-  ],
-  "registrarRotatedAt": "2026-09-25T22:17:45.051Z"
+  ]
 }

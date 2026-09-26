@@ -84,3 +84,43 @@ complete.
 
 - The old Postgres container was shared with other LexCorp copies on this machine (it was created from `LexCorp-SIH-V2`). Those copies used `lexcorp:lexcorp_dev`. That container is now stopped and renamed, and the role password inside it was rotated. Those other copies will no longer connect until they are reconfigured.
 - Old commits in git history still contain the retired validator keys and the public Hardhat keys in configuration files. Nothing was pushed, and history was not rewritten. Rewriting published history needs the owner's decision.
+
+## 7. Later events (same day)
+
+### 7.1 Secret rotation after an in-session exposure
+
+A diagnostic command imported the wrong `app` package: an editable install from another
+local project. Its settings validation echoed values from `backend/.env` into the session
+output. The exposed values were treated as compromised and rotated.
+
+| Value | What was done |
+|---|---|
+| `DATA_ENCRYPTION_KEYS` | Rotated. No records were encrypted under the old key, which was discarded. |
+| `VC_SIGNING_SECRET` | Rotated. No credentials had been issued. |
+| `CHAIN_OPERATOR_PRIVATE_KEY` | Rotated. The governance key moved `REGISTRAR_ROLE` to the new operator with `contracts/scripts/rotate_registrar.js`, and the old operator was revoked. `verify_deployment` passed. |
+
+The application settings now set `hide_input_in_errors`, and a test covers it. Scripts are
+always run from `backend/`. Commit: `4b31b4c`.
+
+### 7.2 Hand-off reset after browser verification
+
+The Playwright run created test identities, tokens and alerts on contract
+`0x1139…35aD`. The owner's manual checklist should start clean, so:
+
+1. **Preserved.** The E2E database dump and the deployment record were kept in
+   `db_backups/e2e_run_20260926/` (git-ignored).
+2. **Redeployed.** A fresh AssetNFT v3 was deployed at
+   `0x9017fB8bC1721aF8F1F4Af622dF86fD24E736213`, deploy block 19338, on the same
+   3-validator network (chain 13371). The admin and registrar keys were unchanged.
+   `contracts/deployments/besu.json` records it. `npm run contract:verify` reports 14/14 PASS.
+3. **Recreated.** The database `lexcorp_sih` was dropped and recreated. Then
+   `alembic upgrade head` (0012) and `bootstrap_admin.py` created 1 administrator
+   (`0x11d9…9C11`, not yet provisioned) and the default departments. The admin's PIN and
+   wallet are in git-ignored `secrets/`.
+4. **Indexer.** With no cursor, the indexer now starts at the contract's deploy block rather
+   than block 0. The accompanying test is `test_no_state_starts_at_the_contract_deployment_block`.
+5. **Verified.** `python backend/scripts/verify_integrity.py` reported 9/9 PASS, and the
+   indexer caught up.
+
+The previous contract `0x1139…35aD` still exists on the ledger. The backend and indexer ignore it.
+Roles that E2E test wallets hold on it grant nothing on the new contract.
