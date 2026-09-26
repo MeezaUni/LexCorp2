@@ -95,6 +95,12 @@ class Settings(BaseSettings):
 
     PROVISIONING_PIN_TTL_HOURS: int = 3
 
+    # How AI (Isolation Forest) scores become alert-raising labels:
+    #   calibrated (default) - relative to the model's scores for ordinary reference activity
+    #   raw                  - the model's native tiers (rates most activity HIGH; see docs)
+    #   off                  - AI never raises alerts (rule-based detections still do)
+    AI_ALERT_MODE: Literal["calibrated", "raw", "off"] = "calibrated"
+
     @property
     def data_encryption_keys(self) -> List[str]:
         return [k.strip() for k in self.DATA_ENCRYPTION_KEYS.split(",") if k.strip()]

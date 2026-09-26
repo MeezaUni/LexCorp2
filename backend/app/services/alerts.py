@@ -169,7 +169,8 @@ def ai_score(event_type: str, actor: Optional[User], *, owner_did: Optional[str]
         if result.get("risk_label") in (None, "UNKNOWN", "ERROR"):
             return {}
         return {"risk_label": result["risk_label"], "risk_score": result.get("risk_score"),
-                "ai": {"anomaly_score": result.get("anomaly_score"), "model": "IsolationForest(local)"}}
+                "ai": {"anomaly_score": result.get("anomaly_score"), "model": "IsolationForest(local)",
+                       "native_label": result.get("native_risk_label"), "label_basis": result.get("label_basis")}}
     except Exception as e:
         logger.warning("AI risk scoring unavailable: %s", e)
         return {}

@@ -172,6 +172,56 @@ class AIRiskEngine:
             "event_type": _EVENT_TYPE_MAP.get(event_type, "AccessAttempted"),
         }
 
+    # ------------------------------------------------------------------ calibration
+    # The bundled model's native tiers rate ordinary weekday activity HIGH (measured:
+    # a weekday 10:00 read scores ~69/100). Alerting on native tiers would route every
+    # action to the Auditor. In "calibrated" mode (default) an event is labelled for
+    # alerting relative to the model's own scores for a reference set of ORDINARY
+    # activity: only events more anomalous than all of it reach HIGH. The native label
+    # is always kept alongside for audit and later model evaluation.
+    _REFERENCE_ACTIONS = {
+        "USER": [("AccessAttempted", False), ("AssetUpdated", True)],
+        "AUDITOR": [("AccessAttempted", False)],
+        "MANAGER": [("AccessAttempted", False), ("AssetMinted", True), ("AssetUpdated", True), ("RoleAssigned", True)],
+        "ADMIN": [("AccessAttempted", False), ("AssetMinted", True), ("AssetUpdated", True), ("RoleAssigned", True)],
+    }
+
+    def _reference_max(self) -> Optional[float]:
+        if getattr(self, "_ref_max", None) is not None:
+            return self._ref_max
+        scores = []
+        for role, actions in self._REFERENCE_ACTIONS.items():
+            for event_type, is_write in actions:
+                for hour in range(8, 19):
+                    for elapsed, freq in ((86400.0, 0), (600.0, 3)):
+                        esc = 1.0 if (role == "USER" and is_write) else 0.0
+                        feats = {
+                            "access_hour": hour, "is_weekend": 0, "time_elapsed_from_last_tx": elapsed,
+                            "role_escalation_index": esc, "rolling_event_frequency_1h": freq, "rolling_failure_rate_24h": 0.0,
+                            "asset_sensitivity_tier": 1, "is_write_operation": int(is_write),
+                            "actor_to_asset_relationship_depth": 1, "user_role": role, "event_type": event_type,
+                        }
+                        try:
+                            scores.append(float(predict_event_risk(feats)["risk_score"]))
+                        except Exception:
+                            return None
+        self._ref_max = max(scores) if scores else None
+        return self._ref_max
+
+    def _alert_label(self, score, native_label):
+        from app.core.config import settings
+        mode = settings.AI_ALERT_MODE
+        if mode == "raw" or score is None:
+            return native_label, "native model tiers"
+        if mode == "off":
+            return "LOW", "AI alerting disabled (AI_ALERT_MODE=off)"
+        ref = self._reference_max()
+        if ref is None:
+            return native_label, "native model tiers (calibration unavailable)"
+        margin = float(score) - ref
+        label = "CRITICAL" if margin > 15 else "HIGH" if margin > 5 else "MEDIUM" if margin > 0 else "LOW"
+        return label, f"calibrated: {margin:+.1f} vs ordinary-activity reference {ref:.1f}"
+
     def analyze_event(
         self,
         event_type: str,
@@ -209,9 +259,12 @@ class AIRiskEngine:
             # Record into the cache for future rolling stats (granted inferred by is_write=False read access).
             granted = (event_type not in ("AccessAttempted",)) or (not is_write)
             self.record_event(actor_did, event_type, granted=granted)
+            label, basis = self._alert_label(result["risk_score"], result["risk_label"])
             return {
                 "risk_score": result["risk_score"],
-                "risk_label": result["risk_label"],
+                "risk_label": label,
+                "native_risk_label": result["risk_label"],
+                "label_basis": basis,
                 "anomaly_score": result["anomaly_score"],
                 "model_loaded": True,
                 "features": features,

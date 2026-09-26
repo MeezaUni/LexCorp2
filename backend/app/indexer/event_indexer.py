@@ -309,6 +309,8 @@ class EventIndexer:
             risk_factors = analysis.get("features", {})
             if risk_factors:
                 risk_factors["anomaly_score"] = analysis.get("anomaly_score")
+                risk_factors["native_label"] = analysis.get("native_risk_label")
+                risk_factors["label_basis"] = analysis.get("label_basis")
                 risk_factors["actor_role"] = actor_role
                 risk_factors["is_granted"] = is_granted
         except _SkipAI:

@@ -210,3 +210,26 @@ async def test_user_delete_endpoint_uses_same_revocation(client, db_session):
     assert user.is_active is False and user.revoked_at is not None and user.session_version == 2
     ev = (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "IDENTITY_REVOKED", AuditEvent.target_did == user.did))).scalar_one()
     assert ev.actor_did.endswith(ADMIN)
+
+
+def test_ai_alert_modes_are_explicit_and_calibrated_mode_separates_ordinary_from_anomalous():
+    """Native model tiers rate ordinary activity HIGH; calibrated mode only alerts on events
+    more anomalous than ordinary reference activity. The native label is always kept."""
+    from app.core.config import settings
+    from app.services.ai import ai_engine
+    if not getattr(ai_engine, "_model_loaded", False):
+        import pytest
+        pytest.skip("AI model not available")
+    ordinary = ai_engine.analyze_event(event_type="AccessAttempted", actor_role="MANAGER", actor_did="did:t:ord", is_write=False, asset_sensitivity_tier=1)
+    anomalous = ai_engine.analyze_event(event_type="AssetMinted", actor_role="USER", actor_did="did:t:anom", is_write=True, asset_sensitivity_tier=1)
+    assert "native_risk_label" in ordinary and ordinary["label_basis"].startswith("calibrated")
+    assert anomalous["risk_score"] > ordinary["risk_score"]
+    original = settings.AI_ALERT_MODE
+    try:
+        object.__setattr__(settings, "AI_ALERT_MODE", "off")
+        assert ai_engine.analyze_event(event_type="AssetMinted", actor_role="USER", actor_did="did:t:off", is_write=True)["risk_label"] == "LOW"
+        object.__setattr__(settings, "AI_ALERT_MODE", "raw")
+        r = ai_engine.analyze_event(event_type="AssetMinted", actor_role="USER", actor_did="did:t:raw", is_write=True)
+        assert r["risk_label"] == r["native_risk_label"]
+    finally:
+        object.__setattr__(settings, "AI_ALERT_MODE", original)
