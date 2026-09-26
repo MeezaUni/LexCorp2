@@ -169,7 +169,9 @@ class EventIndexer:
 
         if event_name in ["AssetMinted", "DigitalAssetMinted"]:
             asset_serial = args.get("serialNumber")
-            actor_address = args.get("owner")
+            # The actor of a mint is the transaction sender (the approving minter); the
+            # token holder is the target. (Resolved from the transaction below.)
+            actor_address = None
             target_did = args.get("ownerDID")
             token_id = args.get("tokenId")
             anomaly = await self._reconcile_mint(session, event_name, args)

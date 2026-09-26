@@ -89,7 +89,16 @@ function AlertDetail({ alert, user, onClose, onDone }) {
           <Button busy={busy === 'dismiss'} disabled={!note.trim()} onClick={() => act('dismiss')}>Dismiss as false alarm</Button>
           {user.role !== 'ADMIN' && <Button variant="primary" busy={busy === 'forward'} onClick={() => act('forward')}>Forward to {user.role === 'AUDITOR' ? 'Manager' : 'Administrator'}</Button>}
           {user.role === 'ADMIN' && <Button variant="danger" disabled={!note.trim()} onClick={() => setRevoking(true)}>Revoke identity</Button>}
-        </> : <Button onClick={onClose}>Close</Button>}>
+        </> : <>
+          <Button onClick={onClose}>Close</Button>
+          {user.role === 'ADMIN' && alert.state === 'MANAGER_REVIEW' && !self && (
+            <Button variant="primary" busy={busy === 'take'} onClick={async () => {
+              setBusy('take'); setError('');
+              try { await api.forwardAlert(alert.alert_id, note || 'Taken over: no independent manager covers this department'); onDone(`${alert.alert_id} moved to Administrator review.`); }
+              catch (err) { setError(errorText(err)); setBusy(''); }
+            }}>Take over (no independent manager)</Button>
+          )}
+        </>}>
         {self && <Notice tone="warning">This alert concerns your own identity. Another reviewer must decide.</Notice>}
         {!mine && !self && <Notice tone="info">This alert is at the {alert.state.replace('_', ' ').toLowerCase()} stage. You can read it but not act on it.</Notice>}
         {error && <Notice tone="error">{error}</Notice>}

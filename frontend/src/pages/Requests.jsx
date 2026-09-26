@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Button, Empty, Facts, Field, Id, Notice, PageHeader, Panel, Register, Status, StepUpDialog, formatDate, shortWallet, useAsync } from '../components/ui';
+import { Button, Empty, Facts, Field, Id, Notice, PageHeader, Panel, Register, StepUpDialog, formatDate, shortWallet, useAsync } from '../components/ui';
 import { refreshCounts } from '../components/Shell';
 import { RequestActions, RequestState } from './DigitalAssetDetail';
 import { useAuth } from '../context/AuthContext';

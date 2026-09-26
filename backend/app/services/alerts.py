@@ -108,6 +108,11 @@ def _not_subject(actor: User, alert: SecurityAlert):
 async def forward(db: AsyncSession, alert: SecurityAlert, actor: User, note: Optional[str], client_ip: Optional[str]):
     _not_subject(actor, alert)
     if alert.state == AUDITOR_REVIEW and actor.role == "AUDITOR":
+        if not await _manager_exists_for(db, alert):
+            # Nobody independent can review at the manager stage: go straight to Admins
+            # rather than parking the alert in a queue no one reads.
+            return await _transition(db, alert, actor, "FORWARDED_TO_ADMIN", ADMIN_REVIEW,
+                                     f"[no independent manager covers this department] {note or ''}".strip(), client_ip)
         return await _transition(db, alert, actor, "FORWARDED_TO_MANAGER", MANAGER_REVIEW, note, client_ip)
     if alert.state == MANAGER_REVIEW:
         if actor.role == "MANAGER" and _manager_covers(actor, alert):

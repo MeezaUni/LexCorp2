@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Dialog, Field, Id, Notice, PageHeader, Panel, Register, Status, StepUpDialog, errorText, formatDate, shortHash, useAsync } from '../components/ui';
 import { refreshCounts } from '../components/Shell';
 import { useAuth } from '../context/AuthContext';
+import { recorded } from './DigitalAssetDetail';
 import * as api from '../services/api';
 
 /** One row per document lineage, showing its most recent version. */
@@ -68,7 +69,7 @@ export default function DigitalAssets() {
               { key: 'owner', label: 'Owner', render: (a) => a.owner_name || '—' },
               { key: 'ver', label: 'Version', render: (a) => `v${a.version_number || 1}` },
               { key: 'approval', label: 'Approval', render: (a) => <Status value={a.approval_status} /> },
-              { key: 'ledger', label: 'Ledger', render: (a) => <Status value={['MINTED', 'ANCHORED'].includes(a.lifecycle_status) ? 'VERIFIED' : 'PENDING'}>{['MINTED', 'ANCHORED'].includes(a.lifecycle_status) ? 'Recorded' : 'Not yet recorded'}</Status> },
+              { key: 'ledger', label: 'Ledger', render: (a) => <Status value={recorded(a) ? 'VERIFIED' : 'PENDING'}>{recorded(a) ? 'Recorded' : 'Not yet recorded'}</Status> },
               { key: 'hash', label: 'SHA-256', render: (a) => <Id title={a.file_hash}>{shortHash(a.file_hash)}</Id> },
               { key: 'updated', label: 'Last change', render: (a) => formatDate(a.updated_at, false) },
             ]} />

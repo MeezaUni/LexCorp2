@@ -272,3 +272,17 @@ async def test_governance_grants_judged_by_granting_admin(db_session, seed_test_
     for a in (await db_session.execute(select(SecurityAlert).where(SecurityAlert.state == "AUDITOR_REVIEW"))).scalars().all():
         a.state = "DISMISSED"
     await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_mint_actor_is_the_transaction_sender_not_the_holder(db_session, seed_test_users):
+    token_id, serial = random.randint(10**6, 10**7), f"DOC-ACT-{uuid.uuid4().hex[:6].upper()}"
+    await _registered_doc(db_session, token_id, serial)
+    raw, log = _mint_log(token_id, serial)
+    ix = _indexer()
+    minter = "0x049dd1327d3bf40ab2dd8d70086304770e841fca"
+    ix.w3.eth.get_transaction.return_value = {"from": minter}
+    await _write(ix, db_session, "DigitalAssetMinted", log)
+    audit = await _audit(db_session, raw)
+    assert audit.actor_did == f"did:ethr:13371:{minter}"
+    assert audit.target_did == f"did:ethr:13371:{OWNER}"

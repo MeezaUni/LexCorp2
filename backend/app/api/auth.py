@@ -368,8 +368,9 @@ async def session_state(request: Request, session: Optional[str] = Cookie(None),
     from app.api.dependencies import _authenticate
     try:
         user, payload = await _authenticate(request, session, None, db)
-    except HTTPException:
-        return {"authenticated": False}
+    except HTTPException as e:
+        # Tell the holder of the (rejected) cookie why their session ended.
+        return {"authenticated": False, "ended": str(e.detail)}
     return {"authenticated": True, "session_scope": payload.get("scope")}
 
 

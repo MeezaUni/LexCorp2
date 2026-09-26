@@ -702,5 +702,6 @@ async def test_session_probe_never_errors_and_reveals_nothing(client, db_session
     r = await client.get("/api/auth/session")
     assert r.json() == {"authenticated": True, "session_scope": "full"}
     client.cookies.set("session", "forged.token.value")
-    assert (await client.get("/api/auth/session")).json() == {"authenticated": False}
+    r = (await client.get("/api/auth/session")).json()
+    assert r["authenticated"] is False and "invalid" in r["ended"].lower()
     client.cookies.clear()

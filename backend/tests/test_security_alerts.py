@@ -131,13 +131,14 @@ async def test_scope_and_role_guards(client, db_session):
     cyber_sam = await new_user(db_session, department="Cyber")
     alert = await ai_flagged_view(client, db_session, cyber_sam, approver=ADMIN)  # Avionics manager is out of scope
     aid = alert.alert_id
-    await client.post(f"/api/alerts/{aid}/forward", headers=h(AUDITOR), json={})
+    fwd = await client.post(f"/api/alerts/{aid}/forward", headers=h(AUDITOR), json={})
+    # No manager covers Cyber here, so the forward goes straight to Admin review (never parked)
+    assert fwd.status_code == 200 and fwd.json()["state"] == "ADMIN_REVIEW"
     # Avionics manager cannot see a Cyber alert; USER cannot use the queue
     assert (await client.get(f"/api/alerts/{aid}", headers=h(MANAGER))).status_code == 404
     assert (await client.get("/api/alerts", headers=h(flows.USER, role="USER"))).status_code == 403
-    # No manager covers Cyber here, so the Admin may take it forward instead of it being stuck
-    fa = await client.post(f"/api/alerts/{aid}/forward", headers=h(ADMIN), json={"note": "no cyber manager"})
-    assert fa.status_code == 200 and fa.json()["state"] == "ADMIN_REVIEW"
+    # Admin review is terminal for forwarding
+    assert (await client.post(f"/api/alerts/{aid}/forward", headers=h(ADMIN), json={})).status_code == 403
 
 
 async def _raise_for(db, wallet):
@@ -158,11 +159,11 @@ async def test_alert_about_the_only_department_manager_is_not_stuck(client, db_s
     await db_session.commit()
     mgr = await new_user(db_session, department=dept, role="MANAGER")
     aid = await _raise_for(db_session, mgr)
-    await client.post(f"/api/alerts/{aid}/forward", headers=h(AUDITOR), json={})
-    own = await client.post(f"/api/alerts/{aid}/forward", headers=h(mgr, version=1, role="MANAGER"), json={})
-    assert own.status_code == 403 and "yourself" in own.json()["detail"]
-    fa = await client.post(f"/api/alerts/{aid}/forward", headers=h(ADMIN), json={"note": "subject is the only manager"})
+    fa = await client.post(f"/api/alerts/{aid}/forward", headers=h(AUDITOR), json={})
+    # the only manager of the department is the subject: straight to Admin review, not parked
     assert fa.status_code == 200 and fa.json()["state"] == "ADMIN_REVIEW"
+    own = await client.post(f"/api/alerts/{aid}/dismiss", headers=h(mgr, version=1, role="MANAGER"), json={"note": "mine"})
+    assert own.status_code == 403 and "yourself" in own.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -233,3 +234,25 @@ def test_ai_alert_modes_are_explicit_and_calibrated_mode_separates_ordinary_from
         assert r["risk_label"] == r["native_risk_label"]
     finally:
         object.__setattr__(settings, "AI_ALERT_MODE", original)
+
+
+@pytest.mark.asyncio
+async def test_auditor_forward_goes_to_admin_when_no_independent_manager(client, db_session):
+    """An alert for a department without an (independent) manager is not parked at the manager stage."""
+    import hashlib
+    w = "0x" + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    db_session.add(User(wallet_address=w, did=f"did:ethr:13371:{w}", role="USER", department="Radar", name="Radar Tech", is_active=True))
+    ev = AuditEvent(event_type="DOCUMENT_VIEWED", tx_hash="0x" + hashlib.sha256(w.encode()).hexdigest(), block_number=0,
+                    actor_did=f"did:ethr:13371:{w}", risk_label="HIGH", risk_score=0.9)
+    db_session.add(ev)
+    await db_session.commit()
+    from app.services.alerts import raise_alert
+    alert = await raise_alert(db_session, ev, source="RULE")
+    await db_session.commit()
+    radar_has_manager = any(True for _ in [])  # conftest seeds no Radar manager
+    r = await client.post(f"/api/alerts/{alert.alert_id}/forward", headers=h(AUDITOR), json={"note": "escalating"})
+    assert r.status_code == 200, r.text
+    await db_session.refresh(alert)
+    assert alert.state == "ADMIN_REVIEW"
+    alert.state = "DISMISSED"
+    await db_session.commit()

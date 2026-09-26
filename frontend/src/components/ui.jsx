@@ -15,7 +15,11 @@ export function formatDate(value, withTime = true) {
 }
 
 export const errorText = (err, fallback = 'The request failed.') =>
-  err?.response?.data?.detail
+  err?.name === 'NotAllowedError'
+    ? 'The passkey prompt was cancelled, timed out, or no passkey on this device belongs to that identity and purpose.'
+    : err?.name === 'InvalidStateError'
+      ? 'This device already holds a passkey for that identity and purpose.'
+      : err?.response?.data?.detail
     ? (typeof err.response.data.detail === 'string' ? err.response.data.detail : JSON.stringify(err.response.data.detail))
     : err?.message || fallback;
 

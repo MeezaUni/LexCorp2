@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { roleName } from '../components/Shell';
-import { Button, Empty, Facts, Id, Loading, Notice, PageHeader, Panel, Status, formatDate, shortWallet } from '../components/ui';
+import { Empty, Facts, Id, Loading, Notice, PageHeader, Panel, Status, formatDate, shortWallet } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
 

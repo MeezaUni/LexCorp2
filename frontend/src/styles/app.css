@@ -342,10 +342,7 @@ a.sr-only:focus { position: fixed; top: 8px; left: 8px; width: auto; height: aut
   .auth-aside ul, .auth-aside .foot { display: none; }
   .auth-main { padding: var(--s5) var(--s4); }
 }
-@media (max-width: 760px) {
-  .env-tag { display: none; }
-  .page-title { font-size: 1.5rem; }
-  .page-actions { margin-left: 0; width: 100%; }
+@media (max-width: 900px) {
   /* registers become stacked records */
   .register thead { display: none; }
   .register, .register tbody, .register tr, .register td { display: block; width: 100%; }
@@ -354,6 +351,11 @@ a.sr-only:focus { position: fixed; top: 8px; left: 8px; width: auto; height: aut
   .register td::before { content: attr(data-label); color: var(--steel); font-size: var(--fs-sm); }
   .register td.actions { text-align: left; display: flex; flex-wrap: wrap; gap: var(--s2); }
   .register td.actions::before { display: none; }
+}
+@media (max-width: 760px) {
+  .env-tag { display: none; }
+  .page-title { font-size: 1.5rem; }
+  .page-actions { margin-left: 0; width: 100%; }
   .facts { grid-template-columns: 1fr; }
   .facts dt { border-bottom: none; padding-bottom: 0; }
   .timeline li { grid-template-columns: 1fr; gap: 2px; }

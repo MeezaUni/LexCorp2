@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
 import { signAndConfirm } from '../services/chainActions';
 
-const recorded = (a) => ['MINTED', 'ANCHORED'].includes(a?.lifecycle_status);
+export const recorded = (a) => ['MINTED', 'ANCHORED'].includes(a?.lifecycle_status) || Boolean(a?.watermark_metadata?.chain_tx);
 
 export default function DigitalAssetDetail() {
   const { serial } = useParams();
@@ -91,6 +91,10 @@ export default function DigitalAssetDetail() {
       <div className="content">
         {message && <Notice tone="success" title="Done">{message}</Notice>}
         {error && <Notice tone="error">{error}</Notice>}
+        {(() => {
+          const newer = versions.filter((v) => (v.version_number || 1) > (asset.version_number || 1) && v.approval_status === 'APPROVED').pop();
+          return newer ? <Notice tone="info" title={`A newer approved version exists (v${newer.version_number})`}>This page shows v{asset.version_number || 1}. <Link to={`/digital/${encodeURIComponent(newer.serial_number)}`}>Open v{newer.version_number}</Link>.</Notice> : null;
+        })()}
         {manages && asset.approval_status === 'APPROVED' && !recorded(asset) && (
           <Notice tone="warning" title="Approved but not yet recorded on the ledger">
             The approval exists in LexCorp2 but no verified ledger transaction has been recorded for this version.
@@ -196,7 +200,7 @@ export function RequestState({ a }) {
 }
 
 /** Fetch an approved copy (Factor 3) or upload a revision after a modification copy. */
-export function RequestActions({ a, onMessage, onError }) {
+export function RequestActions({ a, onMessage }) {
   const [step, setStep] = useState(null);
   const [file, setFile] = useState(null);
   const isMod = a.details?.mode === 'MODIFICATION';

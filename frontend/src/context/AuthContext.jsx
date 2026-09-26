@@ -40,7 +40,12 @@ export function AuthProvider({ children }) {
     }
     localStorage.removeItem('lexcorp_token');
     getSession()
-      .then((st) => (st.authenticated ? getMe().then(setUser) : setUser(null)))
+      .then((st) => {
+        if (st.authenticated) return getMe().then(setUser);
+        setUser(null);
+        if (st.ended) setNotice(`Your previous session ended: ${st.ended}`);
+        return null;
+      })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
