@@ -425,8 +425,11 @@ class EventIndexer:
                     expected = {d.get("admin", "").lower(), d.get("registrar", "").lower()}
                 except Exception:
                     expected = set()
-                if (args.get("account") or "").lower() not in expected:
-                    return {"rule": "UNEXPECTED_GOVERNANCE_GRANT", "role": role, "account": args.get("account")}
+                # Legitimate when granted by the governance admin (including a registrar that was
+                # later rotated away) or when it names the currently recorded admin/registrar.
+                admin = (d.get("admin") or "").lower() if expected else ""
+                if (args.get("account") or "").lower() not in expected and (args.get("sender") or "").lower() != admin:
+                    return {"rule": "UNEXPECTED_GOVERNANCE_GRANT", "role": role, "account": args.get("account"), "sender": args.get("sender")}
             return None
         user = await self._user_by_wallet(session, args.get("account"))
         if user is None or role not in desired_roles(user.role, bool(user.is_active)):

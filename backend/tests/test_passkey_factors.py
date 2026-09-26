@@ -93,7 +93,7 @@ async def test_passkey_factor2_and_factor3_workflow(client, db_session):
         headers={"Authorization": f"Bearer {user_token}", "X-Step-Up-Token": ver.json()["step_up_token"]},
         json={"name": "Passkey doc", "serial_number": serial, "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
               "offchain_uri": "secure-vault://documents/pk.txt", "totp_code": "",
-              "recipient_address": "0x0000000000000000000000000000000000000001"},
+              "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72"},
     )
     assert prop.status_code == 200, prop.text
     action_id = prop.json()["action_id"]

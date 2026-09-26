@@ -39,6 +39,7 @@ class UserResponse(BaseModel):
     pin_expires_at: Optional[datetime] = None
     reset_requested: Optional[bool] = None
     chain_roles: Optional[dict] = None
+    managed_departments: Optional[List[str]] = None
 
     class Config:
         from_attributes = True
@@ -60,11 +61,15 @@ class UpdateRoleRequest(BaseModel):
 
 @router.get("", response_model=List[UserResponse])
 async def list_users(
+    include_revoked: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_onboarded_user)
 ):
-    """Users visible to the caller: ADMIN/AUDITOR all, MANAGER their departments, USER self."""
-    query = select(User).where(User.is_active == True)
+    """Users visible to the caller: ADMIN/AUDITOR all, MANAGER their departments, USER self.
+    Revoked identities are listed only for ADMIN/AUDITOR when include_revoked=true."""
+    query = select(User)
+    if not (include_revoked and current_user.role in ("ADMIN", "AUDITOR")):
+        query = query.where(User.is_active == True)
     clause = access.user_scope_clause(current_user)
     if clause is not None:
         query = query.where(clause)
@@ -83,6 +88,7 @@ async def list_users(
             is_active=u.is_active,
             onboarding_pending=u.onboarding_pending,
             reset_requested=u.reset_requested,
+            managed_departments=u.managed_departments or [],
         )
         for u in users
     ]

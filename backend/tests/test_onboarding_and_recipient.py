@@ -49,7 +49,7 @@ async def test_onboarding_pending_blocks_access(client, db_session):
             "serial_number": f"BEL-DOC-{uuid.uuid4().hex[:6].upper()}",
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "offchain_uri": "secure-vault://documents/pending.txt",
-        "recipient_address": "0x123abc",
+        "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72",
         }
     )
     assert res.status_code == 403
@@ -122,7 +122,7 @@ async def test_document_proposal_with_recipient(client, db_session):
                 "serial_number": serial,
                 "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
                 "offchain_uri": "secure-vault://documents/spec.pdf",
-        "recipient_address": "0x123abc",
+        "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72",
                 "department": "Avionics",
                 "recipient_did": recipient_did,
                 "recipient_address": recipient_wallet
@@ -183,7 +183,7 @@ async def test_mfa_factor2_not_configured_error(client, db_session):
             "serial_number": f"BEL-DOC-{uuid.uuid4().hex[:6].upper()}",
             "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "offchain_uri": "secure-vault://documents/f2.pdf",
-        "recipient_address": "0x123abc",
+        "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72",
         }
     )
     assert res.status_code == 403

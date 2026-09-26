@@ -990,6 +990,21 @@ async def delete_asset(
     return {"message": "Prepare revocation calldata", "calldata": calldata, "token_id": token_id}
 
 
+async def _resolve_recipient(db: AsyncSession, recipient_address: Optional[str], recipient_did: Optional[str]) -> Optional[User]:
+    """The identity an asset is created for must be a registered, active LexCorp2 identity,
+    so the registry owner, the on-chain token holder and the on-chain owner DID agree."""
+    target = None
+    if recipient_did:
+        target = (await db.execute(select(User).where(User.did == recipient_did.strip()))).scalar_one_or_none()
+    if target is None and recipient_address:
+        target = (await db.execute(select(User).where(func.lower(User.wallet_address) == recipient_address.strip().lower()))).scalar_one_or_none()
+    if (recipient_did or recipient_address) and (target is None or not target.is_active or target.revoked_at is not None):
+        raise HTTPException(status_code=400, detail="The recipient must be a registered, active LexCorp2 identity.")
+    if target is not None and recipient_address and target.wallet_address.lower() != recipient_address.strip().lower():
+        raise HTTPException(status_code=400, detail="Recipient DID and wallet address belong to different identities.")
+    return target
+
+
 @router.post("/document/propose", response_model=DocumentActionRead)
 async def propose_document_creation(
     request: DocumentProposalRequest,
@@ -1009,6 +1024,7 @@ async def propose_document_creation(
 
 
     await mfa.require_factor(db, current_user, "document.submit", totp_code=request.totp_code, step_up_token=step_up_token)
+    await _resolve_recipient(db, request.recipient_address, request.recipient_did)
 
     # Creation integrity: the SHA-256 recorded (and later minted) must be the hash of the
     # bytes actually in the vault, computed here - never taken on trust from the client.
@@ -1179,6 +1195,7 @@ async def propose_physical_asset_creation(
 
 
     await mfa.require_factor(db, current_user, "document.submit", totp_code=request.totp_code, step_up_token=step_up_token)
+    await _resolve_recipient(db, request.recipient_address, request.recipient_did)
 
     # Serial + (MAC OR Unique Address), normalised, globally unique across the registry.
     serial = phys.normalize_serial(request.serial_number)
@@ -1189,8 +1206,9 @@ async def propose_physical_asset_creation(
         value = {"serial": serial, "mac": mac, "unique_address": unique_address}[field]
         details = {"duplicate_field": field, "value_fingerprint": phys.fingerprint(value or ""), "department": dept}
         # Serials are printed on the public card; MAC / unique address values are never logged.
+        # Generic category row for audit filters; the specific event below raises the (single) alert.
         await record_audit(db, "DUPLICATE_PHYSICAL_ASSET_ATTEMPT", actor_did=current_user.did, asset_serial=serial,
-                           client_ip=client_ip, risk_label="HIGH", risk_score=0.85, details=details)
+                           client_ip=client_ip, details={**details, "specific_event": event})
         await record_audit(db, event, actor_did=current_user.did, asset_serial=serial,
                            client_ip=client_ip, risk_label="HIGH", risk_score=0.85, details=details)
         await db.commit()
@@ -1393,26 +1411,13 @@ async def approve_document(
         token_expires_at = None
 
         if action.action_type == "CREATION":
-            owner_address = action.actor_did.split(":")[-1]
-            owner_did = action.actor_did
-
-            if action.details:
-                req_address = action.details.get("recipient_address")
-                req_did = action.details.get("recipient_did")
-                if req_address:
-                    owner_address = req_address
-                if req_did:
-                    owner_did = req_did
-                    # Try to map DID to User to update the asset's DB owner
-                    target_res = await db.execute(select(User).filter(User.did == owner_did))
-                    target_user = target_res.scalar_one_or_none()
-                    if target_user:
-                        asset.owner_id = target_user.id
-                    elif req_address:
-                        target_res = await db.execute(select(User).filter(User.wallet_address == req_address.lower()))
-                        target_user = target_res.scalar_one_or_none()
-                        if target_user:
-                            asset.owner_id = target_user.id
+            details = action.details or {}
+            recipient = await _resolve_recipient(db, details.get("recipient_address"), details.get("recipient_did"))
+            if recipient is None:
+                recipient = (await db.execute(select(User).where(User.id == action.actor_id))).scalar_one()
+            asset.owner_id = recipient.id
+            owner_address = recipient.wallet_address
+            owner_did = recipient.did
 
             if asset.is_physical:
                 await record_audit(db, "PHYSICAL_ASSET_APPROVED", actor_did=current_user.did, target_did=action.actor_did,

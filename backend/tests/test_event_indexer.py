@@ -252,3 +252,23 @@ async def test_every_event_in_one_transaction_is_recorded(db_session, seed_test_
     rows = (await db_session.execute(select(AuditEvent).where(AuditEvent.tx_hash == raw))).scalars().all()
     assert sorted(r.log_index for r in rows) == [0, 1]
     assert all(r.risk_label == "LOW" for r in rows)  # expected grant: no AI false positive
+
+
+@pytest.mark.asyncio
+async def test_governance_grants_judged_by_granting_admin(db_session, seed_test_users):
+    """A registrar granted by the governance admin (even one later rotated away) is legitimate;
+    a governance role granted by anyone else is flagged."""
+    ix = _indexer()
+    for name in ("MINTER_ROLE", "ANCHOR_ROLE", "MANAGER_ROLE", "AUDITOR_ROLE", "REGISTRAR_ROLE", "DEFAULT_ADMIN_ROLE"):
+        getattr(ix.contract.functions, name).return_value.call.return_value = name.encode().ljust(32, b"\0")
+    admin = "0x" + "22" * 20  # tests/.test_deployment.json admin
+    for sender, expect in ((admin, "LOW"), ("0x" + "66" * 20, "HIGH")):
+        raw = uuid.uuid4().hex + uuid.uuid4().hex
+        log = {"transactionHash": bytes.fromhex(raw), "blockNumber": 9, "logIndex": 0,
+               "args": {"role": b"REGISTRAR_ROLE".ljust(32, b"\0"), "account": "0x" + "77" * 20, "sender": sender}}
+        await _write(ix, db_session, "RoleGranted", log)
+        assert (await _audit(db_session, raw)).risk_label == expect
+    from app.models.domain import SecurityAlert
+    for a in (await db_session.execute(select(SecurityAlert).where(SecurityAlert.state == "AUDITOR_REVIEW"))).scalars().all():
+        a.state = "DISMISSED"
+    await db_session.commit()

@@ -20,7 +20,7 @@ from datetime import timedelta
 from typing import List, Optional
 
 import webauthn
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi import Cookie, APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -357,6 +357,20 @@ async def logout(response: Response, request: Request, user: User = Depends(get_
     await db.commit()
     response.delete_cookie("session", path="/", httponly=True, samesite="strict", secure=settings.is_production)
     return {"message": "Signed out. Session revoked."}
+
+
+@router.get("/session")
+async def session_state(request: Request, session: Optional[str] = Cookie(None), db: AsyncSession = Depends(get_db)):
+    """Whether the caller holds a valid session (200 either way, so a signed-out page
+    load does not register as a failed request). Details come from /auth/me."""
+    if not session:
+        return {"authenticated": False}
+    from app.api.dependencies import _authenticate
+    try:
+        user, payload = await _authenticate(request, session, None, db)
+    except HTTPException:
+        return {"authenticated": False}
+    return {"authenticated": True, "session_scope": payload.get("scope")}
 
 
 @router.get("/me")

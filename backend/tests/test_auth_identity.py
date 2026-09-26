@@ -31,7 +31,7 @@ DOC = {
     "name": "Auth Matrix Doc",
     "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "offchain_uri": "secure-vault://documents/auth.txt",
-    "recipient_address": "0x0000000000000000000000000000000000000001",
+    "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72",
 }
 
 
@@ -690,3 +690,17 @@ async def test_factor_totp_cannot_be_added_to_passkey_protected_purpose_without_
     proof = await step_up_via_passkey(client, ident["token"], pk3, "factor3", "factor3.manage")
     ok = await client.post("/api/auth/2fa/factor3/setup", headers=bearer(ident["token"], **{"X-Step-Up-Token": proof.json()["step_up_token"]}))
     assert ok.status_code == 200 and ok.json()["secret"]
+
+
+@pytest.mark.asyncio
+async def test_session_probe_never_errors_and_reveals_nothing(client, db_session):
+    client.cookies.clear()
+    r = await client.get("/api/auth/session")
+    assert r.status_code == 200 and r.json() == {"authenticated": False}
+    ident = await onboard(client, db_session)
+    client.cookies.set("session", ident["token"])
+    r = await client.get("/api/auth/session")
+    assert r.json() == {"authenticated": True, "session_scope": "full"}
+    client.cookies.set("session", "forged.token.value")
+    assert (await client.get("/api/auth/session")).json() == {"authenticated": False}
+    client.cookies.clear()

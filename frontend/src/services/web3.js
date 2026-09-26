@@ -17,9 +17,8 @@ const ABI = deployment.abi;
 const NETWORK = new ethers.Network('lexcorp2-besu', CHAIN_ID);
 
 export function getRpcProvider() {
+  // Same-origin fetch (browser default credentials) sends the HttpOnly session cookie.
   const req = new ethers.FetchRequest(`${window.location.origin}/api/chain/rpc`);
-  const token = localStorage.getItem('lexcorp_token');
-  if (token) req.setHeader('Authorization', `Bearer ${token}`);
   return new ethers.JsonRpcProvider(req, NETWORK, { staticNetwork: NETWORK, batchMaxCount: 1 });
 }
 

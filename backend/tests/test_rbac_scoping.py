@@ -253,3 +253,15 @@ async def test_audit_stats_are_scoped_like_events(client, db_session):
     for a in (await db_session.execute(select(SecurityAlert).where(SecurityAlert.state == "AUDITOR_REVIEW"))).scalars().all():
         a.state = "DISMISSED"
     await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_revoked_identities_listed_only_for_admin_auditor_on_request(client, db_session):
+    w = "0x" + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    db_session.add(User(wallet_address=w, did=f"did:ethr:13371:{w}", role="USER", department="Avionics", is_active=False))
+    await db_session.commit()
+    wallets = lambda r: {u["wallet_address"] for u in r.json()}
+    assert w not in wallets(await client.get("/api/users", headers=h(ADMIN)))
+    assert w in wallets(await client.get("/api/users?include_revoked=true", headers=h(ADMIN)))
+    assert w not in wallets(await client.get("/api/users?include_revoked=true", headers=h(MANAGER)))
+    assert w not in wallets(await client.get("/api/users?include_revoked=true", headers=h(USER)))

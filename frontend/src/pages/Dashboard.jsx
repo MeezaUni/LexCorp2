@@ -1,384 +1,179 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { roleName } from '../components/Shell';
+import { Button, Empty, Facts, Id, Loading, Notice, PageHeader, Panel, Status, formatDate, shortWallet } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
-import ManagerDashboard from './ManagerDashboard';
-import AuditorDashboard from './AuditorDashboard';
-import UserDashboard from './UserDashboard';
-import AssetRegistry from './AssetRegistry';
-import AdminDashboard from './AdminDashboard';
-import Identity from './Identity';
-import SetupWizard from '../components/SetupWizard';
+import * as api from '../services/api';
 
-function ExecutiveDashboard() {
-  const [metrics, setMetrics] = useState({ totalAssets: 0, riskStatus: 'LOW', activeDIDs: 0 });
-  const [loading, setLoading] = useState(true);
-
-  const fetchMetrics = async () => {
-    try {
-      const [assetsRes, auditRes, usersRes] = await Promise.all([
-        fetch('/api/assets/registry').then(r => r.json()),
-        fetch('/api/audit/stats').then(r => r.json()),
-        fetch('/api/users').then(r => r.json()),
-      ]);
-
-      setMetrics({
-        totalAssets: Array.isArray(assetsRes) ? assetsRes.length : 0,
-        riskStatus: auditRes?.latest_risk || 'LOW',
-        activeDIDs: Array.isArray(usersRes) ? usersRes.length : 0,
-      });
-    } catch (err) {
-      console.error('Failed to load metrics:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchMetrics();
-    const interval = setInterval(fetchMetrics, 4000);
-    return () => clearInterval(interval);
-  }, []);
-
-  return (
-    <div style={{ width: '100%' }}>
-      <div style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '24px', fontWeight: '700', color: '#0f172a', margin: '0 0 6px 0' }}>
-          System Intelligence & Executive Overview
-        </h2>
-        <p style={{ fontSize: '14px', color: '#64748b', margin: 0 }}>
-          Real-time decentralized identity verification, on-chain asset registry statistics, and air-gapped AI anomaly detection.
-        </p>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
-        <div style={{ background: '#fff', padding: '1.75rem', borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-          <div style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
-            Total Minted Assets
-          </div>
-          <div style={{ fontSize: '32px', fontWeight: '700', color: '#0f172a' }}>
-            {loading ? '...' : metrics.totalAssets}
-          </div>
-          <div style={{ fontSize: '12px', color: '#10b981', marginTop: '6px', fontWeight: '500' }}>
-            Verified on Besu Consortium (Chain 13371)
-          </div>
-        </div>
-
-        <div style={{ background: '#fff', padding: '1.75rem', borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-          <div style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
-            Air-Gapped AI Risk Status
-          </div>
-          <div style={{
-            fontSize: '32px',
-            fontWeight: '700',
-            color: metrics.riskStatus === 'LOW' ? '#16a34a' : metrics.riskStatus === 'MEDIUM' ? '#d97706' : '#dc2626'
-          }}>
-            {loading ? '...' : metrics.riskStatus}
-          </div>
-          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '6px' }}>
-            Local IsolationForest Anomaly Engine
-          </div>
-        </div>
-
-        <div style={{ background: '#fff', padding: '1.75rem', borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-          <div style={{ fontSize: '12px', fontWeight: '600', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
-            Active Cryptographic DIDs
-          </div>
-          <div style={{ fontSize: '32px', fontWeight: '700', color: '#0f172a' }}>
-            {loading ? '...' : metrics.activeDIDs}
-          </div>
-          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '6px' }}>
-            W3C Verifiable Credential Holders
-          </div>
-        </div>
-      </div>
-
-      <div style={{ background: '#fff', borderRadius: '12px', border: '1px solid #e2e8f0', padding: '1.75rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-        <h3 style={{ fontSize: '16px', fontWeight: '600', color: '#0f172a', margin: '0 0 12px 0' }}>
-          Network & Contract Architecture
-        </h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem', fontSize: '13px' }}>
-          <div style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: '8px', border: '1px solid #f1f5f9' }}>
-            <span style={{ color: '#64748b', display: 'block', fontSize: '11px', fontWeight: '600', textTransform: 'uppercase' }}>Consensus Network</span>
-            <strong style={{ color: '#0f172a' }}>Hyperledger Besu QBFT (Chain ID: 13371)</strong>
-          </div>
-          <div style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: '8px', border: '1px solid #f1f5f9' }}>
-            <span style={{ color: '#64748b', display: 'block', fontSize: '11px', fontWeight: '600', textTransform: 'uppercase' }}>Security Standard</span>
-            <strong style={{ color: '#0f172a' }}>ERC-721 Digital Twin + W3C DID-VC</strong>
-          </div>
-          <div style={{ background: '#f8fafc', padding: '12px 16px', borderRadius: '8px', border: '1px solid #f1f5f9' }}>
-            <span style={{ color: '#64748b', display: 'block', fontSize: '11px', fontWeight: '600', textTransform: 'uppercase' }}>AI Processing Mode</span>
-            <strong style={{ color: '#0f172a' }}>100% Embedded Air-Gapped (Zero Cloud Calls)</strong>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+const STAGE = { AUDITOR: 'AUDITOR_REVIEW', MANAGER: 'MANAGER_REVIEW', ADMIN: 'ADMIN_REVIEW' };
+const settle = async (p) => { try { return await p; } catch { return null; } };
 
 export default function Dashboard() {
-  const { wallet, user, isManager, connect, disconnect, loading, setupRequired, establishSession } = useAuth();
-  const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('auto');
-
-
+  const { user, canApprove, isSecurity, isAdmin } = useAuth();
+  const [d, setD] = useState(null);
 
   useEffect(() => {
-    if (!wallet) {
-      setActiveTab('auto');
-    }
-  }, [wallet]);
+    let alive = true;
+    (async () => {
+      const role = user.role;
+      const [registry, mine, docs, phys, dls, alerts, stats, events, chain, users, resets, health] = await Promise.all([
+        settle(api.getRegistry()),
+        settle(api.myDownloads()),
+        canApprove ? settle(api.pendingDocuments()) : null,
+        canApprove ? settle(api.pendingPhysical()) : null,
+        settle(api.pendingDownloads()),
+        isSecurity ? settle(api.listAlerts()) : null,
+        role !== 'USER' ? settle(api.auditStats()) : null,
+        role !== 'USER' ? settle(api.auditEvents({ limit: 8 })) : null,
+        ['ADMIN', 'AUDITOR'].includes(role) ? settle(api.chainStatus()) : null,
+        isAdmin ? settle(api.listUsers({ include_revoked: true })) : null,
+        isAdmin ? settle(api.listResetRequests()) : null,
+        settle(fetch('/health').then((r) => r.json())),
+      ]);
+      if (alive) setD({ registry, mine, docs, phys, dls, alerts, stats, events, chain, users, resets, health });
+    })();
+    return () => { alive = false; };
+  }, [user, canApprove, isSecurity, isAdmin]);
 
-  const handleConnect = async () => {
-    setError('');
-    try {
-      await connect();
-    } catch (err) {
-      setError(err.message || 'Failed to connect wallet');
-    }
-  };
+  if (!d) return (<><PageHeader title="Dashboard" /><div className="content"><Loading label="Collecting current status" /></div></>);
 
-  const userDbRole = user?.role?.toLowerCase() || 'user';
+  const digital = (d.registry || []).filter((a) => !a.is_physical);
+  const physical = (d.registry || []).filter((a) => a.is_physical);
+  const approvals = canApprove ? new Set([...(d.docs || []).filter((a) => a.action_type !== 'DOWNLOAD'), ...(d.phys || []),
+    ...(d.dls || []).filter((a) => !a.details?.requires_owner_approval || a.details?.owner_approved_by)].map((a) => a.action_id)).size : 0;
+  const ownerConsents = (d.dls || []).filter((a) => a.details?.requires_owner_approval && !a.details?.owner_approved_by && a.actor_did !== user.did).length;
+  const myOpen = (d.mine || []).filter((a) => ['PENDING', 'APPROVED'].includes(a.status));
+  const readyToFetch = (d.mine || []).filter((a) => a.status === 'APPROVED').length;
+  const myAlerts = (d.alerts || []).filter((a) => a.state === STAGE[user.role]).length;
+  const pendingResets = (d.resets || []).length;
 
-  const getValidatedRole = () => {
-    if (activeTab === 'auto') {
-      return userDbRole === 'user' ? 'user' : 'executive';
-    }
+  const rows = [
+    { measure: 'Digital assets in your scope', note: 'Documents you own, hold access to, or manage', n: d.registry ? digital.length : null, to: '/digital' },
+    { measure: 'Physical assets in your scope', note: user.role === 'USER' ? 'Assets assigned to you' : 'Registered equipment for your departments', n: d.registry ? physical.length : null, to: '/physical' },
+    canApprove && { measure: 'Awaiting your approval', note: 'Creations, modifications, access and download requests', n: approvals, to: '/requests', attention: approvals > 0 },
+    ownerConsents > 0 && { measure: 'Download requests for your documents', note: 'Your consent as owner is needed first', n: ownerConsents, to: '/requests', attention: true },
+    { measure: 'Your open requests', note: readyToFetch ? `${readyToFetch} approved and ready to download` : 'Download and modification requests in progress', n: myOpen.length, to: '/requests' },
+    isSecurity && { measure: 'Security alerts in your review stage', note: `${roleName(user.role)} stage of the escalation chain`, n: myAlerts, to: '/alerts', attention: myAlerts > 0 },
+    d.stats && { measure: 'High-risk events, last 7 days', note: 'Within the audit records you are permitted to read', n: d.stats.high_risk_7d, to: '/audit', attention: d.stats.high_risk_7d > 0 },
+    d.stats && { measure: 'Denied or failed actions, last 7 days', note: 'Refusals, failed sign-ins, duplicate registrations', n: d.stats.denied_7d, to: '/audit' },
+    isAdmin && { measure: 'Registered identities', note: `${(d.users || []).filter((u) => !u.is_active).length} revoked or disabled`, n: d.users?.length ?? null, to: '/admin' },
+    isAdmin && { measure: 'Login reset requests', note: 'Require out-of-band verification and your Factor 3', n: pendingResets, to: '/admin', attention: pendingResets > 0 },
+  ].filter(Boolean);
 
-    const canAccess = {
-      executive: ['manager', 'auditor', 'admin'],
-      manager: ['manager', 'admin'],
-      auditor: ['auditor', 'admin'],
-      registry: ['manager', 'auditor', 'admin'],
-      admin: ['manager', 'admin'],
-      user: ['user', 'manager', 'auditor', 'admin'],
-      identity: ['user', 'manager', 'auditor', 'admin']
-    };
-
-    if (canAccess[activeTab]?.includes(userDbRole)) return activeTab;
-    return userDbRole === 'user' ? 'user' : 'executive';
-  };
-
-  const currentRole = getValidatedRole();
-  const walletAddress = wallet?.address || (typeof wallet === 'string' ? wallet : '');
-
-  const styles = {
-    container: {
-      minHeight: '100vh',
-      width: '100%',
-      background: '#f8fafc',
-      margin: 0,
-      padding: 0,
-      fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      display: 'flex',
-      flexDirection: 'column',
-      boxSizing: 'border-box',
-    },
-    header: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '1rem 2.5rem',
-      background: '#0f172a',
-      color: '#fff',
-      borderBottom: '1px solid #334155',
-      width: '100%',
-      boxSizing: 'border-box',
-    },
-    logo: {
-      fontSize: '22px',
-      fontWeight: '800',
-      letterSpacing: '-0.03em',
-      color: '#ffffff',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '8px'
-    },
-    logoSub: {
-      fontSize: '11px',
-      color: '#94a3b8',
-      textTransform: 'uppercase',
-      letterSpacing: '0.08em',
-      fontWeight: '600',
-      marginTop: '2px',
-    },
-    walletInfo: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: '1.25rem',
-    },
-    walletBadge: {
-      background: '#1e293b',
-      border: '1px solid #334155',
-      padding: '6px 14px',
-      borderRadius: '8px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '10px',
-    },
-    walletAddress: {
-      fontFamily: 'monospace',
-      fontSize: '13px',
-      fontWeight: '600',
-      color: '#e2e8f0',
-    },
-    roleBadge: {
-      fontSize: '11px',
-      fontWeight: '700',
-      textTransform: 'uppercase',
-      letterSpacing: '0.06em',
-      padding: '4px 8px',
-      borderRadius: '6px',
-      background: userDbRole === 'admin' ? '#ef4444' : userDbRole === 'manager' ? '#3b82f6' : userDbRole === 'auditor' ? '#f59e0b' : '#64748b',
-      color: '#ffffff',
-    },
-    disconnectBtn: {
-      background: 'transparent',
-      color: '#f87171',
-      border: '1px solid #7f1d1d',
-      padding: '7px 16px',
-      borderRadius: '6px',
-      fontSize: '12px',
-      fontWeight: '600',
-      cursor: 'pointer',
-      transition: 'all 0.2s',
-    },
-    tabs: {
-      display: 'flex',
-      gap: '8px',
-      padding: '0.75rem 2.5rem',
-      background: '#ffffff',
-      borderBottom: '1px solid #e2e8f0',
-      width: '100%',
-      boxSizing: 'border-box',
-    },
-    tab: (active) => ({
-      padding: '9px 18px',
-      background: active ? '#0f172a' : 'transparent',
-      color: active ? '#ffffff' : '#64748b',
-      border: 'none',
-      borderRadius: '6px',
-      fontSize: '13px',
-      fontWeight: '600',
-      cursor: 'pointer',
-      transition: 'all 0.15s ease-in-out',
-    }),
-    content: {
-      flex: 1,
-      padding: '2rem 2.5rem',
-      width: '100%',
-      boxSizing: 'border-box',
-    },
-  };
-
-  // Mandatory first-login setup: no dashboard (and, server-side, no API) until
-  // Login TOTP 1 and Login Passkey 1 are both configured.
-  if (user && setupRequired) {
-    return <SetupWizard onComplete={establishSession} onSignOut={disconnect} />;
-  }
-
-  if (!wallet) {
-    return (
-      <div style={{ ...styles.container, justifyContent: 'center', alignItems: 'center', background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)' }}>
-        <div style={{ background: '#ffffff', padding: '3.5rem', borderRadius: '16px', textAlign: 'center', maxWidth: '440px', width: '90%', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)' }}>
-          <div style={{ fontSize: '28px', fontWeight: '800', color: '#0f172a', letterSpacing: '-0.03em', marginBottom: '6px' }}>LexCorp</div>
-          <div style={{ fontSize: '13px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: '600', marginBottom: '1.5rem' }}>
-            Blockchain Identity & Asset Traceability
-          </div>
-          <p style={{ fontSize: '14px', color: '#475569', marginBottom: '2rem', lineHeight: '1.5' }}>
-            Authenticate using your localized, self-controlled cryptographic EVM keyring to access the asset twins and compliance audit logs.
-          </p>
-          {error && <div style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', padding: '10px', borderRadius: '6px', fontSize: '13px', marginBottom: '1.5rem' }}>{error}</div>}
-          <button
-            onClick={handleConnect}
-            disabled={loading}
-            style={{
-              background: '#0f172a',
-              color: '#ffffff',
-              border: 'none',
-              padding: '14px 28px',
-              borderRadius: '8px',
-              fontSize: '14px',
-              fontWeight: '600',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              width: '100%',
-              boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)'
-            }}
-          >
-            {loading ? 'Authenticating...' : 'Unlock Cryptographic Keyring'}
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const ribbon = [
+    { content: <>Ledger <strong>{d.health?.chain_verified ? 'verified' : 'not verified'}</strong>{d.chain?.head_block != null && <>, block {d.chain.head_block}</>}</>, warn: d.health && !d.health.chain_verified },
+    { content: <>Indexer <strong>{d.health?.indexer || 'unknown'}</strong></> },
+    canApprove && { content: <><strong>{approvals}</strong> awaiting your approval</> },
+    isSecurity && { content: <><strong>{myAlerts}</strong> alerts in your stage</>, warn: myAlerts > 0 },
+  ];
 
   return (
-    <div style={styles.container}>
-      <header style={styles.header}>
-        <div>
-          <div style={styles.logo}>LexCorp</div>
-          <div style={styles.logoSub}>PS-26125</div>
-        </div>
-        <div style={styles.walletInfo}>
-          <div style={styles.walletBadge}>
-            <span style={styles.walletAddress}>
-              {walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : 'Connected'}
-            </span>
-            <span style={styles.roleBadge}>{userDbRole}</span>
+    <>
+      <PageHeader title={`${greeting()}, ${user.name || 'colleague'}`}
+        lede={`${roleName(user.role)}${user.department ? `, ${user.department}` : ''}. Figures below are read live from LexCorp2 and cover only what your role may see.`}
+        ribbon={ribbon} />
+      <div className="content">
+        <div className="grid-main-side">
+          <Panel title="Situation" flush>
+            <table className="board">
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.measure}>
+                    <td className="measure">{r.measure}<small>{r.note}</small></td>
+                    <td className={`figure${r.attention ? ' attention' : ''}`}>{r.n ?? '—'}</td>
+                    <td className="go"><Link className="btn btn-quiet btn-sm" to={r.to}>Open</Link></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+          <div className="stack">
+            <Panel title="Your identity">
+              <Facts items={[
+                ['Name', user.name || 'Unnamed'],
+                ['Role', roleName(user.role)],
+                ['Department', user.department || 'None'],
+                ['Wallet', <Id key="w">{shortWallet(user.wallet_address)}</Id>],
+                ['Factor 2 (view and submit)', factorState(user.is_totp_factor2_enabled, user.has_factor2_passkey)],
+                ['Factor 3 (approve and modify)', factorState(user.is_totp_factor3_enabled, user.has_factor3_passkey)],
+              ]} />
+              {(!(user.is_totp_factor2_enabled || user.has_factor2_passkey) || (user.role !== 'USER' && !(user.is_totp_factor3_enabled || user.has_factor3_passkey))) && (
+                <div style={{ marginTop: 12 }}><Notice tone="warning">Some actions need a factor you have not set up yet. <Link to="/identity">Set it up in My identity</Link>.</Notice></div>
+              )}
+            </Panel>
+            {d.chain && (
+              <Panel title="Ledger integrity">
+                <Facts items={[
+                  ['Status', <Status key="s" value={d.chain.ok ? 'VERIFIED' : 'REJECTED'}>{d.chain.ok ? 'All checks passed' : 'Check failed'}</Status>],
+                  ['Chain', d.chain.chain_id],
+                  ['Contract', <Id key="c">{shortWallet(d.chain.contract_address)}</Id>],
+                  ['Head block', d.chain.head_block],
+                  ...Object.entries(d.chain.checks || {}).map(([k, v]) => [k.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()), v === true ? 'Pass' : String(v)]),
+                ]} />
+              </Panel>
+            )}
           </div>
-          <button onClick={disconnect} style={styles.disconnectBtn}>
-            Disconnect
-          </button>
         </div>
-      </header>
-
-      <nav style={styles.tabs}>
-        <button onClick={() => setActiveTab('auto')} style={styles.tab(activeTab === 'auto')}>
-          Dashboard
-        </button>
-
-        {(userDbRole === 'manager' || userDbRole === 'admin' || isManager) && (
-          <button onClick={() => setActiveTab('manager')} style={styles.tab(activeTab === 'manager')}>
-            Operations
-          </button>
+        {d.events && (
+          <Panel title="Recent audit activity" aside={<Link className="btn btn-quiet btn-sm" to="/audit">Full audit trail</Link>} flush>
+            {d.events.length === 0 ? <Empty title="No audit events yet" /> : (
+              <ul className="timeline">
+                {d.events.map((e) => (
+                  <li key={e.id}>
+                    <time dateTime={e.created_at}>{formatDate(e.created_at)}</time>
+                    <div className="row" style={{ gap: 8 }}>
+                      <strong>{humanEvent(e.event_type)}</strong>
+                      {e.asset_serial && <Id>{e.asset_serial}</Id>}
+                      {e.risk_label && ['HIGH', 'CRITICAL', 'MEDIUM'].includes(e.risk_label) && <Status value={e.risk_label}>{`${e.risk_label.charAt(0)}${e.risk_label.slice(1).toLowerCase()} risk`}</Status>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
         )}
-
-        {(userDbRole === 'auditor' || userDbRole === 'admin') && (
-          <button onClick={() => setActiveTab('auditor')} style={styles.tab(activeTab === 'auditor')}>
-            Audit Trail
-          </button>
+        {!d.events && (
+          <Panel title="Your recent requests" aside={<Link className="btn btn-quiet btn-sm" to="/requests">All requests</Link>} flush>
+            {(d.mine || []).length === 0 ? <Empty title="No requests yet">Open a document in Digital assets to view it or request a copy.</Empty> : (
+              <ul className="timeline">
+                {d.mine.slice(0, 6).map((a) => (
+                  <li key={a.action_id}>
+                    <time dateTime={a.created_at}>{formatDate(a.created_at)}</time>
+                    <div className="row" style={{ gap: 8 }}><Id>{a.action_id}</Id><span>{a.details?.mode === 'MODIFICATION' ? 'Modification copy' : 'Download'} of <Id>{a.asset_serial}</Id></span><Status value={a.status} /></div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
         )}
-
-        {(userDbRole === 'manager' || userDbRole === 'auditor' || userDbRole === 'admin') && (
-          <button onClick={() => setActiveTab('registry')} style={styles.tab(activeTab === 'registry')}>
-            Asset Registry
-          </button>
-        )}
-
-        {(userDbRole === 'manager' || userDbRole === 'admin') && (
-          <button onClick={() => setActiveTab('admin')} style={styles.tab(activeTab === 'admin')}>
-            Users & Keypairs
-          </button>
-        )}
-
-        {userDbRole !== 'user' && (
-          <button onClick={() => setActiveTab('user')} style={styles.tab(activeTab === 'user')}>
-            My Assets
-          </button>
-        )}
-
-        <button onClick={() => setActiveTab('identity')} style={styles.tab(activeTab === 'identity')}>
-          My Identity
-        </button>
-      </nav>
-
-      <main style={styles.content}>
-        {currentRole === 'executive' && <ExecutiveDashboard />}
-        {currentRole === 'manager' && <ManagerDashboard />}
-        {currentRole === 'auditor' && <AuditorDashboard />}
-        {currentRole === 'registry' && <AssetRegistry />}
-        {currentRole === 'admin' && <AdminDashboard />}
-        {currentRole === 'user' && <UserDashboard />}
-        {currentRole === 'identity' && <Identity />}
-      </main>
-    </div>
+      </div>
+    </>
   );
 }
+
+function factorState(totp, passkey) {
+  if (totp && passkey) return 'Authenticator and passkey';
+  if (totp) return 'Authenticator';
+  if (passkey) return 'Passkey';
+  return <Status value="PENDING">Not set up</Status>;
+}
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+}
+
+const EVENT_NAMES = {
+  DocumentProposed: 'Document submitted', DOCUMENT_VIEWED: 'Document viewed', DOCUMENT_DOWNLOADED: 'Controlled copy downloaded',
+  AssetActionApproved: 'Request approved', AssetActionRejected: 'Request rejected', USER_PROVISIONED: 'Identity provisioned',
+  AuthenticationSucceeded: 'Signed in', AuthenticationFailed: 'Sign-in failed', WALLET_PROVISIONED: 'Wallet provisioned',
+  PHYSICAL_ASSET_CREATED: 'Physical asset registered', PHYSICAL_ASSET_MINTED: 'Physical asset recorded on ledger',
+  DOCUMENT_MINTED: 'Document recorded on ledger', DOCUMENT_REVISION_ANCHORED: 'Revision anchored on ledger',
+  REVISION_SUBMITTED: 'Revision submitted', ACCESS_GRANTED: 'Access granted', ACCESS_REVOKED: 'Access revoked',
+  IDENTITY_REVOKED: 'Identity revoked', ROLE_CHANGED: 'Role changed', CHAIN_ROLES_UPDATED: 'Ledger roles updated',
+  SESSION_TERMINATED_IP_CHANGE: 'Session ended: address changed', SESSION_EXPIRED_INACTIVITY: 'Session expired',
+  TOTP_ENROLLED: 'Authenticator enrolled', PASSKEY_REGISTERED: 'Passkey registered', LOGOUT: 'Signed out',
+  RoleGranted: 'Ledger role granted', RoleRevoked: 'Ledger role revoked', DigitalAssetMinted: 'Ledger: document minted',
+  AssetMinted: 'Ledger: physical asset minted', DigitalAssetUpdated: 'Ledger: revision anchored',
+};
+export const humanEvent = (t) => EVENT_NAMES[t] || (t || '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());

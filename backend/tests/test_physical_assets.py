@@ -28,7 +28,7 @@ def rand_mac(prefix="00:1A:2B"):
 async def propose(client, db, body, wallet=MANAGER_WALLET, role="MANAGER", version=8):
     return await client.post("/api/assets/physical/propose",
                              headers=await mfa_headers(db, get_token(wallet, role, version), wallet, "document.submit"),
-                             json={"name": "HW", "asset_type": "EQUIPMENT", "recipient_address": "0x123abc", **body})
+                             json={"name": "HW", "asset_type": "EQUIPMENT", "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72", **body})
 
 
 async def existing(db, **fields):
@@ -90,7 +90,7 @@ async def test_user_cannot_propose_physical_asset(client):
     user_token = get_token(USER_WALLET, "USER", 1)
     response = await client.post("/api/assets/physical/propose", headers={"Authorization": f"Bearer {user_token}"},
                                  json={"name": "x", "serial_number": f"BEL-HW-{uuid.uuid4().hex[:6].upper()}",
-                                       "recipient_address": "0x123abc", "has_mac_address": False, "device_unique_address": "UA-u"})
+                                       "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72", "has_mac_address": False, "device_unique_address": "UA-u"})
     assert response.status_code == 403
     assert "Only Managers and Administrators can propose physical assets" in response.json()["detail"]
 
@@ -100,7 +100,7 @@ async def test_auditor_cannot_propose_physical_asset(client):
     """AUDITOR role is forbidden from proposing physical assets."""
     auditor_token = get_token(AUDITOR_WALLET, "AUDITOR", 1)
     response = await client.post("/api/assets/physical/propose", headers={"Authorization": f"Bearer {auditor_token}"},
-                                 json={"name": "x", "serial_number": f"BEL-HW-{uuid.uuid4().hex[:6].upper()}", "recipient_address": "0x123abc"})
+                                 json={"name": "x", "serial_number": f"BEL-HW-{uuid.uuid4().hex[:6].upper()}", "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72"})
     assert response.status_code == 403
     assert "Auditors cannot propose assets" in response.json()["detail"]
 
@@ -111,7 +111,7 @@ async def test_manager_cross_department_physical_proposal_rejected(client):
     mgr_token = get_token(MANAGER_WALLET, "MANAGER", 8)
     response = await client.post("/api/assets/physical/propose", headers={"Authorization": f"Bearer {mgr_token}"},
                                  json={"name": "x", "serial_number": f"BEL-HW-CYBER-{uuid.uuid4().hex[:6].upper()}",
-                                       "recipient_address": "0x123abc", "department": "Cyber Warfare"})
+                                       "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72", "department": "Cyber Warfare"})
     assert response.status_code == 403
     assert "Managers can only propose physical assets for their assigned department" in response.json()["detail"]
 
@@ -127,9 +127,15 @@ async def test_duplicate_mac_address_attempt_audited(client, db_session):
     assert response.status_code == 400
     assert "MAC address is already registered" in response.json()["detail"]
     events = await duplicate_audits(db_session, serial_attempt)
+    # One alert per attempt: the specific event is HIGH; the generic category row is audit-only.
+    assert events["DUPLICATE_MAC_ATTEMPT"].risk_score == 0.85 and events["DUPLICATE_MAC_ATTEMPT"].risk_label == "HIGH"
+    assert events["DUPLICATE_PHYSICAL_ASSET_ATTEMPT"].risk_label is None
+    assert events["DUPLICATE_PHYSICAL_ASSET_ATTEMPT"].risk_factors["specific_event"] == "DUPLICATE_MAC_ATTEMPT"
+    from app.models.domain import SecurityAlert
+    alerts = (await db_session.execute(select(SecurityAlert).where(SecurityAlert.asset_serial == serial_attempt))).scalars().all()
+    assert len(alerts) == 1 and alerts[0].event_type == "DUPLICATE_MAC_ATTEMPT"
     for kind in ("DUPLICATE_PHYSICAL_ASSET_ATTEMPT", "DUPLICATE_MAC_ATTEMPT"):
         ev = events[kind]
-        assert ev.risk_score == 0.85 and ev.risk_label == "HIGH"
         assert ev.risk_factors["duplicate_field"] == "mac"
         assert ev.risk_factors["value_fingerprint"] == fingerprint(dup_mac.lower())
         assert dup_mac.lower() not in str(ev.risk_factors).lower() and variant not in str(ev.risk_factors)
@@ -161,8 +167,9 @@ async def test_duplicate_serial_number_attempt_audited(client, db_session):
     assert response.status_code == 400
     assert "Asset serial number already exists" in response.json()["detail"]
     events = await duplicate_audits(db_session, dup.serial_number.lower())
-    assert events["DUPLICATE_PHYSICAL_ASSET_ATTEMPT"].risk_score == 0.85
+    assert events["DUPLICATE_SERIAL_ATTEMPT"].risk_score == 0.85
     assert events["DUPLICATE_SERIAL_ATTEMPT"].risk_label == "HIGH"
+    assert events["DUPLICATE_PHYSICAL_ASSET_ATTEMPT"].risk_factors["specific_event"] == "DUPLICATE_SERIAL_ATTEMPT"
     count = (await db_session.execute(select(Asset).where(Asset.serial_number.ilike(dup.serial_number)))).scalars().all()
     assert len(count) == 1
 
@@ -221,7 +228,7 @@ async def test_physical_asset_approval_calldata(client, db_session):
     assert prop_res.status_code == 200
     action_id = prop_res.json()["action_id"]
     admin_token = get_token(ADMIN_WALLET, "ADMIN", 5)
-    with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0xContract", "data": "0xPhysicalMintData"}):
+    with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0xContract", "data": "0xPhysicalMintData"}) as mint:
         res_approve = await client.post(f"/api/assets/physical/approval/{action_id}",
                                         headers=await mfa_headers(db_session, admin_token, ADMIN_WALLET, "asset.approve"),
                                         json={"decision": "APPROVE"})
@@ -230,3 +237,21 @@ async def test_physical_asset_approval_calldata(client, db_session):
     assert data["decision"] == "APPROVE" and data["status"] == "APPROVED"
     assert data["calldata"]["data"] == "0xPhysicalMintData"
     assert "PHYSICAL_ASSET_APPROVED" in await duplicate_audits(db_session, serial)
+    # The named recipient is the registry owner, the mint recipient and the owner DID.
+    recipient = "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72"
+    kwargs = mint.call_args.kwargs
+    assert kwargs["to_address"].lower() == recipient and kwargs["owner_did"] == f"did:ethr:13371:{recipient}"
+    asset = (await db_session.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one()
+    await db_session.refresh(asset)
+    owner = (await db_session.execute(select(User).where(User.id == asset.owner_id))).scalar_one()
+    assert owner.wallet_address == recipient
+
+
+@pytest.mark.asyncio
+async def test_asset_for_unregistered_recipient_is_refused(client, db_session):
+    """Registry owner, on-chain holder and owner DID must agree: recipients must be registered identities."""
+    serial = f"PHY-RCPT-{uuid.uuid4().hex[:6].upper()}"
+    r = await propose(client, db_session, {"serial_number": serial, "has_mac_address": False,
+                                           "device_unique_address": f"UA-{uuid.uuid4().hex[:8]}",
+                                           "recipient_address": "0x" + uuid.uuid4().hex + uuid.uuid4().hex[:8]})
+    assert r.status_code == 400 and "registered, active" in r.json()["detail"]
