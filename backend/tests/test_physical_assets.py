@@ -26,8 +26,13 @@ def rand_mac(prefix="00:1A:2B"):
 
 
 async def propose(client, db, body, wallet=MANAGER_WALLET, role="MANAGER", version=8):
+    with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0x1", "data": "0x2"}):
+        return await _post_propose(client, db, body, wallet, role, version)
+
+
+async def _post_propose(client, db, body, wallet, role, version):
     return await client.post("/api/assets/physical/propose",
-                             headers=await mfa_headers(db, get_token(wallet, role, version), wallet, "document.submit"),
+                             headers=await mfa_headers(db, get_token(wallet, role, version), wallet, "asset.mint"),
                              json={"name": "HW", "asset_type": "EQUIPMENT", "recipient_address": "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72", **body})
 
 
@@ -55,7 +60,9 @@ async def test_propose_physical_asset_success(client, db_session):
                                                   "location": "Hangar 4, Bay C", "purpose": "Avionics Hardware Deployment"})
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data["action_type"] == "CREATION" and data["action_id"].startswith("CRT-") and data["status"] == "PENDING"
+    # Managers/Admins register physical assets directly: approved at once, their wallet records it
+    assert data["action_type"] == "CREATION" and data["action_id"].startswith("CRT-") and data["status"] == "APPROVED"
+    assert data["calldata"] and data["contract_address"]
     assert data["asset_serial"] == serial
     assert "mac_address" not in (data.get("details") or {})  # identifiers are not echoed into action details
     stored = (await db_session.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one()
@@ -206,36 +213,32 @@ async def test_database_rejects_normalised_duplicates_directly(db_session):
 
 
 @pytest.mark.asyncio
-async def test_physical_pending_queue_scoping(client, db_session):
-    """Physical pending queue is correctly scoped for managers and admins."""
-    mgr_token = get_token(MANAGER_WALLET, "MANAGER", 8)
-    serial = f"BEL-HW-PENDING-{uuid.uuid4().hex[:6].upper()}"
+async def test_physical_registration_is_direct_and_never_queued(client, db_session):
+    """Only Managers/Admins register physical assets, so there is no approval step: the
+    registration is approved at once and never waits in anyone's pending queue."""
+    serial = f"BEL-HW-DIRECT-{uuid.uuid4().hex[:6].upper()}"
+    weak = await client.post("/api/assets/physical/propose",
+                             headers=await mfa_headers(db_session, get_token(MANAGER_WALLET, "MANAGER", 8), MANAGER_WALLET, "document.submit"),
+                             json={"name": "HW", "asset_type": "EQUIPMENT", "serial_number": serial, "has_mac_address": False,
+                                   "device_unique_address": f"UA-{uuid.uuid4().hex[:8]}", "recipient_address": USER_WALLET})
+    assert weak.status_code == 401  # recording on the ledger needs Factor 3, not Factor 2
     r = await propose(client, db_session, {"serial_number": serial, "has_mac_address": False, "device_unique_address": f"UA-{uuid.uuid4().hex[:8]}"})
-    assert r.status_code == 200
-    res_mgr = await client.get("/api/assets/physical/pending", headers={"Authorization": f"Bearer {mgr_token}"})
-    assert res_mgr.status_code == 200
-    assert any(item["asset_serial"] == serial for item in res_mgr.json())
-    admin_token = get_token(ADMIN_WALLET, "ADMIN", 5)
-    res_admin = await client.get("/api/assets/physical/pending", headers={"Authorization": f"Bearer {admin_token}"})
-    assert any(item["asset_serial"] == serial for item in res_admin.json())
+    assert r.status_code == 200 and r.json()["status"] == "APPROVED"
+    for wallet, role, version in ((MANAGER_WALLET, "MANAGER", 8), (ADMIN_WALLET, "ADMIN", 5)):
+        pending = await client.get("/api/assets/physical/pending", headers={"Authorization": f"Bearer {get_token(wallet, role, version)}"})
+        assert pending.status_code == 200 and not any(item["asset_serial"] == serial for item in pending.json())
 
 
 @pytest.mark.asyncio
 async def test_physical_asset_approval_calldata(client, db_session):
-    """Approving a physical proposal prepares physical mint calldata and audits the approval."""
+    """A Manager's registration returns the physical mint calldata for their wallet and audits the approval."""
     serial = f"BEL-HW-APPROVE-{uuid.uuid4().hex[:6].upper()}"
-    prop_res = await propose(client, db_session, {"serial_number": serial, "has_mac_address": True, "mac_address": rand_mac(), "location": "Avionics Lab"})
-    assert prop_res.status_code == 200
-    action_id = prop_res.json()["action_id"]
-    admin_token = get_token(ADMIN_WALLET, "ADMIN", 5)
     with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0xContract", "data": "0xPhysicalMintData"}) as mint:
-        res_approve = await client.post(f"/api/assets/physical/approval/{action_id}",
-                                        headers=await mfa_headers(db_session, admin_token, ADMIN_WALLET, "asset.approve"),
-                                        json={"decision": "APPROVE"})
-    assert res_approve.status_code == 200
-    data = res_approve.json()
-    assert data["decision"] == "APPROVE" and data["status"] == "APPROVED"
-    assert data["calldata"]["data"] == "0xPhysicalMintData"
+        prop_res = await _post_propose(client, db_session, {"serial_number": serial, "has_mac_address": True, "mac_address": rand_mac(),
+                                                            "location": "Avionics Lab"}, MANAGER_WALLET, "MANAGER", 8)
+    assert prop_res.status_code == 200, prop_res.text
+    data = prop_res.json()
+    assert data["status"] == "APPROVED" and data["calldata"]["data"] == "0xPhysicalMintData"
     assert "PHYSICAL_ASSET_APPROVED" in await duplicate_audits(db_session, serial)
     # The named recipient is the registry owner, the mint recipient and the owner DID.
     recipient = "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72"

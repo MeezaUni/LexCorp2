@@ -4,6 +4,7 @@ import { Button, Dialog, Field, Id, Notice, PageHeader, Panel, Register, Status,
 import { refreshCounts } from '../components/Shell';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
+import { signAndConfirm } from '../services/chainActions';
 
 const MAC_RE = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
 export const onLedger = (a) => a?.lifecycle_status === 'MINTED' || Boolean(a?.watermark_metadata?.chain_tx);
@@ -70,7 +71,8 @@ export default function PhysicalAssets() {
 }
 
 function RegisterPhysical({ onClose, onDone }) {
-  const { user } = useAuth();
+  const { user, getSigner } = useAuth();
+  const [progress, setProgress] = useState('');
   const { data: departments } = useAsync(api.assignableDepartments, []);
   const [f, setF] = useState({ name: '', serial: '', type: 'EQUIPMENT', typeOther: '', hasMac: 'yes', mac: '', unique: '', location: '', department: user.department || '', custodian: '', purpose: '' });
   const [stepUp, setStepUp] = useState(false);
@@ -82,7 +84,7 @@ function RegisterPhysical({ onClose, onDone }) {
   return (
     <>
       <Dialog title="Register a physical asset" wide onClose={onClose}
-        footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!valid} onClick={() => setStepUp(true)}>Submit for approval</Button></>}>
+        footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!valid} onClick={() => setStepUp(true)}>Register and record</Button></>}>
         <p className="muted small">Each asset needs its serial number plus either its MAC address or, when it has none, a unique device address. LexCorp2 refuses any value already registered to another asset.</p>
         <div className="form-grid">
           <Field label="Asset name"><input className="input" value={f.name} onChange={set('name')} /></Field>
@@ -119,15 +121,24 @@ function RegisterPhysical({ onClose, onDone }) {
         </div>
       </Dialog>
       {stepUp && (
-        <StepUpDialog factor="factor2" actionLabel="Confirm asset registration" confirmLabel="Submit" onClose={() => setStepUp(false)}
+        <StepUpDialog factor="factor3" actionLabel="Register and record this asset" confirmLabel="Register and record" onClose={() => setStepUp(false)}
+          extra={<>
+            <p className="small">No approval step: your wallet records the asset on the ledger as its NFT straight away.</p>
+            {progress && <Notice tone="info">{progress}</Notice>}
+          </>}
           onSubmit={async (code) => {
-            const token = await api.stepUp('document.submit', code);
+            const token = await api.stepUp('asset.mint', code);
             const r = await api.proposePhysical({
               name: f.name.trim(), serial_number: f.serial.trim(), asset_type: f.type, asset_type_other: f.type === 'OTHER' ? f.typeOther.trim() : null, has_mac_address: f.hasMac === 'yes',
               mac_address: f.hasMac === 'yes' ? f.mac.trim() : null, device_unique_address: f.hasMac === 'no' ? f.unique.trim() : null,
               location: f.location || null, department: f.department, purpose: f.purpose || null,
               recipient_address: f.custodian.trim() || user.wallet_address,
             }, token);
+            if (r.calldata) {
+              const chain = await signAndConfirm(getSigner, r.calldata, r.contract_address, f.serial.trim(), setProgress);
+              onDone(`${f.serial.trim()} registered and recorded on the ledger (block ${chain.block_number}).`);
+              return;
+            }
             onDone(`${f.serial.trim()} submitted as ${r.action_id}.`);
           }} />
       )}

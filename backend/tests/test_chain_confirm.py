@@ -64,24 +64,28 @@ async def test_chain_confirm_real_besu_rejects_fabricated_tx(client, db_session)
 
 
 @pytest.mark.asyncio
-async def test_admin_decides_own_submission_with_factor3(client, db_session):
-    serial = await flows.approved_document(client, db_session, b"admin submitted", "adm.txt", owner=flows.ADMIN, approver=flows.MANAGER)
-    assert serial
-    # Policy: an Administrator (or Manager) needs no other approver for their own submission,
-    # but still proves Factor 3; a normal user can never approve.
+async def test_admin_registers_directly_with_factor3_users_still_propose(client, db_session):
+    """Policy: Managers/Admins never go through approval. An Administrator's registration is
+    approved at once (Factor 3; their own wallet signs the mint); a normal user's still waits."""
     t = flows.token_for(flows.ADMIN)
     up = await client.post("/api/assets/upload-document", headers={"Authorization": f"Bearer {t}"},
-                           files={"file": ("self.txt", b"self approve attempt", "text/plain")})
-    prop = await client.post("/api/assets/document/propose", headers=await mfa_headers(db_session, t, flows.ADMIN, "document.submit"),
-                             json={"name": "self", "serial_number": "SELF-" + up.json()["file_hash"][:8], "file_hash": up.json()["file_hash"],
-                                   "offchain_uri": up.json()["offchain_uri"], "recipient_address": flows.ADMIN})
-    assert prop.status_code == 200
-    action_id = prop.json()["action_id"]
-    no_factor = await client.post(f"/api/assets/document/approval/{action_id}",
-                                  headers={"Authorization": f"Bearer {t}"}, json={"decision": "APPROVE"})
-    assert no_factor.status_code == 401
-    as_user = await flows.approve(client, db_session, action_id, approver=flows.USER)
-    assert as_user.status_code == 403
-    r = await flows.approve(client, db_session, action_id, approver=flows.ADMIN)
+                           files={"file": ("self.txt", b"admin direct registration", "text/plain")})
+    body = {"name": "self", "serial_number": "SELF-" + up.json()["file_hash"][:8], "file_hash": up.json()["file_hash"],
+            "offchain_uri": up.json()["offchain_uri"], "recipient_address": flows.ADMIN}
+    weak = await client.post("/api/assets/document/propose", headers=await mfa_headers(db_session, t, flows.ADMIN, "document.submit"), json=body)
+    assert weak.status_code == 401
+    with patch("app.services.contract.contract_service.prepare_mint_digital_calldata", return_value={"to": "0x1", "data": "0x2"}):
+        r = await client.post("/api/assets/document/propose", headers=await mfa_headers(db_session, t, flows.ADMIN, "asset.mint"), json=body)
     assert r.status_code == 200, r.text
-    assert r.json()["status"] == "APPROVED" and r.json()["calldata"]  # the admin's own wallet signs the mint
+    assert r.json()["status"] == "APPROVED" and r.json()["calldata"] and r.json()["approver_did"].endswith(flows.ADMIN)
+    # a normal user's registration is still only a proposal
+    user_serial_holder = await client.post("/api/assets/upload-document", headers={"Authorization": f"Bearer {flows.token_for(flows.USER)}"},
+                                           files={"file": ("u.txt", b"user proposal body", "text/plain")})
+    ub = user_serial_holder.json()
+    ur = await client.post("/api/assets/document/propose",
+                           headers=await mfa_headers(db_session, flows.token_for(flows.USER), flows.USER, "document.submit"),
+                           json={"name": "u", "serial_number": "USR-" + ub["file_hash"][:8], "file_hash": ub["file_hash"],
+                                 "offchain_uri": ub["offchain_uri"], "recipient_address": flows.USER})
+    assert ur.status_code == 200 and ur.json()["status"] == "PENDING"
+
+

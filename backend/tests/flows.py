@@ -35,10 +35,16 @@ async def approved_document(client, db, content: bytes, filename: str, owner=USE
     assert up.status_code == 200, up.text
     info = up.json()
     serial = f"FLOW-{uuid.uuid4().hex[:8]}"
-    prop = await client.post("/api/assets/document/propose", headers=await mfa_headers(db, t, owner, "document.submit"),
-                             json={"name": filename, "serial_number": serial, "file_hash": info["file_hash"],
-                                   "offchain_uri": info["offchain_uri"], "recipient_address": owner})
+    direct = owner in (MANAGER, ADMIN)  # Managers/Admins register and record directly
+    with patch("app.services.contract.contract_service.prepare_mint_digital_calldata", return_value={"to": "0x1", "data": "0x2"}):
+        prop = await client.post("/api/assets/document/propose",
+                                 headers=await mfa_headers(db, t, owner, "asset.mint" if direct else "document.submit"),
+                                 json={"name": filename, "serial_number": serial, "file_hash": info["file_hash"],
+                                       "offchain_uri": info["offchain_uri"], "recipient_address": owner})
     assert prop.status_code == 200, prop.text
+    if direct:
+        assert prop.json()["status"] == "APPROVED" and prop.json()["calldata"]
+        return serial
     r = await approve(client, db, prop.json()["action_id"], approver)
     assert r.status_code == 200, r.text
     return serial

@@ -29,22 +29,12 @@ async def registered(client, db, department="Avionics", mac=True):
     ident = {"has_mac_address": True, "mac_address": f"02:00:00:{random.randint(16,99)}:{random.randint(16,99)}:{random.randint(16,99)}"} if mac \
         else {"has_mac_address": False, "device_unique_address": f"UA-{uuid.uuid4().hex[:10]}"}
     t = h(ADMIN)["Authorization"].split()[1]
-    r = await client.post("/api/assets/physical/propose", headers=await mfa_headers(db, t, ADMIN, "document.submit"),
-                          json={"name": "Radar Unit", "serial_number": serial, "recipient_address": ADMIN, "department": department, **ident})
-    assert r.status_code == 200, r.text
-    mt = h(MANAGER)["Authorization"].split()[1] if department == "Avionics" else None
-    approver = MANAGER if department == "Avionics" else ADMIN
-    at = h(approver)["Authorization"].split()[1]
-    if approver == ADMIN:
-        # separation of duties: a different admin is not seeded, so approve Cyber via direct DB state
-        a = (await db.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one()
-        a.approval_status = "APPROVED"
-        await db.commit()
-        return a
+    # An Administrator registers directly (Factor 3): approved at once, ready for their wallet to record
     with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0x1", "data": "0x2"}):
-        ok = await client.post(f"/api/assets/physical/approval/{r.json()['action_id']}", headers=await mfa_headers(db, at, approver, "asset.approve"),
-                               json={"decision": "APPROVE"})
-    assert ok.status_code == 200, ok.text
+        r = await client.post("/api/assets/physical/propose", headers=await mfa_headers(db, t, ADMIN, "asset.mint"),
+                              json={"name": "Radar Unit", "serial_number": serial, "recipient_address": ADMIN, "department": department, **ident})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "APPROVED"
     return (await db.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one()
 
 
@@ -79,7 +69,7 @@ async def test_verification_public_minimal_authorized_detailed(client, db_sessio
     for d in (mgr, aud):
         assert d["detail_level"] == "AUTHORIZED"
         assert d["device_unique_address"] == a.device_unique_address and d["creation_id"] == a.action_id
-        assert d["approval"]["approved_by"].endswith(MANAGER)
+        assert d["approval"]["approved_by"].endswith(ADMIN)  # the Administrator registered and recorded it directly
         assert [e["event"] for e in d["lifecycle"]][:2] == ["PHYSICAL_ASSET_CREATED", "PHYSICAL_ASSET_APPROVED"]
     verified = (await db_session.execute(select(AuditEvent).where(AuditEvent.asset_serial == a.serial_number,
                                                                   AuditEvent.event_type == "ASSET_VERIFIED"))).scalars().all()

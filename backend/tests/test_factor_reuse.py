@@ -1,6 +1,7 @@
 """Opt-in reuse of the login factors for Factor 2 / Factor 3, role-aware login resets for
 administrators, and the physical asset type "Other" description."""
 import uuid
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, update
@@ -165,9 +166,13 @@ async def test_reset_login_factors_issues_new_pin_and_ends_sessions(db_session):
 @pytest.mark.asyncio
 async def test_physical_asset_type_other_needs_a_description(client, db_session):
     async def propose(**body):
+        with patch("app.services.contract.contract_service.prepare_mint_calldata", return_value={"to": "0x1", "data": "0x2"}):
+            return await _propose(**body)
+
+    async def _propose(**body):
         return await client.post(
             "/api/assets/physical/propose",
-            headers=await mfa_headers(db_session, token(MANAGER_WALLET), MANAGER_WALLET, "document.submit"),
+            headers=await mfa_headers(db_session, token(MANAGER_WALLET), MANAGER_WALLET, "asset.mint"),
             json={"name": "HW", "serial_number": f"OTH-{uuid.uuid4().hex[:8]}", "has_mac_address": False,
                   "device_unique_address": f"CHIP-{uuid.uuid4().hex[:10]}", "recipient_address": USER_WALLET, **body})
 

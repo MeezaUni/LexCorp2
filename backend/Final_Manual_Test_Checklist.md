@@ -390,18 +390,13 @@ never in screenshots.
 - **Evidence:** E5.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
-### E6 — Managers and Admins decide their own; users can't
+### E6 — Managers and Admins register directly; users wait for approval
 - **Steps:**
-  1. As MGR register a document `DOC-TEST-006`.
-  2. In MGR's queue the row shows **Decide** → approve → Factor 3 → **Approve and sign**.
-  3. As USA (a normal user), check that **Requests & approvals** offers no decisions at all.
-- **Expected:** MGR approves and records their own document without anyone else (still Factor 3, and their own wallet signs). Nothing is ever stuck at "Another approver must decide". Users' submissions (E1) still wait for a Manager or Admin.
+  1. As MGR: **Register document** → fill in → **Register and record** → Factor 3.
+  2. As USA (a normal user) register another document: the button reads **Submit for approval**.
+- **Expected:** MGR's document is approved and recorded on the ledger in one step (their wallet signs; the block number is shown); nothing appears in any approval queue. USA's document waits for a Manager or Administrator (E4).
 - **Evidence:** E6.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
-
----
-
-## F. Digital viewing
 
 ### F1 — Owner views a document
 - **Steps:** as USA open `DOC-TEST-001` → **View document** → Factor 2 code (or **Use Passkey 2** if you registered one).
@@ -564,10 +559,17 @@ never in screenshots.
   1. Repeat I0 steps 1–3 to get a new modification copy.
   2. Change the watermark on the copy (for example edit the IP or name on a page, delete the "LexCorp Document Control" page, or remove the Word/PowerPoint watermark) and upload it as the revision.
   3. As USB, look at the result. As AUD: **Security alerts** → open the new "Watermark tamper detected" alert.
-  4. In the alert: read **Watermark as issued**, click **Go to page N** on a finding, and **Open the uploaded file**.
-  5. As MGR try to approve that revision. Then as AUD dismiss (or forward) the alert, and try again.
-- **Expected:** USB sees an ordinary "submitted, awaits approval" message (no warning); the alert lists what changed and where (page/slide/sheet); **Go to page** opens the uploaded file at that page with the page outlined; approval is refused ("under security review (ALT-…)") while the alert is open and works once it is closed.
+  4. As AUD: read **Watermark as issued** and the findings; there is no button to open the file. **Forward to Manager**.
+  5. As ADM open the alert: it shows it is at the Manager review stage.
+  6. As MGR: open the alert → **Go to page N** on a finding, and **Open the uploaded file**. Try to approve the revision; then dismiss the alert (or forward it to the Administrator, who can revoke the identity) and try again.
+- **Expected:** USB sees an ordinary "submitted, awaits approval" message (no warning); the alert lists what changed and where (page/slide/sheet); the Auditor cannot open the document; the Manager's **Go to page** opens the uploaded file at that page with the page outlined; approval is refused ("under security review (ALT-…)") while the alert is open and works once it is closed.
 - **Evidence:** I0b-alert.png, I0b-page.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### I7 — A Manager's own revision (no requests, no approvals)
+- **Steps:** as MGR open a document MGR owns → **Download modification copy** → Factor 3. Edit it, then **My requests** → **Upload revision** → Factor 3.
+- **Expected:** no request or approval anywhere: the copy downloads at once, and the revision is recorded on the ledger straight away as the next version (single watermark on later views).
+- **Evidence:** I7.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
 ### I6 — Share chosen versions
@@ -696,8 +698,8 @@ never in screenshots.
   1. As MGR: **Physical assets** → **Register asset**.
   2. Name "Navigation unit", serial `PHY-TEST-001`, department Avionics.
   3. "Yes, it has a MAC address" → `02:1A:2B:3C:4D:5E`; location "Lab 1".
-  4. Custodian wallet = USA's address → **Submit for approval** → Factor 2.
-- **Expected:** "Submitted for approval".
+  4. Custodian wallet = USA's address → **Register and record** → Factor 3.
+- **Expected:** registered and recorded on the ledger at once (Managers/Admins need no approval); the block number is shown.
 - **Evidence:** L1.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -731,9 +733,9 @@ never in screenshots.
 - **Evidence:** L5.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
-### L6 — Approve and mint
-- **Steps:** as MGR (or ADM), **Decide** / **Review** `PHY-TEST-001` → **Approve and sign** → Factor 3. Do the same for `PHY-TEST-002`.
-- **Expected:** recorded on the ledger. The asset page shows Minted, the token, and the ledger transaction.
+### L6 — Recorded on registration
+- **Steps:** open `PHY-TEST-001` and `PHY-TEST-002`.
+- **Expected:** both show Minted, the token and the ledger transaction, with no approval step in between.
 - **Evidence:** L6.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 

@@ -105,6 +105,9 @@ async def view_evidence(alert_id: str, request: Request, current_user: User = De
     from app.services.watermark import UnsupportedDocumentType, WatermarkContext, render_view_copy
 
     _require_security_role(current_user)
+    if current_user.role not in ("MANAGER", "ADMIN"):
+        raise HTTPException(status_code=403, detail="The document itself is shown to the reviewing Manager or an Administrator. "
+                                                    "Forward the alert to the Manager to have it checked.")
     alert = await _load(db, alert_id, current_user)
     ev = (await _source_factors(db, alert)).get("evidence") or {}
     rel = ev.get("file") or ""

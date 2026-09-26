@@ -164,7 +164,15 @@ async def test_delegated_user_revision_cycle_owner_consent_approval_and_integrit
     ev = detail["evidence"]
     assert ev["download_id"] == dl and "IP: " in ev["recorded_watermark"] and ev["has_file"] is True
     assert any(f["severity"] == "tamper" and f.get("page") == 1 for f in ev["findings"])  # located on page 1
-    view = await client.get(f"/api/alerts/{alert.alert_id}/evidence", headers={"Authorization": f"Bearer {t_aud}"})
+    # The Auditor sees the findings but not the document itself: that is for the reviewing Manager/Admin
+    assert (await client.get(f"/api/alerts/{alert.alert_id}/evidence", headers={"Authorization": f"Bearer {t_aud}"})).status_code == 403
+    t_mgr = flows.token_for(flows.MANAGER)
+    # ...and the Manager only once the Auditor has forwarded it to them
+    assert (await client.get(f"/api/alerts/{alert.alert_id}/evidence", headers={"Authorization": f"Bearer {t_mgr}"})).status_code == 404
+    fwd = await client.post(f"/api/alerts/{alert.alert_id}/forward", headers={"Authorization": f"Bearer {t_aud}"},
+                            json={"note": "please check the returned file"})
+    assert fwd.status_code == 200, fwd.text
+    view = await client.get(f"/api/alerts/{alert.alert_id}/evidence", headers={"Authorization": f"Bearer {t_mgr}"})
     assert view.status_code == 200 and view.headers["content-type"] == "application/pdf"
     assert "203.0.113.99" in pdf_text(view.content)  # the file exactly as uploaded
     # A normal user can't see it
@@ -173,8 +181,8 @@ async def test_delegated_user_revision_cycle_owner_consent_approval_and_integrit
 
     blocked = await flows.approve(client, db_session, mod["action_id"])
     assert blocked.status_code == 409 and alert.alert_id in blocked.json()["detail"]
-    dismissed = await client.post(f"/api/alerts/{alert.alert_id}/dismiss", headers={"Authorization": f"Bearer {t_aud}"},
-                                  json={"note": "checked with the uploader"})
+    dismissed = await client.post(f"/api/alerts/{alert.alert_id}/dismiss", headers={"Authorization": f"Bearer {t_mgr}"},
+                                  json={"note": "checked the file with the uploader"})
     assert dismissed.status_code == 200, dismissed.text
     assert (await flows.approve(client, db_session, mod["action_id"])).status_code == 200
     v2 = (await db_session.execute(select(Asset).where(Asset.serial_number == mod["asset_serial"]))).scalar_one()

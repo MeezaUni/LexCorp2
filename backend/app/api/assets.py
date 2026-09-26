@@ -1008,6 +1008,19 @@ async def _resolve_recipient(db: AsyncSession, recipient_address: Optional[str],
     return target
 
 
+
+async def _approve_directly(db, action, asset, user, client_ip):
+    """A Manager/Admin's own action needs no approver: approve it now and hand back the ledger
+    calldata their wallet signs in the same step."""
+    from app.schemas.domain import DocumentApprovalRequest
+    await db.flush()
+    result = await _apply_approval(db, action, asset, user, DocumentApprovalRequest(decision="APPROVE"), client_ip)
+    await db.refresh(action)
+    action.calldata = result.calldata
+    action.contract_address = result.contract_address
+    return action
+
+
 @router.post("/document/propose", response_model=DocumentActionRead)
 async def propose_document_creation(
     request: DocumentProposalRequest,
@@ -1026,7 +1039,10 @@ async def propose_document_creation(
         raise HTTPException(status_code=403, detail="Users can only propose documents for their assigned department.")
 
 
-    await mfa.require_factor(db, current_user, "document.submit", totp_code=request.totp_code, step_up_token=step_up_token)
+    direct = current_user.role in ("ADMIN", "MANAGER") and (current_user.role == "ADMIN" or dept in access.manager_departments(current_user))
+    # A Manager/Admin registers directly (no approval step): they prove the minting factor.
+    await mfa.require_factor(db, current_user, "asset.mint" if direct else "document.submit",
+                             totp_code=request.totp_code, step_up_token=step_up_token)
     await _resolve_recipient(db, request.recipient_address, request.recipient_did)
 
     # Creation integrity: the SHA-256 recorded (and later minted) must be the hash of the
@@ -1101,6 +1117,8 @@ async def propose_document_creation(
     )
     db.add(audit_event)
 
+    if direct:
+        return await _approve_directly(db, action, draft_asset, current_user, client_ip)
     await db.commit()
     await db.refresh(action)
     return action
@@ -1284,7 +1302,9 @@ async def propose_physical_asset_creation(
     await access.require_assignable_department(db, current_user, dept)
 
 
-    await mfa.require_factor(db, current_user, "document.submit", totp_code=request.totp_code, step_up_token=step_up_token)
+    # Only Managers/Admins register physical assets, so there is no approval step: they prove the
+    # minting factor and record the asset in the same step.
+    await mfa.require_factor(db, current_user, "asset.mint", totp_code=request.totp_code, step_up_token=step_up_token)
     await _resolve_recipient(db, request.recipient_address, request.recipient_did)
 
     # Serial + (MAC OR Unique Address), normalised, globally unique across the registry.
@@ -1380,9 +1400,7 @@ async def propose_physical_asset_creation(
     )
     db.add(audit_event)
 
-    await db.commit()
-    await db.refresh(action)
-    return action
+    return await _approve_directly(db, action, draft_asset, current_user, client_ip)
 
 
 @router.get("/document/pending", response_model=list[DocumentActionRead])
@@ -1436,6 +1454,112 @@ class ApprovalCalldataResponse(BaseModel):
     download_token: Optional[str] = None
     download_url: Optional[str] = None
     token_expires_at: Optional[datetime] = None
+
+async def _apply_approval(db, action, asset, current_user, request, client_ip) -> "ApprovalCalldataResponse":
+    """Approve a pending action (used by the approval endpoint and by Managers/Admins acting
+    directly). Returns any ledger calldata the approver's wallet must sign. Commits."""
+    changes_asset_state = action.action_type in ("CREATION", "MODIFICATION")
+    action.status = "APPROVED"
+    action.approver_id = current_user.id
+    action.approver_did = current_user.did
+    if changes_asset_state:
+        asset.approval_status = "APPROVED"
+    elif asset.approval_status in ("PENDING_APPROVAL", "REJECTED"):
+        raise HTTPException(status_code=409, detail="The document itself is not approved; access to it cannot be granted.")
+
+    calldata = None
+    download_token = None
+    download_url = None
+    token_expires_at = None
+
+    if action.action_type == "CREATION":
+        details = action.details or {}
+        recipient = await _resolve_recipient(db, details.get("recipient_address"), details.get("recipient_did"))
+        if recipient is None:
+            recipient = (await db.execute(select(User).where(User.id == action.actor_id))).scalar_one()
+        asset.owner_id = recipient.id
+        owner_address = recipient.wallet_address
+        owner_did = recipient.did
+
+        if asset.is_physical:
+            await record_audit(db, "PHYSICAL_ASSET_APPROVED", actor_did=current_user.did, target_did=action.actor_did,
+                               asset_serial=asset.serial_number, client_ip=client_ip,
+                               details={"creation_id": action.action_id, "token_id": asset.token_id})
+            calldata = contract_service.prepare_mint_calldata(
+                to_address=owner_address,
+                token_id=asset.token_id,
+                serial_number=asset.serial_number,
+                owner_did=owner_did
+            )
+        else:
+            calldata = contract_service.prepare_mint_digital_calldata(
+                to_address=owner_address,
+                token_id=asset.token_id,
+                serial_number=asset.serial_number,
+                owner_did=owner_did,
+                file_hash=asset.file_hash or "",
+                offchain_uri=asset.metadata_cid or ""
+            )
+    elif action.action_type == "MODIFICATION":
+        asset.lifecycle_status = "CREATED"
+        if asset.parent_asset_id:
+            parent_res = await db.execute(select(Asset).filter(Asset.id == asset.parent_asset_id))
+            parent_asset = parent_res.scalar_one_or_none()
+            if parent_asset:
+                parent_asset.lifecycle_status = "OBSOLETE"
+
+        root = (await db.execute(select(Asset).where(Asset.id == (asset.root_asset_id or asset.id)))).scalar_one_or_none()
+        if root is None or root.token_id is None:
+            raise HTTPException(status_code=409, detail="The revision's lineage root has no token to anchor to.")
+        # A revision is ANCHORED on the root token (never minted as a new token).
+        calldata = contract_service.prepare_update_digital_asset_calldata(
+            token_id=root.token_id,
+            new_file_hash=asset.file_hash or "",
+            new_offchain_uri=asset.metadata_cid or "",
+        )
+    elif action.action_type == "DOWNLOAD":
+        # (owner consent verified above, before any state change)
+        # No bearer token: only the requester can fetch, with their own Factor 3, before expiry.
+        token_expires_at = datetime.now(UTC) + timedelta(hours=settings.DOWNLOAD_APPROVAL_TTL_HOURS)
+        action.token_expires_at = token_expires_at
+        download_url = f"/api/assets/document/download/{action.action_id}/fetch"
+    elif action.action_type == "SHARE":
+        # The approver decides the limits (defaults: unlimited views, no expiry, view-only).
+        calldata = await _grant_share(db, action, asset, current_user, request.max_views,
+                                      bool(request.allow_download), request.accessible_until, client_ip)
+
+    audit_event = AuditEvent(
+        event_type="AssetActionApproved",
+        tx_hash=f"audit_appr_{uuid.uuid4().hex[:12]}",
+        block_number=0,
+        actor_did=current_user.did,
+        target_did=action.actor_did,
+        asset_serial=asset.serial_number,
+        client_ip=client_ip,
+        risk_score=0.05,
+        risk_label="LOW",
+        risk_factors={
+            "action_id": action.action_id,
+            "action_type": action.action_type,
+            "decision": "APPROVED",
+            "is_physical": asset.is_physical
+        }
+    )
+    db.add(audit_event)
+
+    await db.commit()
+
+    return ApprovalCalldataResponse(
+        calldata=calldata,
+        contract_address=contract_service.contract_address if calldata else None,
+        decision="APPROVE",
+        status="APPROVED",
+        download_token=download_token,
+        download_url=download_url,
+        token_expires_at=token_expires_at
+    )
+
+
 
 @router.post("/document/approval/{action_id}", response_model=ApprovalCalldataResponse)
 @router.post("/physical/approval/{action_id}", response_model=ApprovalCalldataResponse)
@@ -1496,105 +1620,7 @@ async def approve_document(
             raise HTTPException(status_code=409, detail="The document owner has not approved this download yet.")
 
     if request.decision.upper() == "APPROVE":
-        action.status = "APPROVED"
-        action.approver_id = current_user.id
-        action.approver_did = current_user.did
-        if changes_asset_state:
-            asset.approval_status = "APPROVED"
-        elif asset.approval_status in ("PENDING_APPROVAL", "REJECTED"):
-            raise HTTPException(status_code=409, detail="The document itself is not approved; access to it cannot be granted.")
-
-        calldata = None
-        download_token = None
-        download_url = None
-        token_expires_at = None
-
-        if action.action_type == "CREATION":
-            details = action.details or {}
-            recipient = await _resolve_recipient(db, details.get("recipient_address"), details.get("recipient_did"))
-            if recipient is None:
-                recipient = (await db.execute(select(User).where(User.id == action.actor_id))).scalar_one()
-            asset.owner_id = recipient.id
-            owner_address = recipient.wallet_address
-            owner_did = recipient.did
-
-            if asset.is_physical:
-                await record_audit(db, "PHYSICAL_ASSET_APPROVED", actor_did=current_user.did, target_did=action.actor_did,
-                                   asset_serial=asset.serial_number, client_ip=client_ip,
-                                   details={"creation_id": action.action_id, "token_id": asset.token_id})
-                calldata = contract_service.prepare_mint_calldata(
-                    to_address=owner_address,
-                    token_id=asset.token_id,
-                    serial_number=asset.serial_number,
-                    owner_did=owner_did
-                )
-            else:
-                calldata = contract_service.prepare_mint_digital_calldata(
-                    to_address=owner_address,
-                    token_id=asset.token_id,
-                    serial_number=asset.serial_number,
-                    owner_did=owner_did,
-                    file_hash=asset.file_hash or "",
-                    offchain_uri=asset.metadata_cid or ""
-                )
-        elif action.action_type == "MODIFICATION":
-            asset.lifecycle_status = "CREATED"
-            if asset.parent_asset_id:
-                parent_res = await db.execute(select(Asset).filter(Asset.id == asset.parent_asset_id))
-                parent_asset = parent_res.scalar_one_or_none()
-                if parent_asset:
-                    parent_asset.lifecycle_status = "OBSOLETE"
-
-            root = (await db.execute(select(Asset).where(Asset.id == (asset.root_asset_id or asset.id)))).scalar_one_or_none()
-            if root is None or root.token_id is None:
-                raise HTTPException(status_code=409, detail="The revision's lineage root has no token to anchor to.")
-            # A revision is ANCHORED on the root token (never minted as a new token).
-            calldata = contract_service.prepare_update_digital_asset_calldata(
-                token_id=root.token_id,
-                new_file_hash=asset.file_hash or "",
-                new_offchain_uri=asset.metadata_cid or "",
-            )
-        elif action.action_type == "DOWNLOAD":
-            # (owner consent verified above, before any state change)
-            # No bearer token: only the requester can fetch, with their own Factor 3, before expiry.
-            token_expires_at = datetime.now(UTC) + timedelta(hours=settings.DOWNLOAD_APPROVAL_TTL_HOURS)
-            action.token_expires_at = token_expires_at
-            download_url = f"/api/assets/document/download/{action.action_id}/fetch"
-        elif action.action_type == "SHARE":
-            # The approver decides the limits (defaults: unlimited views, no expiry, view-only).
-            calldata = await _grant_share(db, action, asset, current_user, request.max_views,
-                                          bool(request.allow_download), request.accessible_until, client_ip)
-
-        audit_event = AuditEvent(
-            event_type="AssetActionApproved",
-            tx_hash=f"audit_appr_{uuid.uuid4().hex[:12]}",
-            block_number=0,
-            actor_did=current_user.did,
-            target_did=action.actor_did,
-            asset_serial=asset.serial_number,
-            client_ip=client_ip,
-            risk_score=0.05,
-            risk_label="LOW",
-            risk_factors={
-                "action_id": action.action_id,
-                "action_type": action.action_type,
-                "decision": "APPROVED",
-                "is_physical": asset.is_physical
-            }
-        )
-        db.add(audit_event)
-
-        await db.commit()
-
-        return ApprovalCalldataResponse(
-            calldata=calldata,
-            contract_address=contract_service.contract_address if calldata else None,
-            decision="APPROVE",
-            status="APPROVED",
-            download_token=download_token,
-            download_url=download_url,
-            token_expires_at=token_expires_at
-        )
+        return await _apply_approval(db, action, asset, current_user, request, client_ip)
 
     elif request.decision.upper() == "REJECT":
         action.status = "REJECTED"
@@ -1961,7 +1987,8 @@ async def _create_revision(
                        details={"modification_id": action_id_str, "parent_version": parent_asset.version_number,
                                 "version": new_version, "file_hash": file_hash, "download_id": dl.action_id,
                                 **({"ai": risk["ai"]} if risk else {})})
-    if any(f["severity"] == "tamper" for f in findings):
+    action.flagged = any(f["severity"] == "tamper" for f in findings)
+    if action.flagged:
         # Silent to the uploader: the revision is accepted as pending, but an alert goes to the
         # Auditor with the evidence, and the revision can't be approved while it is open.
         evidence_name = f"{hashlib.sha256(content).hexdigest()}_{safe_name}"
@@ -2042,8 +2069,13 @@ async def upload_revision(
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File size exceeds maximum permitted limit (50MB).")
+    client_ip = get_request_client_ip(request)
     action = await _create_revision(db, current_user, parent_asset, modification_download_id, content,
-                                    os.path.basename(file.filename or "revision"), name, purpose, get_request_client_ip(request))
+                                    os.path.basename(file.filename or "revision"), name, purpose, client_ip)
+    if _privileged_for(current_user, parent_asset) and not getattr(action, "flagged", False):
+        # A Manager/Admin's revision needs no approver: it is approved now and their wallet anchors it.
+        revised = (await db.execute(select(Asset).where(Asset.id == action.asset_id))).scalar_one()
+        return await _approve_directly(db, action, revised, current_user, client_ip)
     await db.commit()
     await db.refresh(action)
     return action
@@ -2307,7 +2339,8 @@ async def owner_download(
 ):
     """The document's owner downloads a copy without an approval step. Still Factor 3, still a
     new Download ID, and still a watermarked copy naming them; the original file never leaves
-    the vault."""
+    the vault. mode=MODIFICATION (Managers/Admins only) gives the single-use modification copy
+    a revision is made from, without a request."""
     asset = (await db.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one_or_none()
     if not asset or asset.asset_type not in ("DIGITAL", "DOCUMENT"):
         raise HTTPException(status_code=404, detail="Document not found.")
@@ -2315,14 +2348,26 @@ async def owner_download(
         raise HTTPException(status_code=403, detail="Only the document's owner can download without approval. Request a download instead.")
     if asset.approval_status not in ("APPROVED", "ACTIVE"):
         raise HTTPException(status_code=409, detail="Only approved document versions can be downloaded.")
+    mode = (req.query_params.get("mode") or "STANDARD").upper()
+    if mode not in ("STANDARD", "MODIFICATION"):
+        raise HTTPException(status_code=400, detail="mode must be STANDARD or MODIFICATION")
+    if mode == "MODIFICATION":
+        if not _privileged_for(current_user, asset):
+            raise HTTPException(status_code=403, detail="Request a modification copy instead; it needs a Manager or Administrator approval.")
+        _, latest, pending = await _lineage_state(db, asset)
+        if asset.version_number != latest:
+            raise HTTPException(status_code=409, detail=f"Modifications must start from the latest approved version (v{latest}).")
+        if pending:
+            raise HTTPException(status_code=409, detail="A revision of this document is already pending approval.")
     await mfa.require_factor(db, current_user, "document.download", totp_code=body.totp_code, step_up_token=step_up_token)
 
     client_ip = get_request_client_ip(req)
     action = DocumentAction(
         action_id=await next_action_id(db, "DL"), action_type="DOWNLOAD", asset_id=asset.id,
         asset_serial=asset.serial_number, asset_version=asset.version_number, actor_id=current_user.id,
-        actor_did=current_user.did, status="COMPLETED", purpose="Owner's own copy", client_ip=client_ip,
-        details={"mode": "STANDARD", "owner_direct": True, "downloaded_at": datetime.now(UTC).isoformat(),
+        actor_did=current_user.did, status="COMPLETED",
+        purpose="Owner's modification copy" if mode == "MODIFICATION" else "Owner's own copy", client_ip=client_ip,
+        details={"mode": mode, "owner_direct": True, "downloaded_at": datetime.now(UTC).isoformat(),
                  "downloaded_from_ip": client_ip},
     )
     ctx = WatermarkContext(

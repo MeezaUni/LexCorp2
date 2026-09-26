@@ -118,7 +118,7 @@ function AlertDetail({ alert, user, onClose, onDone }) {
           ['Identity status', alert.subject.is_active === false ? 'Revoked or disabled' : alert.subject.is_active ? 'Active' : undefined],
           ['Current stage', <Status key="s" value={alert.state} />],
         ]} />
-        {full?.evidence && <TamperEvidence alertId={alert.alert_id} evidence={full.evidence} />}
+        {full?.evidence && <TamperEvidence alertId={alert.alert_id} evidence={full.evidence} canOpen={user.role === 'MANAGER' || user.role === 'ADMIN'} />}
         {alert.source === 'AI' && <p className="small muted">The AI model scores behaviour against learned patterns. Its score is advice only; it never blocks, forwards or revokes anything by itself.</p>}
         <h3>Escalation history</h3>
         {full ? (
@@ -151,7 +151,7 @@ function AlertDetail({ alert, user, onClose, onDone }) {
 
 /** For a watermark tamper alert: the watermark as recorded when the copy was issued, what was
  *  found in the returned file (with where), and the uploaded file itself, opened at the flagged page. */
-function TamperEvidence({ alertId, evidence }) {
+function TamperEvidence({ alertId, evidence, canOpen }) {
   const [view, setView] = useState(null);
   const [error, setError] = useState('');
   const open = async (page) => {
@@ -175,11 +175,12 @@ function TamperEvidence({ alertId, evidence }) {
           <ul className="evidence-findings">
             {tamper.map((f, i) => (
               <li key={`t${i}`}><Status value="HIGH">Changed</Status> <strong>{f.where}</strong>: {f.detail}
-                {f.page && evidence.has_file && <> <Button size="sm" variant="quiet" onClick={() => open(f.page)}>Go to page {f.page}</Button></>}</li>
+                {f.page && evidence.has_file && canOpen && <> <Button size="sm" variant="quiet" onClick={() => open(f.page)}>Go to page {f.page}</Button></>}</li>
             ))}
             {review.map((f, i) => <li key={`r${i}`}><Status value="PENDING">Check</Status> <strong>{f.where}</strong>: {f.detail}</li>)}
           </ul>
-          {evidence.has_file && <div><Button onClick={() => open(null)}>Open the uploaded file</Button></div>}
+          {evidence.has_file && canOpen && <div><Button onClick={() => open(null)}>Open the uploaded file</Button></div>}
+          {evidence.has_file && !canOpen && <Notice tone="info">The document itself is checked by the department's Manager. Forward this alert to have the file reviewed.</Notice>}
         </div>
       </div>
       {view && (

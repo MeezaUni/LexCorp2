@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Dialog, Field, Id, Notice, PageHeader, Panel, Register, Status, StepUpDialog, errorText, formatDate, shortHash, useAsync } from '../components/ui';
 import { refreshCounts } from '../components/Shell';
 import { useAuth } from '../context/AuthContext';
+import { signAndConfirm } from '../services/chainActions';
 import { recorded } from './DigitalAssetDetail';
 import * as api from '../services/api';
 
@@ -82,7 +83,9 @@ export default function DigitalAssets() {
 }
 
 function RegisterDocument({ onClose, onDone }) {
-  const { user, isAdmin, isManager } = useAuth();
+  const { user, isAdmin, isManager, getSigner } = useAuth();
+  const direct = isAdmin || isManager; // no approval step: register and record in one go
+  const [progress, setProgress] = useState('');
   const { data: departments } = useAsync(api.assignableDepartments, []);
   const [file, setFile] = useState(null);
   const [uploaded, setUploaded] = useState(null);
@@ -107,8 +110,10 @@ function RegisterDocument({ onClose, onDone }) {
   return (
     <>
       <Dialog title="Register a document" onClose={onClose} wide
-        footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!valid} onClick={() => setStepUp(true)}>Submit for approval</Button></>}>
-        <p className="muted small">The file is stored in the LexCorp2 vault and its SHA-256 is computed by the server. A Manager or Administrator of the department approves it before it is recorded on the ledger.</p>
+        footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!valid} onClick={() => setStepUp(true)}>{direct ? 'Register and record' : 'Submit for approval'}</Button></>}>
+        <p className="muted small">The file is stored in the LexCorp2 vault and its SHA-256 is computed by the server. {direct
+          ? 'As a Manager or Administrator you register it directly: your wallet records it on the ledger straight away.'
+          : 'A Manager or Administrator of the department approves it before it is recorded on the ledger.'}</p>
         {error && <Notice tone="error">{error}</Notice>}
         <div className="form-grid">
           <Field className="span-2" label="Document file" hint="PDF, Word, PowerPoint, Excel, PNG/JPEG image or plain text, up to 50 MB.">
@@ -130,14 +135,21 @@ function RegisterDocument({ onClose, onDone }) {
         </div>
       </Dialog>
       {stepUp && (
-        <StepUpDialog factor="factor2" actionLabel="Confirm document submission" confirmLabel="Submit"
+        <StepUpDialog factor={direct ? 'factor3' : 'factor2'} actionLabel={direct ? 'Register and record this document' : 'Confirm document submission'}
+          confirmLabel={direct ? 'Register and record' : 'Submit'}
+          extra={progress && <Notice tone="info">{progress}</Notice>}
           onClose={() => setStepUp(false)}
           onSubmit={async (code) => {
-            const token = await api.stepUp('document.submit', code);
+            const token = await api.stepUp(direct ? 'asset.mint' : 'document.submit', code);
             const res = await api.proposeDocument({
               name: form.name.trim(), serial_number: form.serial.trim(), file_hash: uploaded.file_hash, offchain_uri: uploaded.offchain_uri,
               recipient_address: form.recipient.trim() || user.wallet_address, department: form.department, purpose: form.purpose || null,
             }, token);
+            if (res.calldata) {
+              const chain = await signAndConfirm(getSigner, res.calldata, res.contract_address, form.serial.trim(), setProgress);
+              onDone(`${form.serial.trim()} registered and recorded on the ledger (block ${chain.block_number}).`);
+              return;
+            }
             onDone(`${form.serial.trim()} submitted as ${res.action_id}. It appears as pending until approved.`);
           }} />
       )}

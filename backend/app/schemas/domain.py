@@ -179,6 +179,9 @@ class DocumentActionRead(DocumentActionBase):
     approver_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
+    # Set when a Manager/Admin acted directly: the ledger transaction their wallet signs now.
+    calldata: Optional[dict] = None
+    contract_address: Optional[str] = None
 
 
 # Maintenance Schemas

@@ -102,7 +102,9 @@ export default function DigitalAssetDetail() {
           {isHolder
             ? <Button onClick={() => setDialog('own-download')}>Download my copy</Button>
             : user.role !== 'AUDITOR' && <Button onClick={() => setDialog('download')}>Request download</Button>}
-          {user.role !== 'AUDITOR' && <Button onClick={() => setDialog('modify')}>Request modification copy</Button>}
+          {user.role !== 'AUDITOR' && (manages && isHolder
+            ? <Button onClick={() => setDialog('own-modify')}>Download modification copy</Button>
+            : <Button onClick={() => setDialog('modify')}>Request modification copy</Button>)}
           {(isHolder || manages) && <Button onClick={() => setDialog('share')}>Delegate access</Button>}
         </>} />
       <div className="content">
@@ -196,6 +198,18 @@ export default function DigitalAssetDetail() {
           <p className="small muted">View only: this copy can't be saved or printed from here, and it is watermarked and traceable by its View ID. {isHolder ? 'As the owner, use "Download my copy" for a copy you can keep.' : 'A copy you can keep needs an approved download.'}</p>
         </Dialog>
       )}
+      {dialog === 'own-modify' && (
+        <StepUpDialog factor="factor3" actionLabel="Download a modification copy" confirmLabel="Download"
+          extra={<p className="small">As a Manager or Administrator who owns this document, no request is needed. Edit the copy and upload it from My requests as the next version; keep its watermark, which LexCorp2 verifies and removes.</p>}
+          onClose={() => setDialog(null)}
+          onSubmit={async (code) => {
+            try {
+              const { blob, filename, actionId } = await api.ownerDownload(asset.serial_number, await api.stepUp('document.download', code), 'MODIFICATION');
+              downloadBlob(blob, filename);
+              done(`Downloaded your modification copy (${actionId}). Upload the edited file from My requests.`);
+            } catch (err) { throw new Error(await api.blobError(err)); }
+          }} />
+      )}
       {dialog === 'own-download' && (
         <StepUpDialog factor="factor3" actionLabel="Download your copy" confirmLabel="Download"
           extra={<p className="small">You own this document, so no approval is needed. You get a copy watermarked with your name, wallet, network address, date and a new Download ID. The original file stays in the vault.</p>}
@@ -229,6 +243,8 @@ export function RequestState({ a }) {
 
 /** Fetch an approved copy (Factor 3) or upload a revision after a modification copy. */
 export function RequestActions({ a, onMessage }) {
+  const { getSigner } = useAuth();
+  const [progress, setProgress] = useState('');
   const [step, setStep] = useState(null);
   const [file, setFile] = useState(null);
   const isMod = a.details?.mode === 'MODIFICATION';
@@ -257,7 +273,8 @@ export function RequestActions({ a, onMessage }) {
             <p className="small">Upload the copy you downloaded as {a.action_id}, with your changes. Keep its watermark, QR code and
               Document Control page: LexCorp2 checks them against its record, and a file whose watermark was removed or
               altered is refused and reported as possible tampering.</p>
-            <Field label="Revised file" hint="The edited copy. It becomes a new pending version.">
+            {progress && <Notice tone="info">{progress}</Notice>}
+            <Field label="Revised file" hint="The edited copy. It becomes the next version.">
               <input className="input" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></Field>
           </>}
           onClose={() => setStep(null)}
@@ -265,6 +282,12 @@ export function RequestActions({ a, onMessage }) {
             if (!file) throw new Error('Choose the revised file first.');
             const token = await api.stepUp('document.modify', code);
             const mod = await api.uploadRevision(a.asset_serial, a.action_id, file, 'Revision', token);
+            if (mod.calldata) {
+              const chain = await signAndConfirm(getSigner, mod.calldata, mod.contract_address, mod.asset_serial, setProgress);
+              setStep(null);
+              onMessage(`Version ${mod.details?.version} (${mod.asset_serial}) recorded on the ledger (block ${chain.block_number}).`);
+              return;
+            }
             setStep(null);
             onMessage(`Revision ${mod.action_id} submitted as version ${mod.details?.version}; it awaits approval.`);
           }} />
