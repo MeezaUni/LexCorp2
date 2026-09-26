@@ -42,6 +42,7 @@ db_backups/
 secrets/
 backend/.env
 network/besu/networkFiles/keys/
+network/besu/networkFiles/genesis.json
 network/besu/_generate/
 network/besu/data*/
 *.pid
