@@ -147,6 +147,8 @@ class ShareProposalRequest(BaseSchema):
     request_download: bool = False
     # Used only when a Manager/Admin grants directly (no approval step): the final limit.
     accessible_until: Optional[datetime] = None
+    # Which approved versions of the document to share (default: the one requested).
+    version_serials: Optional[List[str]] = None
 
 class DocumentApprovalRequest(BaseSchema):
     decision: str # "APPROVE" or "REJECT"

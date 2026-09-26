@@ -1,6 +1,7 @@
 """Reusable end-to-end steps through the real API (no bypasses): every step presents
 the purpose-specific factor its action requires."""
 
+import os
 import uuid
 from unittest.mock import patch
 
@@ -70,6 +71,12 @@ async def fetch(client, db, dl_id, requester=USER):
                              headers=await mfa_headers(db, token_for(requester), requester, "document.download"), json={})
 
 
+# Modification copies fetched in this test session, by Download ID: a revision is made the way a
+# person makes one, by editing the watermarked copy they were given.
+COPIES: dict = {}
+LAST_UPLOAD: dict = {}
+
+
 async def modification_download(client, db, serial, requester=USER, approver=MANAGER):
     """Request (MODIFICATION) -> approve -> fetch. Returns (dl_id, fetched response)."""
     dl = await request_download(client, db, serial, requester, mode="MODIFICATION")
@@ -77,10 +84,39 @@ async def modification_download(client, db, serial, requester=USER, approver=MAN
     assert r.status_code == 200, r.text
     got = await fetch(client, db, dl, requester)
     assert got.status_code == 200, got.text
+    COPIES[dl] = got.content
     return dl, got
 
 
-async def upload_revision(client, db, parent_serial, dl_id, content: bytes, filename: str, uploader=USER):
+def edited_copy(copy_pdf: bytes, new_text: bytes) -> bytes:
+    """The watermarked PDF copy with one page of new content added (the watermark, QR and
+    Document Control page stay as issued)."""
+    import io
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.pdfgen import canvas
+    page = io.BytesIO()
+    c = canvas.Canvas(page)
+    y = 780
+    for line in new_text.decode("utf-8", "replace").splitlines() or [""]:
+        c.drawString(72, y, line)
+        y -= 16
+    c.save()
+    writer = PdfWriter()
+    for p in PdfReader(io.BytesIO(copy_pdf)).pages:
+        writer.add_page(p)
+    writer.add_page(PdfReader(io.BytesIO(page.getvalue())).pages[0])
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+async def upload_revision(client, db, parent_serial, dl_id, content: bytes, filename: str, uploader=USER, raw=False):
+    """Upload a revision. By default the file is the modification copy of `dl_id` with `content`
+    added; raw=True uploads `content` exactly as given (to test refusals)."""
+    if not raw and dl_id in COPIES:
+        content = edited_copy(COPIES[dl_id], content)
+        filename = os.path.splitext(filename)[0] + ".pdf"
+    LAST_UPLOAD[dl_id] = content
     return await client.post(
         "/api/assets/document/revise/upload",
         headers=await mfa_headers(db, token_for(uploader), uploader, "document.modify"),

@@ -124,20 +124,92 @@ async def test_rejected_or_pending_documents_not_downloadable(client, db_session
 
 
 @pytest.mark.asyncio
-async def test_grantee_cannot_request_modification(client, db_session):
+async def test_delegated_user_revision_cycle_owner_consent_approval_and_integrity(client, db_session):
+    """A delegated user asks for a modification copy: the owner (a normal user) consents, a
+    Manager approves, the copy is fetched once, and the edited copy comes back as v2. A file
+    whose watermark was stripped or altered is refused and raises an alert."""
+    from app.models.domain import AuditEvent, SecurityAlert
+    from app.services.watermark import WatermarkContext, render_protected_copy
     serial = await flows.approved_document(client, db_session, b"mod rights body", "m.txt")
     dee = await grantee_with_download(db_session, serial)
     r = await client.post("/api/assets/document/download/request",
                           headers=await mfa_headers(db_session, flows.token_for(dee), dee, "download.request"),
-                          json={"asset_serial": serial, "purpose": "x", "mode": "MODIFICATION"})
-    assert r.status_code == 403
+                          json={"asset_serial": serial, "purpose": "fix typos", "mode": "MODIFICATION"})
+    assert r.status_code == 200, r.text
+    dl = r.json()["action_id"]
+    assert r.json()["status"] == "PENDING" and r.json()["details"]["requires_owner_approval"] is True
+    early = await flows.approve(client, db_session, dl)
+    assert early.status_code == 409  # the owner consents first
+    await flows.owner_consent(client, db_session, dl)
+    assert (await flows.approve(client, db_session, dl)).status_code == 200
+    got = await flows.fetch(client, db_session, dl, requester=dee)
+    assert got.status_code == 200
+    assert (await flows.fetch(client, db_session, dl, requester=dee)).status_code == 409  # once only
+    flows.COPIES[dl] = got.content
+
+    # Tampered: same Download ID and QR, but the IP on the watermark was changed
+    rec = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == dl))).scalar_one()
+    forged_ctx = WatermarkContext(kind="DOWNLOAD", actor_name="Downloader Dee", actor_wallet=dee, client_ip="203.0.113.99",
+                                  action_id=dl, verify_url=f"http://localhost:5173/verify/action/{dl}")
+    forged, _, _ = render_protected_copy(b"other body", "x.txt", forged_ctx)
+    bad = await flows.upload_revision(client, db_session, serial, dl, forged, "m.pdf", uploader=dee, raw=True)
+    assert bad.status_code == 422 and "IP" in bad.json()["detail"]
+    stripped = await flows.upload_revision(client, db_session, serial, dl, b"plain edited text, no watermark", "m.txt", uploader=dee, raw=True)
+    assert stripped.status_code == 422 and "QR" in stripped.json()["detail"]
+    ev = (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "WATERMARK_TAMPER_DETECTED",
+                                                              AuditEvent.asset_serial == serial))).scalars().all()
+    assert len(ev) == 2 and all(e.risk_label == "HIGH" for e in ev)
+    alerts = (await db_session.execute(select(SecurityAlert).where(SecurityAlert.event_type == "WATERMARK_TAMPER_DETECTED",
+                                                                    SecurityAlert.asset_serial == serial))).scalars().all()
+    assert len(alerts) == 2
+
+    ok = await flows.upload_revision(client, db_session, serial, dl, b"fixed typos", "m.txt", uploader=dee)
+    assert ok.status_code == 200, ok.text
+    assert (await flows.approve(client, db_session, ok.json()["action_id"])).status_code == 200
+    v2 = (await db_session.execute(select(Asset).where(Asset.serial_number == ok.json()["asset_serial"]))).scalar_one()
+    assert v2.version_number == 2 and v2.approval_status == "APPROVED"
+    root = (await db_session.execute(select(Asset).where(Asset.serial_number == serial))).scalar_one()
+    assert v2.owner_id == root.owner_id  # the owner still owns every version
+
+
+@pytest.mark.asyncio
+async def test_privileged_owner_consent_is_the_approval(client, db_session):
+    """When the owner is a Manager/Admin, their consent approves a delegated user's request."""
+    serial = await flows.approved_document(client, db_session, b"admin owned body", "a.txt", owner=flows.ADMIN, approver=flows.MANAGER)
+    dee = await grantee_with_download(db_session, serial)
+    dl = await flows.request_download(client, db_session, serial, requester=dee, mode="MODIFICATION")
+    await flows.owner_consent(client, db_session, dl, owner=flows.ADMIN)
+    rec = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == dl))).scalar_one()
+    assert rec.status == "APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_delegation_can_share_selected_versions(client, db_session):
+    serial = await flows.approved_document(client, db_session, b"versions body", "v.txt")
+    dl, _ = await flows.modification_download(client, db_session, serial)
+    rev = await flows.upload_revision(client, db_session, serial, dl, b"version two", "v.txt")
+    assert (await flows.approve(client, db_session, rev.json()["action_id"])).status_code == 200
+    v2 = rev.json()["asset_serial"]
+    grantee = await grantee_with_download(db_session, serial)
+    did = f"did:ethr:13371:{grantee}"
+    body = {"asset_serial": v2, "target_did": did, "version_serials": [serial, v2]}
+    bad = await client.post("/api/assets/document/share/propose",
+                            headers=await mfa_headers(db_session, flows.token_for(flows.MANAGER), flows.MANAGER, "asset.approve"),
+                            json={**body, "version_serials": [serial, "NOT-A-VERSION"]})
+    assert bad.status_code == 400
+    r = await client.post("/api/assets/document/share/propose",
+                          headers=await mfa_headers(db_session, flows.token_for(flows.MANAGER), flows.MANAGER, "asset.approve"), json=body)
+    assert r.status_code == 200 and r.json()["status"] == "APPROVED", r.text
+    grants = (await db_session.execute(select(AssetAccessGrant).where(AssetAccessGrant.grantee_did == did,
+                                                                      AssetAccessGrant.request_action_id == r.json()["action_id"]))).scalars().all()
+    assert sorted(g.asset_serial for g in grants) == sorted([serial, v2])
 
 
 @pytest.mark.asyncio
 async def test_revision_rules_identical_hash_fork_and_pending_not_final(client, db_session):
     serial = await flows.approved_document(client, db_session, b"base v1", "r.txt")
     dl, _ = await flows.modification_download(client, db_session, serial)
-    same = await flows.upload_revision(client, db_session, serial, dl, b"base v1", "r.txt")
+    same = await flows.upload_revision(client, db_session, serial, dl, b"base v1", "r.txt", raw=True)
     assert same.status_code == 400 and "identical" in same.json()["detail"]
     rev = await flows.upload_revision(client, db_session, serial, dl, b"base v2", "r.txt")
     assert rev.status_code == 200
@@ -223,10 +295,12 @@ async def test_modification_watermark_history_cumulative(client, db_session):
     assert got3.status_code == 200, got3.text
     t3 = pdf_text(got3.content)
     assert "history rev two" in t3
-    i1, i2 = t3.index(f"Modification ID: {mod1}"), t3.index(f"Modification ID: {mod2}")
-    assert i1 < i2 and t3.count(f"Modification ID: {mod1}") == t3.count(f"Modification ID: {mod2}")
+    # The authoritative block is the newest one (revisions keep the earlier copies' pages)
+    current = t3[t3.rindex("LexCorp Document Control"):]
+    i1, i2 = current.index(f"Modification ID: {mod1}"), current.index(f"Modification ID: {mod2}")
+    assert i1 < i2 and current.count(f"Modification ID: {mod1}") == current.count(f"Modification ID: {mod2}") == 1
     user = (await db_session.execute(select(User).where(User.wallet_address == flows.USER))).scalar_one()
-    assert f"Modified by wallet: {short_wallet(user.wallet_address)}" in t3
+    assert f"Modified by wallet: {short_wallet(user.wallet_address)}" in current
 
     hashes = [(await db_session.execute(select(Asset.file_hash).where(Asset.serial_number == s))).scalar_one() for s in (serial, s2, s3)]
     assert len(set(hashes)) == 3
@@ -245,7 +319,7 @@ async def test_uploaded_file_watermark_text_is_not_trusted(client, db_session):
     got = await flows.owner_download(client, db_session, r.json()["asset_serial"])
     assert got.status_code == 200, got.text
     text = pdf_text(got.content)
-    control = text[text.index("LexCorp Document Control"):]
+    control = text[text.rindex("LexCorp Document Control"):]  # the authoritative (newest) block
     assert "MOD-19990101-9999" not in control           # forged entry not in the authoritative block
     assert f"Modification ID: {r.json()['action_id']}" in control
 

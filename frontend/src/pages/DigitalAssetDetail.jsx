@@ -198,7 +198,8 @@ export default function DigitalAssetDetail() {
         <RequestCopy mode={dialog === 'modify' ? 'MODIFICATION' : 'STANDARD'} serial={asset.serial_number} privileged={manages} owner={isHolder}
           onClose={() => setDialog(null)} onDone={done} />
       )}
-      {dialog === 'share' && <DelegateAccess serial={asset.serial_number} privileged={manages} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === 'share' && <DelegateAccess serial={asset.serial_number} privileged={manages}
+        versions={versions.filter((v) => v.approval_status === 'APPROVED')} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === 'ledger' && <LedgerDialog asset={asset} onClose={() => setDialog(null)} onSubmit={recordOnLedger} />}
     </>
   );
@@ -238,8 +239,13 @@ export function RequestActions({ a, onMessage }) {
       )}
       {step === 'upload' && (
         <StepUpDialog factor="factor3" actionLabel={`Submit revision of ${a.asset_serial}`} confirmLabel="Submit revision"
-          extra={<Field label="Revised file" hint="Must be the same document type. It becomes a new pending version.">
-            <input className="input" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></Field>}
+          extra={<>
+            <p className="small">Upload the copy you downloaded as {a.action_id}, with your changes. Keep its watermark, QR code and
+              Document Control page: LexCorp2 checks them against its record, and a file whose watermark was removed or
+              altered is refused and reported as possible tampering.</p>
+            <Field label="Revised file" hint="The edited copy. It becomes a new pending version.">
+              <input className="input" type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></Field>
+          </>}
           onClose={() => setStep(null)}
           onSubmit={async (code) => {
             if (!file) throw new Error('Choose the revised file first.');
@@ -257,7 +263,8 @@ function RequestCopy({ mode, serial, privileged, owner, onClose, onDone }) {
   const [purpose, setPurpose] = useState('');
   const who = privileged
     ? (owner ? 'As a Manager or Administrator who owns it, it is approved straight away.' : 'As a Manager or Administrator, you need only the owner\'s consent; no other approval.')
-    : `It needs ${owner ? '' : 'the owner\'s consent and '}a Manager or Administrator approval.`;
+    : owner ? 'It needs a Manager or Administrator approval.'
+      : 'It needs the owner\'s consent, then a Manager or Administrator approval (the owner\'s consent is enough when the owner is a Manager or Administrator). You can download it once.';
   return (
     <StepUpDialog factor="factor2" actionLabel={mode === 'MODIFICATION' ? 'Request a modification copy' : 'Request a download'}
       confirmLabel="Send request" onClose={onClose}
@@ -277,8 +284,10 @@ function RequestCopy({ mode, serial, privileged, owner, onClose, onDone }) {
   );
 }
 
-function DelegateAccess({ serial, privileged, onClose, onDone }) {
+function DelegateAccess({ serial, privileged, versions = [], onClose, onDone }) {
   const [target, setTarget] = useState('');
+  const [shared, setShared] = useState(() => new Set([serial]));
+  const toggle = (s) => setShared((cur) => { const next = new Set(cur); if (next.has(s)) next.delete(s); else next.add(s); return next; });
   const [views, setViews] = useState('');
   const [download, setDownload] = useState(false);
   const [until, setUntil] = useState('');
@@ -293,13 +302,26 @@ function DelegateAccess({ serial, privileged, onClose, onDone }) {
         <Field label="Identity wallet address or DID"><input className="input mono" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="0x…" /></Field>
         <Field label={privileged ? 'View limit' : 'Suggested view limit'} hint={privileged ? 'Empty = unlimited' : 'Optional'}><input className="input" inputMode="numeric" value={views} onChange={(e) => setViews(e.target.value.replace(/\D/g, ''))} /></Field>
         {privileged && <Field label="Accessible until" hint="Empty = no expiry"><input className="input" type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} /></Field>}
+        {versions.length > 1 && (
+          <fieldset className="field" style={{ border: 0, padding: 0, margin: 0 }}>
+            <legend>Versions to share</legend>
+            {versions.map((v) => (
+              <label key={v.serial_number} className="choice">
+                <input type="checkbox" checked={shared.has(v.serial_number)} onChange={() => toggle(v.serial_number)} />
+                v{v.version_number || 1}{(v.version_number || 1) === 1 ? ' (original)' : ''}, <Id>{v.serial_number}</Id>
+              </label>
+            ))}
+          </fieldset>
+        )}
         <label className="choice"><input type="checkbox" checked={download} onChange={(e) => setDownload(e.target.checked)} />{privileged ? 'Allow this identity to request downloads' : 'Also ask to allow downloads'}</label>
       </>}
       onSubmit={async (code) => {
         if (!did.startsWith('did:')) throw new Error('Enter a valid wallet address or DID.');
+        if (shared.size === 0) throw new Error('Choose at least one version to share.');
         const token = await api.stepUp(privileged ? 'asset.approve' : 'access.request', code);
         const r = await api.proposeShare({
           asset_serial: serial, target_did: did, access_level: 1, max_views: views ? Number(views) : null, request_download: download,
+          version_serials: [...shared],
           ...(privileged && until ? { accessible_until: new Date(until).toISOString() } : {}),
         }, token);
         onDone(r.status === 'APPROVED' ? `Access granted (${r.action_id}).` : `Access request ${r.action_id} sent for approval.`);

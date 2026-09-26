@@ -36,7 +36,8 @@ async def test_revise_document_success(client, db_session):
     mod = rev.json()
     assert mod["action_id"].startswith("MOD-") and mod["status"] == "PENDING"
     assert mod["details"]["download_id"] == dl
-    assert mod["details"]["file_hash"] == hashlib.sha256(b"version two text").hexdigest()
+    assert mod["details"]["file_hash"] == hashlib.sha256(flows.LAST_UPLOAD[dl]).hexdigest()
+    assert "match the record" in mod["details"]["copy_check"]
 
     # The same modification download cannot be reused
     reuse = await flows.upload_revision(client, db_session, serial1, dl, b"version three", "spec.txt")
@@ -93,4 +94,4 @@ async def test_revise_document_different_department(client, db_session):
     )
 
     assert revise_res.status_code == 403
-    assert "Users can only revise documents in their own department" in revise_res.text
+    assert "may revise this document" in revise_res.text

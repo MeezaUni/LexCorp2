@@ -547,6 +547,25 @@ never in screenshots.
 
 ## I. Modification
 
+### I0 — A delegated user's revision cycle (with tamper check)
+- **Preconditions:** USB has delegated access to USA's `DOC-TEST-001` (G1).
+- **Steps:**
+  1. As USB: open the document → **Request modification copy** → purpose → Factor 2.
+  2. As USA (owner): **My requests** → **Consent** → Factor 3. As MGR: approve it → Factor 3.
+  3. As USB: **My requests** → **Download copy** → Factor 3. Try **Download copy** again.
+  4. Edit the downloaded PDF (for example add a page or annotation) but keep its watermark, QR code and last "LexCorp Document Control" page. **Upload revision** → Factor 3.
+  5. Also try uploading (a) the original un-watermarked file and (b) a copy where you changed a watermark detail such as the IP.
+  6. As MGR approve the revision and record it.
+- **Expected:** the request needs the owner's consent and then MGR's approval (only the owner's consent if the owner is a Manager/Admin); the copy downloads once only; step 4 is accepted as version 2; both uploads in step 5 are refused ("Revision refused: …") and each raises a HIGH security alert (Watermark tamper detected); after step 6 the Versions list shows v1 and v2, both owned by USA.
+- **Evidence:** I0.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### I6 — Share chosen versions
+- **Steps:** as MGR open v2 of `DOC-TEST-001` → **Delegate access** → tick v1 (original) and v2 → grant.
+- **Expected:** the person can open both versions; unticked versions stay hidden.
+- **Evidence:** I6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
 ### I1 — Modification copy
 - **Steps:**
   1. As USA open `DOC-TEST-001` → **Request modification copy** → purpose → Factor 2.

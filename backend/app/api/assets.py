@@ -18,6 +18,7 @@ from app.core.limiter import limiter
 from app.api.dependencies import get_db, get_current_user, get_current_active_user, get_onboarded_user, get_optional_user, get_request_client_ip, get_step_up_token, record_audit
 from app.core.config import settings
 from app.services.contract import contract_service
+from app.services import copy_integrity
 from app.services.watermark import HistoryEntry, UnsupportedDocumentType, WatermarkContext, render_protected_copy, render_view_copy
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_physical_card_svg
@@ -1104,6 +1105,13 @@ async def propose_document_creation(
 
 
 
+
+async def _lineage_assets(db, asset) -> list:
+    root_id = asset.root_asset_id or asset.id
+    rows = await db.execute(select(Asset).where(or_(Asset.root_asset_id == root_id, Asset.id == root_id)))
+    return list(rows.scalars().all())
+
+
 async def _grant_share(db, action, asset, approver, max_views, allow_download, expires_at, client_ip):
     """Create the delegated-access grant for a SHARE action (approved, or granted directly by a
     Manager/Admin). Returns optional on-chain calldata mirroring the grant."""
@@ -1112,12 +1120,15 @@ async def _grant_share(db, action, asset, approver, max_views, allow_download, e
     level = details.get("access_level", 1)
     if not target_did:
         raise HTTPException(status_code=400, detail="Access request has no target identity.")
-    db.add(AssetAccessGrant(
-        asset_id=asset.id, asset_serial=asset.serial_number, grantee_did=target_did,
-        granted_by_did=approver.did, requested_by_did=action.actor_did, request_action_id=action.action_id,
-        access_level=level, can_view=True, can_download=bool(allow_download), max_views=max_views,
-        views_count=0, expires_at=expires_at, is_active=True,
-    ))
+    serials = details.get("version_serials") or [asset.serial_number]
+    versions = (await db.execute(select(Asset).where(Asset.serial_number.in_(serials)))).scalars().all()
+    for version in versions:  # one grant per shared version, same limits
+        db.add(AssetAccessGrant(
+            asset_id=version.id, asset_serial=version.serial_number, grantee_did=target_did,
+            granted_by_did=approver.did, requested_by_did=action.actor_did, request_action_id=action.action_id,
+            access_level=level, can_view=True, can_download=bool(allow_download), max_views=max_views,
+            views_count=0, expires_at=expires_at, is_active=True,
+        ))
     details = dict(details)
     details.update({"approved_max_views": max_views, "approved_until": expires_at.isoformat() if expires_at else None,
                     "approved_download": bool(allow_download)})
@@ -1127,7 +1138,8 @@ async def _grant_share(db, action, asset, approver, max_views, allow_download, e
         client_ip=client_ip,
         details={"request_action_id": action.action_id, "requested_by": action.actor_did,
                  "max_views": max_views, "expires_at": expires_at.isoformat() if expires_at else None,
-                 "can_download": bool(allow_download), "asset_version": asset.version_number},
+                 "can_download": bool(allow_download), "asset_version": asset.version_number,
+                 "versions": sorted(v.version_number or 1 for v in versions)},
     )
     token_id = contract_service.get_token_by_serial(asset.serial_number) or asset.token_id
     try:
@@ -1171,6 +1183,14 @@ async def propose_document_share(
         raise HTTPException(status_code=400, detail="Target identity is not an active LexCorp user.")
     if target.id == current_user.id or target.id == asset.owner_id:
         raise HTTPException(status_code=400, detail="The target already holds this document.")
+    version_serials = [asset.serial_number]
+    if request.version_serials:
+        lineage = await _lineage_assets(db, asset)
+        allowed = {a.serial_number: a for a in lineage if a.approval_status in ("APPROVED", "ACTIVE")}
+        unknown = [v for v in request.version_serials if v not in allowed]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Not an approved version of this document: {', '.join(unknown)}")
+        version_serials = sorted(set(request.version_serials), key=lambda v: allowed[v].version_number or 1)
 
     action_id_str = await next_action_id(db, "ACR")
 
@@ -1191,6 +1211,7 @@ async def propose_document_share(
             "asset_serial": request.asset_serial,
             "requested_max_views": request.max_views,
             "request_download": request.request_download,
+            "version_serials": version_serials,
         }
     )
     db.add(action)
@@ -1759,9 +1780,12 @@ async def request_document_download(
     if current_user.role == "AUDITOR":
         raise HTTPException(status_code=403, detail="Auditors are not permitted to download operational documents")
     is_holder = asset.owner_id == current_user.id or asset.custodian_id == current_user.id
+    # A download copy needs a grant that allows downloads; a modification copy needs any active
+    # delegated access (the owner's consent and an approval still follow).
+    needed = "download" if mode == "STANDARD" else "view"
     if not (is_holder or access.can_manage_asset(current_user, asset)):
-        if await grant_svc.usable_grant(db, current_user, asset, "download") is None:
-            event, message = grant_svc.denial_reason(await grant_svc.latest_grant(db, current_user, asset), "download")
+        if await grant_svc.usable_grant(db, current_user, asset, needed) is None:
+            event, message = grant_svc.denial_reason(await grant_svc.latest_grant(db, current_user, asset), needed)
             await record_audit(db, event, actor_did=current_user.did, asset_serial=asset.serial_number,
                                client_ip=get_request_client_ip(req), risk_label="MEDIUM", risk_score=0.4,
                                details={"attempt": "DOWNLOAD_REQUEST"})
@@ -1769,8 +1793,6 @@ async def request_document_download(
             raise HTTPException(status_code=403, detail=message)
 
     if mode == "MODIFICATION":
-        if not (is_holder or access.can_manage_asset(current_user, asset)):
-            raise HTTPException(status_code=403, detail="Only the document holder or an authorized Manager/Admin may request a modification.")
         _, latest, pending = await _lineage_state(db, asset)
         if asset.version_number != latest:
             raise HTTPException(status_code=409, detail=f"Modifications must start from the latest approved version (v{latest}).")
@@ -1827,19 +1849,33 @@ async def approve_document_download(
     return await approve_document(action_id, request, current_user, db, client_ip, step_up_token)
 
 
+
+async def _require_may_revise(db, user, parent) -> None:
+    """Owner/custodian, a Manager/Admin in scope, or someone holding an approved modification
+    copy of this version (e.g. a delegated user whose request was accepted)."""
+    if parent.owner_id == user.id or parent.custodian_id == user.id or access.can_manage_asset(user, parent):
+        return
+    rows = (await db.execute(select(DocumentAction).where(
+        DocumentAction.actor_id == user.id, DocumentAction.asset_id == parent.id,
+        DocumentAction.action_type == "DOWNLOAD", DocumentAction.status.in_(("APPROVED", "COMPLETED")),
+    ))).scalars().all()
+    if not any((r.details or {}).get("mode") == "MODIFICATION" for r in rows):
+        raise HTTPException(status_code=403, detail="Only the owner, a Manager/Admin for its department, or someone given an "
+                                                    "approved modification copy may revise this document.")
+
+
 async def _create_revision(
     db: AsyncSession, current_user: User, parent_asset: Asset, download_action_id: Optional[str],
     file_hash: str, offchain_uri: str, name: Optional[str], purpose: Optional[str],
-    client_ip: str, requested_serial: Optional[str] = None,
+    client_ip: str, requested_serial: Optional[str] = None, *, content: bytes,
 ) -> DocumentAction:
     """Pending revision = NEW asset row (v+1). Requires an approved, completed MODIFICATION
-    download of the parent by this user. The hash is computed server-side; any watermark
-    text inside the uploaded file is ignored (history comes from the database)."""
+    download of the parent by this user (owner, Manager/Admin, or a delegated user whose
+    request the owner and approvers accepted). The uploaded file must still carry that copy's
+    watermark: its QR code and Document Control details are checked against the record.
+    The hash is computed server-side; history always comes from the database."""
     if parent_asset.asset_type not in ("DIGITAL", "DOCUMENT") or parent_asset.is_physical:
         raise HTTPException(status_code=400, detail="Only digital documents can be revised.")
-    is_holder = parent_asset.owner_id == current_user.id or parent_asset.custodian_id == current_user.id
-    if not (is_holder or access.can_manage_asset(current_user, parent_asset)):
-        raise HTTPException(status_code=403, detail="Users can only revise documents in their own department.")
     if not download_action_id:
         raise HTTPException(status_code=400, detail="A completed, approved modification download (DL-...) is required before uploading a revision.")
     dl = (await db.execute(select(DocumentAction).where(DocumentAction.action_id == download_action_id))).scalar_one_or_none()
@@ -1860,6 +1896,17 @@ async def _create_revision(
     lineage_hashes = set((await db.execute(select(Asset.file_hash).where(or_(Asset.root_asset_id == root_id, Asset.id == root_id)))).scalars().all())
     if file_hash in lineage_hashes:
         raise HTTPException(status_code=400, detail="The uploaded file is identical to an existing version (same SHA-256).")
+
+    # The file must be the modification copy LexCorp2 issued (QR + watermark intact).
+    check = copy_integrity.check_copy(content, dl.action_id, dl.watermark_text or "")
+    if not check.ok:
+        await record_audit(db, "WATERMARK_TAMPER_DETECTED", actor_did=current_user.did, asset_serial=parent_asset.serial_number,
+                           client_ip=client_ip, risk_label="HIGH", risk_score=0.8,
+                           details={"action_id": dl.action_id, "reason": check.reason, "mismatched_fields": check.mismatches,
+                                    "qr_found": check.qr_found, "control_block_found": check.block_found,
+                                    "source": "revision upload"})
+        await db.commit()
+        raise HTTPException(status_code=422, detail=f"Revision refused: {check.reason}")
 
     root = (await db.execute(select(Asset).where(Asset.id == root_id))).scalar_one()
     new_version = latest + 1
@@ -1886,6 +1933,7 @@ async def _create_revision(
             "name": revised.name, "parent_asset_serial": parent_asset.serial_number, "parent_asset_id": str(parent_asset.id),
             "parent_version": parent_asset.version_number, "version": new_version, "parent_file_hash": parent_asset.file_hash,
             "file_hash": file_hash, "offchain_uri": offchain_uri, "download_id": dl.action_id,
+            "copy_check": check.reason,
         },
     )
     db.add(action)
@@ -1914,17 +1962,16 @@ async def revise_document(
     parent_asset = (await db.execute(select(Asset).filter(Asset.serial_number == request.parent_asset_serial))).scalar_one_or_none()
     if not parent_asset:
         raise HTTPException(status_code=404, detail="Parent asset not found.")
-    if not (parent_asset.owner_id == current_user.id or parent_asset.custodian_id == current_user.id
-            or access.can_manage_asset(current_user, parent_asset)):
-        raise HTTPException(status_code=403, detail="Users can only revise documents in their own department.")
+    await _require_may_revise(db, current_user, parent_asset)
     await mfa.require_factor(db, current_user, "document.modify", totp_code=request.totp_code, step_up_token=step_up_token)
     probe = Asset(metadata_cid=request.new_offchain_uri)
-    actual = hashlib.sha256(_read_vault_file(probe)).hexdigest()
+    stored_bytes = _read_vault_file(probe)
+    actual = hashlib.sha256(stored_bytes).hexdigest()
     if actual != request.new_file_hash:
         raise HTTPException(status_code=400, detail="new_file_hash does not match the stored file (server-computed SHA-256).")
     action = await _create_revision(db, current_user, parent_asset, request.modification_download_id, actual,
                                     request.new_offchain_uri, request.name, request.purpose, client_ip,
-                                    requested_serial=request.new_serial_number)
+                                    requested_serial=request.new_serial_number, content=stored_bytes)
     await db.commit()
     await db.refresh(action)
     return action
@@ -1951,9 +1998,7 @@ async def upload_revision(
     parent_asset = (await db.execute(select(Asset).filter(Asset.serial_number == parent_asset_serial))).scalar_one_or_none()
     if not parent_asset:
         raise HTTPException(status_code=404, detail="Parent asset not found.")
-    if not (parent_asset.owner_id == current_user.id or parent_asset.custodian_id == current_user.id
-            or access.can_manage_asset(current_user, parent_asset)):
-        raise HTTPException(status_code=403, detail="Users can only revise documents in their own department.")
+    await _require_may_revise(db, current_user, parent_asset)
     await mfa.require_factor(db, current_user, "document.modify", totp_code=totp_code, step_up_token=step_up_token)
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
@@ -1961,12 +2006,13 @@ async def upload_revision(
     digest = hashlib.sha256(content).hexdigest()
     safe_name = os.path.basename(file.filename or "revision")
     stored = f"{digest}_{safe_name}"
+    action = await _create_revision(db, current_user, parent_asset, modification_download_id, digest,
+                                    f"secure-vault://documents/{stored}", name, purpose, get_request_client_ip(request),
+                                    content=content)
     path = os.path.join(OFFCHAIN_STORAGE_DIR, stored)
-    if not os.path.exists(path):  # content-addressed: never overwrite existing bytes
+    if not os.path.exists(path):  # content-addressed: never overwrite existing bytes; stored only once accepted
         with open(path, "xb") as f:
             f.write(content)
-    action = await _create_revision(db, current_user, parent_asset, modification_download_id, digest,
-                                    f"secure-vault://documents/{stored}", name, purpose, get_request_client_ip(request))
     await db.commit()
     await db.refresh(action)
     return action
@@ -2120,8 +2166,9 @@ async def owner_decision_on_download(
         d.update({"owner_approved_by": current_user.did, "owner_approved_at": datetime.now(UTC).isoformat()})
         event = "DOWNLOAD_OWNER_APPROVED"
         requester = (await db.execute(select(User).where(User.id == action.actor_id))).scalar_one_or_none()
-        if requester is not None and _privileged_for(requester, asset):
-            # A Manager/Administrator's request needs only the owner's consent.
+        if (requester is not None and _privileged_for(requester, asset)) or _privileged_for(current_user, asset):
+            # A Manager/Administrator's request needs only the owner's consent; and when the owner is
+            # a Manager/Administrator, their consent is the approval.
             action.details = d
             _approve_download(action, current_user, "owner consented to a Manager/Administrator request")
             d = dict(action.details)

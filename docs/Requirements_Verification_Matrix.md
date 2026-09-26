@@ -74,6 +74,7 @@ Manual test IDs refer to `backend/Final_Manual_Test_Checklist.md`.
 | Delegated access with view limit (atomic), expiry, view ≠ download | IMPLEMENTED + VERIFIED | `test_delegated_access` (10); Playwright 05 (view 2 refused) | G1–G5 |
 | Controlled download: request → owner consent → Manager/Admin approval → requester Factor 3 → single use | IMPLEMENTED + VERIFIED | Tests; Playwright 05 (second fetch 409) | H1–H6 |
 | Modification copy → revision upload (Factor 3) → approval → anchor on the root token; originals never overwritten | IMPLEMENTED + VERIFIED | Tests; Playwright 05 (v2 anchored in block 17943) | I1–I4 |
+| Delegated users may request modification copies (owner consent, then Manager/Admin approval; owner consent alone when the owner is a Manager/Admin); a revision must still carry its copy's watermark: QR decoded and Document Control fields compared with the record (PDF, Word, PowerPoint, Excel; QR only for images); refusals raise a HIGH alert; delegation can share chosen versions | IMPLEMENTED — MANUAL TEST REQUIRED | `test_download_modification_workflow` (revision cycle, tamper refusals + alerts, privileged-owner consent, version sharing); checker exercised on generated copies of all formats | I0, I6 |
 | Cumulative modification history in watermarks, from DB records only | IMPLEMENTED + VERIFIED | Watermark tests | I5 |
 
 ## 5. Watermarking
