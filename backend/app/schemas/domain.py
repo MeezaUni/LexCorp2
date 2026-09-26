@@ -145,6 +145,8 @@ class ShareProposalRequest(BaseSchema):
     totp_code: Optional[str] = None
     max_views: Optional[int] = None  # a suggestion only; the approver decides
     request_download: bool = False
+    # Used only when a Manager/Admin grants directly (no approval step): the final limit.
+    accessible_until: Optional[datetime] = None
 
 class DocumentApprovalRequest(BaseSchema):
     decision: str # "APPROVE" or "REJECT"

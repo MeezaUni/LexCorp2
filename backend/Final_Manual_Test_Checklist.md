@@ -390,12 +390,12 @@ never in screenshots.
 - **Evidence:** E5.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
-### E6 — No self-approval
+### E6 — Managers and Admins decide their own; users can't
 - **Steps:**
   1. As MGR register a document `DOC-TEST-006`.
-  2. In MGR's own queue look at that row.
-  3. Approve it as ADM.
-- **Expected:** MGR sees "Another approver must decide". ADM can approve it.
+  2. In MGR's queue the row shows **Decide** → approve → Factor 3 → **Approve and sign**.
+  3. As USA (a normal user), check that **Requests & approvals** offers no decisions at all.
+- **Expected:** MGR approves and records their own document without anyone else (still Factor 3, and their own wallet signs). Nothing is ever stuck at "Another approver must decide". Users' submissions (E1) still wait for a Manager or Admin.
 - **Evidence:** E6.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -447,6 +447,12 @@ never in screenshots.
 
 ## G. Delegated access
 
+### G0 — A Manager delegates directly
+- **Steps:** as MGR open an Avionics document → **Delegate access** → USB's wallet, view limit 2, an "Accessible until" time → Factor 3 → **Grant access**.
+- **Expected:** "Access granted (ACR-…)" straight away, no approval step; the grant shows 0 of 2 views and the expiry. (A normal user's delegation, G1, still goes for approval.)
+- **Evidence:** G0.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
 ### G1 — Delegate with limits
 - **Steps:**
   1. As USA open `DOC-TEST-001` → **Delegate access** → paste USB's wallet address → suggested view limit 2 → Factor 2.
@@ -487,6 +493,12 @@ never in screenshots.
 - **Steps:** as USA open their own `DOC-TEST-001` → **Download my copy** → Factor 3.
 - **Expected:** no **Request download** button for the owner. The file downloads immediately with a new `DL-` ID in its name; it's the watermarked copy naming USA (not the original file). The Audit trail shows "Document downloaded".
 - **Evidence:** H0.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### H0b — A Manager's copy of a user's document needs only the owner's consent
+- **Steps:** as MGR open USA's `DOC-TEST-001` → **Request download** → Factor 2. As USA: **My requests** → **Consent** → Factor 3. As MGR: **My requests** → **Download copy** → Factor 3.
+- **Expected:** after the owner's consent the request is approved at once; no second approver. A Manager's modification copy of their *own* document is approved immediately.
+- **Evidence:** H0b.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
 ### H1 — Non-owner requests a download
@@ -691,7 +703,7 @@ never in screenshots.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
 ### L6 — Approve and mint
-- **Steps:** as ADM (MGR cannot approve their own), Review `PHY-TEST-001` → **Approve and sign** → Factor 3. Do the same for `PHY-TEST-002`.
+- **Steps:** as MGR (or ADM), **Decide** / **Review** `PHY-TEST-001` → **Approve and sign** → Factor 3. Do the same for `PHY-TEST-002`.
 - **Expected:** recorded on the ledger. The asset page shows Minted, the token, and the ledger transaction.
 - **Evidence:** L6.png.
 - [ ] PASS  [ ] FAIL — Notes: ______

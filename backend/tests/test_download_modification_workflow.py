@@ -248,3 +248,31 @@ async def test_uploaded_file_watermark_text_is_not_trusted(client, db_session):
     control = text[text.index("LexCorp Document Control"):]
     assert "MOD-19990101-9999" not in control           # forged entry not in the authoritative block
     assert f"Modification ID: {r.json()['action_id']}" in control
+
+
+@pytest.mark.asyncio
+async def test_manager_copy_of_users_document_needs_only_owner_consent(client, db_session):
+    """A Manager asking for a copy of a USER's document: the owner's consent completes the
+    approval (no second approver). A Manager's modification copy of their own document is
+    approved at once. Fetching still needs Factor 3."""
+    serial = await flows.approved_document(client, db_session, b"managed body", "m.txt")  # owner: USER
+    dl = await flows.request_download(client, db_session, serial, requester=flows.MANAGER)
+    rec = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == dl))).scalar_one()
+    assert rec.status == "PENDING" and rec.details["requires_owner_approval"] is True
+    assert (await flows.fetch(client, db_session, dl, requester=flows.MANAGER)).status_code == 403
+    await flows.owner_consent(client, db_session, dl)
+    await db_session.refresh(rec)
+    assert rec.status == "APPROVED"
+    got = await flows.fetch(client, db_session, dl, requester=flows.MANAGER)
+    assert got.status_code == 200, got.text
+
+    own = await flows.approved_document(client, db_session, b"manager own body", "mo.txt", owner=flows.MANAGER, approver=flows.ADMIN)
+    mod = await flows.request_download(client, db_session, own, requester=flows.MANAGER, mode="MODIFICATION")
+    rec2 = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == mod))).scalar_one()
+    assert rec2.status == "APPROVED" and rec2.token_expires_at is not None
+
+    # A normal user's own modification copy still waits for a Manager/Admin
+    user_doc = await flows.approved_document(client, db_session, b"user own body", "u.txt")
+    umod = await flows.request_download(client, db_session, user_doc, requester=flows.USER, mode="MODIFICATION")
+    rec3 = (await db_session.execute(select(DocumentAction).where(DocumentAction.action_id == umod))).scalar_one()
+    assert rec3.status == "PENDING"

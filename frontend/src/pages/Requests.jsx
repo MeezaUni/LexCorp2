@@ -40,7 +40,7 @@ export default function Requests() {
     <>
       <PageHeader crumbs={[['Dashboard', '/'], [canApprove ? 'Requests & approvals' : 'My requests']]}
         title={canApprove ? 'Requests and approvals' : 'My requests'}
-        lede={canApprove ? 'Decisions need your Factor 3. You cannot decide on requests you submitted yourself.' : 'Downloads and modification copies you requested, and requests that need your consent as owner.'}
+        lede={canApprove ? 'Decisions need your Factor 3. As a Manager or Administrator you can also decide on your own submissions; a document owner\'s consent is still needed for their documents.' : 'Downloads and modification copies you requested, and requests that need your consent as owner.'}
         ribbon={[
           canApprove && { content: <><strong>{queue.data?.length ?? '…'}</strong> awaiting your decision</> },
           { content: <><strong>{consents.data?.length ?? '…'}</strong> need your consent as owner</> },
@@ -60,9 +60,7 @@ export default function Requests() {
                 { key: 'by', label: 'Requested by', render: (a) => a.actor_did === user.did ? <span className="muted">You</span> : <Id>{walletOf(a.actor_did)}</Id> },
                 { key: 'p', label: 'Purpose', render: (a) => a.purpose || '—' },
                 { key: 'w', label: 'Submitted', render: (a) => formatDate(a.created_at) },
-                { key: 'x', label: '', className: 'actions', render: (a) => a.actor_did === user.did
-                  ? <span className="small muted">Another approver must decide</span>
-                  : <Button size="sm" variant="primary" onClick={() => setReview(a)}>Review</Button> },
+                { key: 'x', label: '', className: 'actions', render: (a) => <Button size="sm" variant="primary" onClick={() => setReview(a)}>{a.actor_did === user.did ? 'Decide' : 'Review'}</Button> },
               ]} />
           </Panel>
         )}

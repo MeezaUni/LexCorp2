@@ -64,10 +64,11 @@ async def test_chain_confirm_real_besu_rejects_fabricated_tx(client, db_session)
 
 
 @pytest.mark.asyncio
-async def test_admin_may_submit_document_but_not_approve_it(client, db_session):
+async def test_admin_decides_own_submission_with_factor3(client, db_session):
     serial = await flows.approved_document(client, db_session, b"admin submitted", "adm.txt", owner=flows.ADMIN, approver=flows.MANAGER)
     assert serial
-    # The admin's own pending submission cannot be self-approved
+    # Policy: an Administrator (or Manager) needs no other approver for their own submission,
+    # but still proves Factor 3; a normal user can never approve.
     t = flows.token_for(flows.ADMIN)
     up = await client.post("/api/assets/upload-document", headers={"Authorization": f"Bearer {t}"},
                            files={"file": ("self.txt", b"self approve attempt", "text/plain")})
@@ -75,5 +76,12 @@ async def test_admin_may_submit_document_but_not_approve_it(client, db_session):
                              json={"name": "self", "serial_number": "SELF-" + up.json()["file_hash"][:8], "file_hash": up.json()["file_hash"],
                                    "offchain_uri": up.json()["offchain_uri"], "recipient_address": flows.ADMIN})
     assert prop.status_code == 200
-    r = await flows.approve(client, db_session, prop.json()["action_id"], approver=flows.ADMIN)
-    assert r.status_code == 403
+    action_id = prop.json()["action_id"]
+    no_factor = await client.post(f"/api/assets/document/approval/{action_id}",
+                                  headers={"Authorization": f"Bearer {t}"}, json={"decision": "APPROVE"})
+    assert no_factor.status_code == 401
+    as_user = await flows.approve(client, db_session, action_id, approver=flows.USER)
+    assert as_user.status_code == 403
+    r = await flows.approve(client, db_session, action_id, approver=flows.ADMIN)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "APPROVED" and r.json()["calldata"]  # the admin's own wallet signs the mint

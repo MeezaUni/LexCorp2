@@ -1103,6 +1103,44 @@ async def propose_document_creation(
     return action
 
 
+
+async def _grant_share(db, action, asset, approver, max_views, allow_download, expires_at, client_ip):
+    """Create the delegated-access grant for a SHARE action (approved, or granted directly by a
+    Manager/Admin). Returns optional on-chain calldata mirroring the grant."""
+    details = action.details or {}
+    target_did = details.get("target_did")
+    level = details.get("access_level", 1)
+    if not target_did:
+        raise HTTPException(status_code=400, detail="Access request has no target identity.")
+    db.add(AssetAccessGrant(
+        asset_id=asset.id, asset_serial=asset.serial_number, grantee_did=target_did,
+        granted_by_did=approver.did, requested_by_did=action.actor_did, request_action_id=action.action_id,
+        access_level=level, can_view=True, can_download=bool(allow_download), max_views=max_views,
+        views_count=0, expires_at=expires_at, is_active=True,
+    ))
+    details = dict(details)
+    details.update({"approved_max_views": max_views, "approved_until": expires_at.isoformat() if expires_at else None,
+                    "approved_download": bool(allow_download)})
+    action.details = details
+    await record_audit(
+        db, "ACCESS_GRANTED", actor_did=approver.did, target_did=target_did, asset_serial=asset.serial_number,
+        client_ip=client_ip,
+        details={"request_action_id": action.action_id, "requested_by": action.actor_did,
+                 "max_views": max_views, "expires_at": expires_at.isoformat() if expires_at else None,
+                 "can_download": bool(allow_download), "asset_version": asset.version_number},
+    )
+    token_id = contract_service.get_token_by_serial(asset.serial_number) or asset.token_id
+    try:
+        return contract_service.prepare_grant_access_calldata(token_id=token_id, target_did=target_did, level=level)
+    except Exception:
+        return None  # DB grant is authoritative for view counts/expiry; on-chain mirror is optional
+
+
+def _privileged_for(user, asset) -> bool:
+    """Managers/Administrators acting within their scope need no approver."""
+    return user.role in ("ADMIN", "MANAGER") and access.can_manage_asset(user, asset)
+
+
 @router.post("/document/share/propose", response_model=DocumentActionRead)
 async def propose_document_share(
     request: ShareProposalRequest,
@@ -1111,12 +1149,14 @@ async def propose_document_share(
     client_ip: str = Depends(get_request_client_ip),
     step_up_token: Optional[str] = Depends(get_step_up_token),
 ):
-    """Propose sharing an asset with another DID."""
-
-    await mfa.require_factor(db, current_user, "access.request", totp_code=request.totp_code, step_up_token=step_up_token)
-
+    """Delegate access to a document. A normal user's request waits for a Manager/Admin
+    (Factor 2 to submit); a Manager/Admin in scope grants it directly with their final limits
+    (Factor 3, as for any approval)."""
     res = await db.execute(select(Asset).filter(Asset.serial_number == request.asset_serial))
     asset = res.scalar_one_or_none()
+    direct = asset is not None and _privileged_for(current_user, asset)
+    await mfa.require_factor(db, current_user, "asset.approve" if direct else "access.request",
+                             totp_code=request.totp_code, step_up_token=step_up_token)
     # Only the owner/custodian, or a Manager/Admin with scope, may request access for someone
     # else. Grantees cannot re-share. Nothing is granted until a Manager/Admin approves.
     is_holder = asset is not None and (asset.owner_id == current_user.id or asset.custodian_id == current_user.id)
@@ -1154,6 +1194,15 @@ async def propose_document_share(
         }
     )
     db.add(action)
+    if direct:
+        until = request.accessible_until
+        if until is not None and (until.tzinfo is None or until <= datetime.now(UTC)):
+            raise HTTPException(status_code=400, detail="Accessible until must be a future time with a timezone.")
+        action.status = "APPROVED"
+        action.approver_id = current_user.id
+        action.approver_did = current_user.did
+        action.details = {**action.details, "granted_directly": True}
+        await _grant_share(db, action, asset, current_user, request.max_views, bool(request.request_download), until, client_ip)
 
     audit_event = AuditEvent(
         event_type="AssetShareProposed",
@@ -1392,9 +1441,9 @@ async def approve_document(
 
     if not access.can_manage_asset(current_user, asset):
         raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
-    if action.actor_id == current_user.id:
-        # Separation of duties: nobody approves a request they initiated.
-        raise HTTPException(status_code=403, detail="You cannot approve or reject a request you initiated.")
+    # Managers and Administrators decide on their own submissions too (only they can reach this
+    # endpoint); a normal user's request always needs a Manager or Administrator. Downloads of a
+    # document someone else owns still need that owner's consent first (checked below).
 
     await mfa.require_factor(db, current_user, "asset.approve", totp_code=request.totp_code, step_up_token=step_up_token)
 
@@ -1480,45 +1529,9 @@ async def approve_document(
             action.token_expires_at = token_expires_at
             download_url = f"/api/assets/document/download/{action.action_id}/fetch"
         elif action.action_type == "SHARE":
-            details = action.details or {}
-            target_did = details.get("target_did")
-            level = details.get("access_level", 1)
-            if not target_did:
-                raise HTTPException(status_code=400, detail="Access request has no target identity.")
             # The approver decides the limits (defaults: unlimited views, no expiry, view-only).
-            expires_at = request.accessible_until  # validated above
-            new_grant = AssetAccessGrant(
-                asset_id=asset.id,
-                asset_serial=asset.serial_number,
-                grantee_did=target_did,
-                granted_by_did=current_user.did,
-                requested_by_did=action.actor_did,
-                request_action_id=action.action_id,
-                access_level=level,
-                can_view=True,
-                can_download=bool(request.allow_download),
-                max_views=request.max_views,
-                views_count=0,
-                expires_at=expires_at,
-                is_active=True,
-            )
-            db.add(new_grant)
-            details = dict(details)
-            details.update({"approved_max_views": request.max_views, "approved_until": expires_at.isoformat() if expires_at else None,
-                            "approved_download": bool(request.allow_download)})
-            action.details = details
-            await record_audit(
-                db, "ACCESS_GRANTED", actor_did=current_user.did, target_did=target_did, asset_serial=asset.serial_number,
-                client_ip=client_ip,
-                details={"request_action_id": action.action_id, "requested_by": action.actor_did,
-                         "max_views": request.max_views, "expires_at": expires_at.isoformat() if expires_at else None,
-                         "can_download": bool(request.allow_download), "asset_version": asset.version_number},
-            )
-            token_id = contract_service.get_token_by_serial(asset.serial_number) or asset.token_id
-            try:
-                calldata = contract_service.prepare_grant_access_calldata(token_id=token_id, target_did=target_did, level=level)
-            except Exception:
-                calldata = None  # DB grant is authoritative for view counts/expiry; on-chain mirror is optional
+            calldata = await _grant_share(db, action, asset, current_user, request.max_views,
+                                          bool(request.allow_download), request.accessible_until, client_ip)
 
         audit_event = AuditEvent(
             event_type="AssetActionApproved",
@@ -1784,10 +1797,20 @@ async def request_document_download(
     )
 
     db.add(new_action)
+    if not requires_owner and _privileged_for(current_user, asset):
+        _approve_download(new_action, current_user, "requester is a Manager/Administrator in scope")
     await db.commit()
     await db.refresh(new_action)
 
     return new_action
+
+
+def _approve_download(action, approver, reason: str) -> None:
+    action.status = "APPROVED"
+    action.approver_id = approver.id
+    action.approver_did = approver.did
+    action.token_expires_at = datetime.now(UTC) + timedelta(hours=settings.DOWNLOAD_APPROVAL_TTL_HOURS)
+    action.details = {**(action.details or {}), "auto_approved": reason}
 
 
 @router.post("/document/download/approve/{action_id}")
@@ -2096,6 +2119,12 @@ async def owner_decision_on_download(
     if body.decision.upper() == "APPROVE":
         d.update({"owner_approved_by": current_user.did, "owner_approved_at": datetime.now(UTC).isoformat()})
         event = "DOWNLOAD_OWNER_APPROVED"
+        requester = (await db.execute(select(User).where(User.id == action.actor_id))).scalar_one_or_none()
+        if requester is not None and _privileged_for(requester, asset):
+            # A Manager/Administrator's request needs only the owner's consent.
+            action.details = d
+            _approve_download(action, current_user, "owner consented to a Manager/Administrator request")
+            d = dict(action.details)
     elif body.decision.upper() == "REJECT":
         action.status = "REJECTED"
         d.update({"owner_rejected_by": current_user.did, "rejection_reason": body.rejection_reason})

@@ -127,15 +127,33 @@ async def test_unrelated_user_and_grantee_cannot_reshare(client, db_session, set
 
 
 @pytest.mark.asyncio
-async def test_approver_cannot_approve_own_request(client, db_session, setup):
-    # Manager requests access for the grantee, then tries to approve it themselves
+async def test_manager_grants_directly_with_factor3_but_users_still_need_approval(client, db_session, setup):
+    """Policy: a Manager/Admin in scope delegates without an approver, proving Factor 3 (the
+    approval factor), with final limits; a normal user's delegation still waits for approval."""
+    body = {"asset_serial": setup["asset"].serial_number, "target_did": setup["grantee"].did, "max_views": 3}
+    # A Factor 2 proof is not enough for a direct grant
+    weak = await client.post("/api/assets/document/share/propose",
+                             headers=await mfa_headers(db_session, token(MANAGER), MANAGER, "access.request"), json=body)
+    assert weak.status_code == 401
+    past = await client.post("/api/assets/document/share/propose",
+                             headers=await mfa_headers(db_session, token(MANAGER), MANAGER, "asset.approve"),
+                             json={**body, "accessible_until": "2020-01-01T00:00:00+00:00"})
+    assert past.status_code == 400
     r = await client.post("/api/assets/document/share/propose",
-                          headers=await mfa_headers(db_session, token(MANAGER), MANAGER, "access.request"),
-                          json={"asset_serial": setup["asset"].serial_number, "target_did": setup["grantee"].did})
-    assert r.status_code == 200
-    self_ok = await approve(client, db_session, r.json()["action_id"], approver=MANAGER)
-    assert self_ok.status_code == 403
-    assert (await approve(client, db_session, r.json()["action_id"], approver=ADMIN)).status_code == 200
+                          headers=await mfa_headers(db_session, token(MANAGER), MANAGER, "asset.approve"), json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "APPROVED"
+    g = await grant_row(db_session, setup)
+    assert g.max_views == 3 and g.can_view and not g.can_download and g.granted_by_did.endswith(MANAGER)
+
+    # The owner is a normal user: their request is only a proposal until a Manager/Admin decides
+    owner_req = await client.post("/api/assets/document/share/propose",
+                                  headers=await mfa_headers(db_session, token(OWNER), OWNER, "access.request"), json=body)
+    assert owner_req.status_code == 200 and owner_req.json()["status"] == "PENDING"
+    # A Manager may also decide on a request they submitted themselves (no one else is needed)
+    own = await client.post("/api/assets/document/share/propose",
+                            headers=await mfa_headers(db_session, token(ADMIN), ADMIN, "asset.approve"), json=body)
+    assert own.status_code == 200 and own.json()["status"] == "APPROVED"
 
 
 @pytest.mark.asyncio

@@ -195,9 +195,10 @@ export default function DigitalAssetDetail() {
           }} />
       )}
       {(dialog === 'download' || dialog === 'modify') && (
-        <RequestCopy mode={dialog === 'modify' ? 'MODIFICATION' : 'STANDARD'} serial={asset.serial_number} onClose={() => setDialog(null)} onDone={done} />
+        <RequestCopy mode={dialog === 'modify' ? 'MODIFICATION' : 'STANDARD'} serial={asset.serial_number} privileged={manages} owner={isHolder}
+          onClose={() => setDialog(null)} onDone={done} />
       )}
-      {dialog === 'share' && <DelegateAccess serial={asset.serial_number} onClose={() => setDialog(null)} onDone={done} />}
+      {dialog === 'share' && <DelegateAccess serial={asset.serial_number} privileged={manages} onClose={() => setDialog(null)} onDone={done} />}
       {dialog === 'ledger' && <LedgerDialog asset={asset} onClose={() => setDialog(null)} onSubmit={recordOnLedger} />}
     </>
   );
@@ -252,43 +253,56 @@ export function RequestActions({ a, onMessage }) {
   );
 }
 
-function RequestCopy({ mode, serial, onClose, onDone }) {
+function RequestCopy({ mode, serial, privileged, owner, onClose, onDone }) {
   const [purpose, setPurpose] = useState('');
+  const who = privileged
+    ? (owner ? 'As a Manager or Administrator who owns it, it is approved straight away.' : 'As a Manager or Administrator, you need only the owner\'s consent; no other approval.')
+    : `It needs ${owner ? '' : 'the owner\'s consent and '}a Manager or Administrator approval.`;
   return (
     <StepUpDialog factor="factor2" actionLabel={mode === 'MODIFICATION' ? 'Request a modification copy' : 'Request a download'}
       confirmLabel="Send request" onClose={onClose}
       extra={<>
         <p className="small">{mode === 'MODIFICATION'
-          ? 'A modification copy lets you edit the document outside LexCorp2 and upload the result as a new version for approval.'
-          : 'A download is a watermarked copy you keep. It needs the owner\'s consent (when you are not the owner) and a Manager or Administrator approval.'}</p>
+          ? 'A modification copy lets you edit the document outside LexCorp2 and upload the result as a new version.'
+          : 'A download is a watermarked copy you keep.'} {who}</p>
         <Field label="Purpose"><input className="input" value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Why do you need a copy?" /></Field>
       </>}
       onSubmit={async (code) => {
         const token = await api.stepUp('download.request', code);
         const r = await api.requestDownload(serial, mode, purpose || null, token);
-        onDone(`Request ${r.action_id} sent. You will be able to download it from My requests once approved.`);
+        onDone(r.status === 'APPROVED'
+          ? `${r.action_id} is approved. Download it from My requests.`
+          : `Request ${r.action_id} sent. You will be able to download it from My requests once approved.`);
       }} />
   );
 }
 
-function DelegateAccess({ serial, onClose, onDone }) {
+function DelegateAccess({ serial, privileged, onClose, onDone }) {
   const [target, setTarget] = useState('');
   const [views, setViews] = useState('');
   const [download, setDownload] = useState(false);
+  const [until, setUntil] = useState('');
   const did = ethers.isAddress(target.trim()) ? `did:ethr:13371:${target.trim().toLowerCase()}` : target.trim();
   return (
-    <StepUpDialog factor="factor2" actionLabel="Delegate access to this document" confirmLabel="Send for approval" onClose={onClose}
+    <StepUpDialog factor={privileged ? 'factor3' : 'factor2'} actionLabel="Delegate access to this document"
+      confirmLabel={privileged ? 'Grant access' : 'Send for approval'} onClose={onClose}
       extra={<>
-        <p className="small">The request goes to a Manager or Administrator, who sets the final limits (view count, expiry, download).</p>
+        <p className="small">{privileged
+          ? 'As a Manager or Administrator, the access applies immediately with the limits you set here.'
+          : 'The request goes to a Manager or Administrator, who sets the final limits (view count, expiry, download).'}</p>
         <Field label="Identity wallet address or DID"><input className="input mono" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="0x…" /></Field>
-        <Field label="Suggested view limit" hint="Optional"><input className="input" inputMode="numeric" value={views} onChange={(e) => setViews(e.target.value.replace(/\D/g, ''))} /></Field>
-        <label className="choice"><input type="checkbox" checked={download} onChange={(e) => setDownload(e.target.checked)} />Also ask to allow downloads</label>
+        <Field label={privileged ? 'View limit' : 'Suggested view limit'} hint={privileged ? 'Empty = unlimited' : 'Optional'}><input className="input" inputMode="numeric" value={views} onChange={(e) => setViews(e.target.value.replace(/\D/g, ''))} /></Field>
+        {privileged && <Field label="Accessible until" hint="Empty = no expiry"><input className="input" type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} /></Field>}
+        <label className="choice"><input type="checkbox" checked={download} onChange={(e) => setDownload(e.target.checked)} />{privileged ? 'Allow this identity to request downloads' : 'Also ask to allow downloads'}</label>
       </>}
       onSubmit={async (code) => {
         if (!did.startsWith('did:')) throw new Error('Enter a valid wallet address or DID.');
-        const token = await api.stepUp('access.request', code);
-        const r = await api.proposeShare({ asset_serial: serial, target_did: did, access_level: 1, max_views: views ? Number(views) : null, request_download: download }, token);
-        onDone(`Access request ${r.action_id} sent for approval.`);
+        const token = await api.stepUp(privileged ? 'asset.approve' : 'access.request', code);
+        const r = await api.proposeShare({
+          asset_serial: serial, target_did: did, access_level: 1, max_views: views ? Number(views) : null, request_download: download,
+          ...(privileged && until ? { accessible_until: new Date(until).toISOString() } : {}),
+        }, token);
+        onDone(r.status === 'APPROVED' ? `Access granted (${r.action_id}).` : `Access request ${r.action_id} sent for approval.`);
       }} />
   );
 }
