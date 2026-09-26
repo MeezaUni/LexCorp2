@@ -677,3 +677,16 @@ async def test_session_is_httponly_cookie_only(client, db_session):
                                                            "token": pyotp.TOTP(ident["totp1"]).at(int(time.time()) + 30)})
     assert login.status_code == 200, login.text
     assert "token" not in login.json() and login.cookies.get("session")
+
+
+
+@pytest.mark.asyncio
+async def test_factor_totp_cannot_be_added_to_passkey_protected_purpose_without_that_factor(client, db_session):
+    """A login session alone must not add a Factor 3 authenticator next to an existing Passkey 3."""
+    ident = await onboard(client, db_session, "MANAGER")
+    pk3 = await register_passkey(client, ident["token"], "factor3")
+    denied = await client.post("/api/auth/2fa/factor3/setup", headers=bearer(ident["token"]))
+    assert denied.status_code == 401
+    proof = await step_up_via_passkey(client, ident["token"], pk3, "factor3", "factor3.manage")
+    ok = await client.post("/api/auth/2fa/factor3/setup", headers=bearer(ident["token"], **{"X-Step-Up-Token": proof.json()["step_up_token"]}))
+    assert ok.status_code == 200 and ok.json()["secret"]

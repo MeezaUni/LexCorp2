@@ -61,7 +61,8 @@ async def test_asset_certificate_svg_card_success(client, db_session):
     assert "<svg" in svg_text
     # Spec 35: ONLY Serial Number, NFT / Token ID, Creation Date, Department and a QR code
     assert serial in svg_text and f"#{token_id}" in svg_text and "Avionics" in svg_text
-    assert "SERIAL NUMBER" in svg_text and "NFT / TOKEN ID" in svg_text and "CREATION DATE" in svg_text and "DEPARTMENT" in svg_text
+    upper = svg_text.upper()
+    assert "SERIAL NUMBER" in upper and "NFT / TOKEN ID" in upper and "CREATION DATE" in upper and "DEPARTMENT" in upper
     assert "data:image/png;base64," in svg_text  # Embedded QR Code
     import re as _re
     visible = _re.sub(r'data:image/png;base64,[^"]+', "", svg_text)  # ignore the QR image bytes

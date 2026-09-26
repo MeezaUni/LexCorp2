@@ -408,8 +408,8 @@ async def _totp_setup(user: User, purpose: str, db: AsyncSession) -> dict:
             raise HTTPException(status_code=403, detail="Login Authenticator is already configured. Use REQUEST ADMIN ASSISTANCE to reset it.")
         raise HTTPException(status_code=400, detail=f"{mfa.PURPOSE_LABELS[purpose]} TOTP is already enabled.")
     secret = security.generate_totp_secret()
-    issuer = {"login": "LexCorp - Login (Factor 1)", "factor2": "LexCorp - Factor 2 (View/Submission)",
-              "factor3": "LexCorp - Factor 3 (Mint/Approve/Modify)"}[purpose]
+    issuer = {"login": "LexCorp2 Login (Factor 1)", "factor2": "LexCorp2 Factor 2 (view, submit)",
+              "factor3": "LexCorp2 Factor 3 (approve, modify)"}[purpose]
     mfa.set_totp_secret(user, purpose, secret)
     await db.commit()
     # Returned once to the enrolling user only, for their authenticator app. Never logged.
@@ -455,11 +455,18 @@ async def verify_totp_setup(request: Request, response: Response, token: str = B
 
 @router.post("/2fa/{factor}/setup")
 @limiter.limit("5/minute")
-async def setup_totp_factor(factor: str, request: Request, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def setup_totp_factor(factor: str, request: Request, body: FactorManageRequest = Body(default=FactorManageRequest()),
+                            step_up_header: Optional[str] = Depends(get_step_up_token),
+                            user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     if factor not in ("factor2", "factor3"):
         raise HTTPException(status_code=404, detail="Unknown factor")
     if user.onboarding_pending:
         raise HTTPException(status_code=403, detail="Complete login setup first.")
+    # A purpose already protected by a passkey may only gain a TOTP with that purpose's
+    # own proof; a login session alone must never add a higher factor.
+    if await mfa.scoped_credentials(db, user, factor):
+        await mfa.require_factor(db, user, f"{factor}.manage", totp_code=body.totp_code,
+                                 step_up_token=body.step_up_token or step_up_header)
     return await _totp_setup(user, factor, db)
 
 
@@ -551,7 +558,7 @@ async def get_webauthn_registration_options(
     label = mfa.PURPOSE_LABELS[scope]
     options = webauthn.generate_registration_options(
         rp_id=settings.RP_ID,
-        rp_name="LexCorp SIH26125",
+        rp_name="LexCorp2",
         user_id=f"{user.id}_{scope}".encode(),
         user_name=f"{user.wallet_address} ({label})",
         user_display_name=f"{user.name or user.wallet_address} [{label}]",
