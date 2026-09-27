@@ -379,7 +379,8 @@ async def session_state(request: Request, session: Optional[str] = Cookie(None),
         return {"authenticated": False}
     from app.api.dependencies import _authenticate
     try:
-        user, payload = await _authenticate(request, session, None, db)
+        # A check, not activity: the page polls this, which must not keep an idle session alive
+        user, payload = await _authenticate(request, session, None, db, touch=False)
     except HTTPException as e:
         # Tell the holder of the (rejected) cookie why their session ended.
         return {"authenticated": False, "ended": str(e.detail)}

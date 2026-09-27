@@ -14,5 +14,5 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends /tmp/oauth2.deb \
  && rm -rf /tmp/oauth2.deb /var/lib/apt/lists/*
 
-COPY entrypoint-openvpn.sh entrypoint-auth.sh entrypoint-sitelink.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint-*.sh
+COPY entrypoint-openvpn.sh entrypoint-auth.sh entrypoint-sitelink.sh vpn-client-connect.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint-*.sh /usr/local/bin/vpn-client-connect.sh

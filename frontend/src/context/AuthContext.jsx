@@ -61,6 +61,25 @@ export function AuthProvider({ children }) {
     clear(message);
   }, [clear]);
 
+  // Session check every 20 s and when the page comes back into view, so a session that ended on
+  // the server (signed in on another device, VPN reconnected, revoked, expired) signs this page out
+  // with the reason instead of leaving it looking signed in. It doesn't count as activity.
+  useEffect(() => {
+    if (!user) return undefined;
+    const check = () => {
+      if (document.visibilityState === 'hidden') return;
+      getSession().then((st) => { if (!st.authenticated) clear(st.ended ? `Your session ended: ${st.ended}` : 'Your session ended. Sign in again.'); }).catch(() => {});
+    };
+    const timer = window.setInterval(check, 20000);
+    document.addEventListener('visibilitychange', check);
+    window.addEventListener('focus', check);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', check);
+      window.removeEventListener('focus', check);
+    };
+  }, [user, clear]);
+
   // Inactivity timeout (client side mirror).
   useEffect(() => {
     if (!user) return undefined;

@@ -7,7 +7,7 @@ import * as api from '../services/api';
 import ProtectedViewer from '../components/ProtectedViewer';
 
 const STAGE = { AUDITOR: 'AUDITOR_REVIEW', MANAGER: 'MANAGER_REVIEW', ADMIN: 'ADMIN_REVIEW' };
-const NEXT = { AUDITOR: 'the Manager of the department', MANAGER: 'an Administrator' };
+const NEXT = { MANAGER: 'the Manager of the department', ADMIN: 'an Administrator' };
 const SOURCE = { AI: 'AI-assisted risk analysis', RULE: 'Integrity or security rule', LEGACY: 'Imported event' };
 
 export default function Alerts() {
@@ -67,6 +67,7 @@ export default function Alerts() {
 
 function AlertDetail({ alert, user, onClose, onDone }) {
   const { data: full } = useAsync(() => api.getAlert(alert.alert_id), [alert.alert_id]);
+  const forwardTo = full?.forward_to; // MANAGER, or ADMIN when no independent Manager covers the department
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -78,7 +79,7 @@ function AlertDetail({ alert, user, onClose, onDone }) {
     setBusy(kind); setError('');
     try {
       if (kind === 'dismiss') { await api.dismissAlert(alert.alert_id, note); onDone(`${alert.alert_id} dismissed as a false alarm.`); }
-      else { await api.forwardAlert(alert.alert_id, note); onDone(`${alert.alert_id} forwarded to ${NEXT[user.role]}.`); }
+      else { await api.forwardAlert(alert.alert_id, note); onDone(`${alert.alert_id} forwarded to ${NEXT[forwardTo] || 'the next reviewer'}.`); }
     } catch (err) { setError(errorText(err)); setBusy(''); }
   };
 
@@ -88,7 +89,7 @@ function AlertDetail({ alert, user, onClose, onDone }) {
         footer={mine && !self ? <>
           <Button onClick={onClose}>Close</Button>
           <Button busy={busy === 'dismiss'} disabled={!note.trim()} onClick={() => act('dismiss')}>Dismiss as false alarm</Button>
-          {user.role !== 'ADMIN' && <Button variant="primary" busy={busy === 'forward'} onClick={() => act('forward')}>Forward to {user.role === 'AUDITOR' ? 'Manager' : 'Administrator'}</Button>}
+          {user.role !== 'ADMIN' && <Button variant="primary" busy={busy === 'forward'} disabled={!forwardTo} onClick={() => act('forward')}>Forward to {forwardTo === 'MANAGER' ? 'Manager' : 'Administrator'}</Button>}
           {user.role === 'ADMIN' && <Button variant="danger" disabled={!note.trim()} onClick={() => setRevoking(true)}>Revoke identity</Button>}
         </> : <>
           <Button onClick={onClose}>Close</Button>
@@ -103,6 +104,9 @@ function AlertDetail({ alert, user, onClose, onDone }) {
         {self && <Notice tone="warning">This alert concerns your own identity. Another reviewer must decide.</Notice>}
         {!mine && !self && <Notice tone="info">This alert is at the {alert.state.replace('_', ' ').toLowerCase()} stage. You can read it but not act on it.</Notice>}
         {error && <Notice tone="error">{error}</Notice>}
+        {mine && !self && user.role === 'AUDITOR' && forwardTo === 'ADMIN' && (
+          <Notice tone="info">No Manager covers {alert.subject.department ? `the ${alert.subject.department} department` : 'this alert (it concerns no department)'}, so forwarding sends it straight to an Administrator.</Notice>
+        )}
         <Facts items={[
           ['Severity', <Status key="r" value={alert.risk_level} />],
           ['Risk score', alert.risk_score != null ? Number(alert.risk_score).toFixed(2) : undefined],

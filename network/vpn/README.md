@@ -38,6 +38,11 @@ edge and the site is the internal network.
 - **Real HTTPS for the app:** passkeys and the browser's cryptography only work on HTTPS.
   Caddy gets free Let's Encrypt certificates through DuckDNS (DNS challenge), so the app's
   VPN-only name has a valid certificate without being reachable from the internet.
+- **A new address for every connection:** everyone downloads the same profile, and several
+  devices can be connected at once (`duplicate-cn`); a small hook (`vpn-client-connect.sh`) gives
+  each connection the next free 10.8.0.x, so devices never share an address and a reconnect gets
+  a new one. LexCorp binds sessions to the address, so reconnecting the VPN ends the LexCorp
+  session ("Your VPN connection was renewed"); that's recorded as an expected event, not an alert.
 - **Audit trail:** LexCorp2 sees each remote person's own VPN address (10.8.0.x). It isn't
   translated away, so the audit trail and the risk model's "new network address" check work.
 - **Cost: none.** OpenVPN, openvpn-auth-oauth2, Caddy, DuckDNS, Let's Encrypt, a Google OAuth

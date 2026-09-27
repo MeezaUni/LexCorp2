@@ -115,12 +115,23 @@ async def record_audit(
     return event
 
 
+def _in_vpn_subnet(ip: Optional[str]) -> bool:
+    import ipaddress
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(settings.VPN_CLIENT_SUBNET, strict=False)
+    except ValueError:
+        return False
+
+
 async def _authenticate(
     request: Request,
     session: Optional[str],
     authorization: Optional[str],
     db: AsyncSession,
+    touch: bool = True,
 ) -> tuple[User, dict]:
+    """Validate the session. touch=False checks it without counting as activity (the page's
+    background session check must not keep an idle session alive)."""
     token = session
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
@@ -142,13 +153,21 @@ async def _authenticate(
     if not user.is_active or user.revoked_at is not None:
         raise HTTPException(status_code=403, detail="Account is disabled or identity has been revoked")
     if payload.get("session_version", 0) != (user.session_version or 0):
-        raise HTTPException(status_code=401, detail="Session replaced by a newer login or revoked")
+        raise HTTPException(status_code=401, detail="This account signed in on another device (only one session at a time), or the session was revoked. Sign in again to continue here.")
 
     # IP session binding: a changed effective client IP terminates the session.
     token_ip = payload.get("client_ip")
     current_ip = get_request_client_ip(request)
     if token_ip and _normalize_ip(token_ip) != current_ip:
         user.session_version = (user.session_version or 0) + 1
+        if _in_vpn_subnet(_normalize_ip(token_ip)) and _in_vpn_subnet(current_ip):
+            # The device reconnected to the VPN (each connection gets a new address): an expected
+            # event, recorded but not raised as an alert. The session still ends.
+            await record_audit(db, "SESSION_ENDED_VPN_RECONNECT", actor_did=user.did, target_did=user.did,
+                               client_ip=current_ip, risk_label="MEDIUM", risk_score=0.3,
+                               details={"bound_ip": token_ip, "request_ip": current_ip})
+            await db.commit()
+            raise HTTPException(status_code=401, detail="Your VPN connection was renewed, so your session ended. Please sign in again.")
         await record_audit(
             db, "SESSION_TERMINATED_IP_CHANGE",
             actor_did=user.did, target_did=user.did, client_ip=current_ip,
@@ -169,7 +188,7 @@ async def _authenticate(
         await record_audit(db, "SESSION_EXPIRED_INACTIVITY", actor_did=user.did, client_ip=current_ip)
         await db.commit()
         raise HTTPException(status_code=401, detail="Session expired due to inactivity. Please sign in again.")
-    if last is None or now - last > _ACTIVITY_WRITE_INTERVAL:
+    if touch and (last is None or now - last > _ACTIVITY_WRITE_INTERVAL):
         user.last_activity_at = now
         await db.commit()
 

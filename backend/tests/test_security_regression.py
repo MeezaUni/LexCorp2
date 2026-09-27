@@ -102,7 +102,7 @@ async def test_session_version_revocation(client):
     stale_token = get_token(ACTIVE_USER_WALLET, "USER", 0)
     response = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {stale_token}"})
     assert response.status_code == 401
-    assert "Session replaced" in response.json()["detail"]
+    assert "signed in on another device" in response.json()["detail"]
 
 
 # ==============================================================================

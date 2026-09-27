@@ -34,7 +34,11 @@ export EASYRSA_PKI=/data/pki EASYRSA_BATCH=1 EASYRSA_NO_VARS=1 EASYRSA_ALGO=ec E
        EASYRSA_DN=cn_only EASYRSA_CA_EXPIRE=3650 EASYRSA_CERT_EXPIRE=825
 EASYRSA=/usr/share/easy-rsa/easyrsa
 umask 077
-mkdir -p /data/secrets /data/shared /data/client
+mkdir -p /data/secrets /data/shared /data/client /data/state /run/lexcorp
+# the per-connection address hook (vpn-client-connect.sh) runs as the unprivileged OpenVPN user
+echo "${VPN_SUBNET%.*}" > /run/lexcorp/prefix
+chmod 644 /run/lexcorp/prefix
+chown nobody:nogroup /data/state /run/lexcorp
 
 if [ ! -f /data/pki/ca.crt ]; then
   echo "Creating the VPN certificate authority and certificates (first start)"
@@ -61,7 +65,16 @@ port 1194
 proto udp
 dev tun0
 topology subnet
-server ${VPN_SUBNET} ${VPN_NETMASK}
+# Addresses come from vpn-client-connect.sh, a new one for every connection (no pool):
+# devices never share an address, and a reconnect gets a different one.
+server ${VPN_SUBNET} ${VPN_NETMASK} nopool
+script-security 2
+client-connect /usr/local/bin/vpn-client-connect.sh
+status /run/lexcorp/status.log 5
+status-version 2
+# Everyone downloads the same profile (one certificate); without this, a second device using it
+# would disconnect the first. Each connection is still identified by its own Google sign-in.
+duplicate-cn
 
 # Split tunnel: only the LexCorp2 web proxy is reached through the VPN; everything else
 # (the person's own internet traffic) stays on their own connection.

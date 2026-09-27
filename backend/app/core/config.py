@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # https://lexcorp2-app.duckdns.org. Added to CORS_ORIGINS and WEBAUTHN_ORIGINS; passkeys
     # created there belong to that name (see app.services.mfa.rp_id_for).
     REMOTE_APP_ORIGIN: str = ""
+    # Addresses the VPN gives connected devices (network/vpn). Every VPN connection gets a new one,
+    # so a session started on one connection ends when the device reconnects.
+    VPN_CLIENT_SUBNET: str = "10.8.0.0/24"
 
     # Session tokens (HS256). Used ONLY for session JWTs.
     JWT_SECRET: str = ""

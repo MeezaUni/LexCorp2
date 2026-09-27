@@ -71,7 +71,13 @@ async def get_alert(alert_id: str, current_user: User = Depends(get_onboarded_us
     subject = (await db.execute(select(User).where(User.id == alert.subject_user_id))).scalar_one_or_none() if alert.subject_user_id else None
     history = (await db.execute(select(SecurityAlertAction).where(SecurityAlertAction.alert_id == alert.id)
                                 .order_by(SecurityAlertAction.created_at))).scalars().all()
-    return {**_row(alert, subject), "evidence": await _evidence(db, alert), "history": [{
+    # Where "Forward" sends it from here, so the reviewer knows before clicking
+    forward_to = None
+    if alert.state == svc.AUDITOR_REVIEW:
+        forward_to = "MANAGER" if await svc.manager_exists_for(db, alert) else "ADMIN"
+    elif alert.state == svc.MANAGER_REVIEW:
+        forward_to = "ADMIN"
+    return {**_row(alert, subject), "forward_to": forward_to, "evidence": await _evidence(db, alert), "history": [{
         "action": h.action, "from": h.from_state, "to": h.to_state, "actor_did": h.actor_did, "actor_role": h.actor_role,
         "note": h.note, "at": h.created_at.isoformat() if h.created_at else None} for h in history]}
 

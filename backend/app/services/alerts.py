@@ -122,6 +122,9 @@ async def _manager_exists_for(db: AsyncSession, alert: SecurityAlert) -> bool:
     return any(alert.department in access.manager_departments(m) and m.id != alert.subject_user_id for m in managers)
 
 
+manager_exists_for = _manager_exists_for   # used by the API to tell reviewers where "Forward" goes
+
+
 async def _transition(db: AsyncSession, alert: SecurityAlert, actor: User, action: str, to_state: str,
                       note: Optional[str], client_ip: Optional[str]) -> SecurityAlert:
     from app.api.dependencies import record_audit  # avoid import cycle
