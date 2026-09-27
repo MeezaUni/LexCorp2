@@ -63,6 +63,8 @@ ACTION_PURPOSE = {
     # proving an existing factor of that same purpose.
     "factor2.manage": "factor2",
     "factor3.manage": "factor3",
+    # A login passkey for another site name (localhost / the VPN name) once login is set up
+    "login.manage": "login",
     # Choosing to reuse (or stop reusing) the login factors for Factor 2 / Factor 3
     # requires proving the login factor.
     "factor2.link": "login",

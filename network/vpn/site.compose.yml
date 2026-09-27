@@ -35,6 +35,9 @@ services:
       VPN_GATEWAY: 172.30.0.2
     cap_add: [NET_ADMIN]
     extra_hosts: ["host.docker.internal:host-gateway"]
+    # This machine uses the same address as remote people (hosts file: 127.0.0.1 APP_HOST), so a
+    # passkey works both here and over the VPN. Loopback only: not reachable from the network.
+    ports: ["127.0.0.1:443:443/tcp"]
     volumes: ["./data/caddy-site:/data"]
     networks:
       site: {ipv4_address: 172.30.0.10}

@@ -147,10 +147,22 @@ app's certificate.
 4. Open **https://lexcorp-app.duckdns.org** (your `APP_HOST`) and sign in to LexCorp2 as
    usual. The VPN only gets you to the door; LexCorp2's own sign-in and factors still apply.
 
-**Passkeys belong to the address they were created on.** A passkey made on `localhost` (on
-this machine) doesn't work at the VPN address, and vice versa. Remotely, sign in with the
-authenticator code, then add a passkey for the VPN address in **My identity** if you want one.
-Each person can have one passkey per purpose per address.
+**One address everywhere, so passkeys work everywhere.** A passkey is tied to the site name it
+was created on, a browser rule that stops phishing. So use `https://<APP_HOST>` on the machine
+running LexCorp too, not `localhost:5173`. The site proxy also listens on that machine's
+loopback address (`127.0.0.1:443`, not reachable from the network); add this line to its hosts
+file (Windows: `C:\Windows\System32\drivers\etc\hosts`, as administrator):
+
+```
+127.0.0.1 lexcorp-app.duckdns.org
+```
+
+A passkey created at `localhost` keeps working only there. At the shared address, register a
+login passkey in **My identity**; if login is already set up, adding it asks for the login
+authenticator code (or an existing login passkey) first, never just the session. Each person has
+one passkey per purpose per address. A passkey saved in Google Password Manager or iCloud
+Keychain syncs to the person's other devices; a Windows Hello passkey stays on that PC, and other
+devices use the authenticator code.
 
 ## Day to day
 

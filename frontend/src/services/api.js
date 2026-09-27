@@ -80,7 +80,7 @@ const FACTOR_OF = {
   'asset.mint': 'factor3', 'asset.approve': 'factor3', 'document.modify': 'factor3', 'document.download': 'factor3',
   'admin.reset': 'factor3', 'identity.revoke': 'factor3', 'identity.provision': 'factor3', 'identity.role': 'factor3',
   'asset.manage': 'factor3', 'factor2.manage': 'factor2', 'factor3.manage': 'factor3',
-  'factor2.link': 'login', 'factor3.link': 'login',
+  'factor2.link': 'login', 'factor3.link': 'login', 'login.manage': 'login',
 };
 export const factorFor = (action) => FACTOR_OF[action];
 

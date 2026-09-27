@@ -608,6 +608,11 @@ async def get_webauthn_registration_options(
     if scope == "login":
         if existing:
             raise HTTPException(status_code=403, detail="Login Passkey is already configured. " + _ADMIN_ASSIST)
+        if not user.onboarding_pending:
+            # Login is already set up (with a passkey for another address, or the authenticator): a
+            # login passkey for this address needs the login factor, not just the session.
+            await mfa.require_factor(db, user, "login.manage", totp_code=reg_req.totp_code,
+                                     step_up_token=reg_req.step_up_token or step_up_header)
     else:
         if user.onboarding_pending:
             raise HTTPException(status_code=403, detail="Complete login setup (TOTP 1 + Passkey 1) first.")

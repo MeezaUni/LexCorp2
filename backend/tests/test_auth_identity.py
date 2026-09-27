@@ -705,3 +705,21 @@ async def test_session_probe_never_errors_and_reveals_nothing(client, db_session
     r = (await client.get("/api/auth/session")).json()
     assert r["authenticated"] is False and "invalid" in r["ended"].lower()
     client.cookies.clear()
+
+
+@pytest.mark.asyncio
+async def test_login_passkey_for_another_address_needs_the_login_factor(client, db_session, monkeypatch):
+    """With a login passkey on localhost, a login passkey for the VPN address is allowed (passkeys only
+    work on the name they were created for) but only with the login factor, never with the session alone."""
+    from app.core.config import settings
+    remote = "https://lexcorp-app.example.org"
+    monkeypatch.setattr(settings, "WEBAUTHN_ORIGINS", [*settings.WEBAUTHN_ORIGINS, remote])
+    ident = await onboard(client, db_session)
+    t = ident["token"]
+    url, body = "/api/auth/webauthn/register/options", {"factor_scope": "login"}
+    assert (await client.post(url, headers=bearer(t, Origin=ORIGIN), json=body)).status_code == 403     # one per address
+    assert (await client.post(url, headers=bearer(t, Origin=remote), json=body)).status_code == 401     # session alone
+    proof = await mfa_headers(db_session, t, ident["wallet"], "login.manage")
+    r = await client.post(url, headers={**proof, "Origin": remote}, json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["options"]["rp"]["id"] == "lexcorp-app.example.org"
