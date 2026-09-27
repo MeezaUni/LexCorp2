@@ -35,6 +35,7 @@ executed through the Playwright MCP tool (`browser_run_code_unsafe`, each file i
 | 08, 09 | Alert chain from Auditor to Manager to Admin, revocation, session termination |
 | 10, 11 | Role navigation, direct-URL and API guards, four viewports, mobile drawer |
 | 12 | Logout, login passkey, Passkey 3 step-up, purpose separation, audit filters |
+| 13 | Checklist M1: AI-assisted alert from the trained risk model (standalone, see below) |
 
 ## Running again
 
@@ -47,3 +48,22 @@ executed through the Playwright MCP tool (`browser_run_code_unsafe`, each file i
      sign in again through the UI when needed.
 4. The run writes data to the development database and ledger. Reset afterwards as
    described in `backend/Final_Manual_Test_Checklist.md`, section S.
+
+## Script 13 (M1, AI-assisted alert) runs on its own
+
+It does not need the broker, the bootstrap PIN or scripts 01-12. With the stack running and
+a trained model in `backend/ml/models/`:
+
+```
+cd e2e/playwright
+npm install            # the Playwright library only; it uses your installed Chrome
+node 13_m1_ai_alert.mjs            # add --headed to watch, --keep to leave the test data
+```
+
+`scripts/e2e_m1_fixture.py` seeds run-stamped E2E-M1 people with three weeks of ordinary
+history (the model compares each action with the person's own habits, so brand-new people look
+unusual), 16 documents and view grants. The run checks that ordinary work raises no alert and
+that a burst of 12 never-touched documents raises exactly one AI alert with plain-word reasons,
+then the test Auditor dismisses it and the people are retired. The audit trail is append-only,
+so each run leaves about 150 labelled history events plus its own actions and alert in it;
+`ml/export_feedback.py` ignores alerts about E2E- identities.

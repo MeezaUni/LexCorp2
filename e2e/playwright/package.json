@@ -1,0 +1,12 @@
+{
+  "name": "lexcorp-e2e",
+  "private": true,
+  "description": "Standalone Playwright runs against the running LexCorp2 stack (see README.md)",
+  "type": "module",
+  "scripts": {
+    "m1": "node 13_m1_ai_alert.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

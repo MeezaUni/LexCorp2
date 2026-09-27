@@ -8,7 +8,8 @@ For every closed security alert that came from a person's action:
   * DISMISSED (a reviewer judged it a false alarm)      -> label 0 (ordinary behaviour)
   * IDENTITY_REVOKED (the identity was revoked for it)  -> label 1 (misuse)
 The features of the action are rebuilt exactly as the live app computes them (the person's
-history up to that moment, from the audit trail). Open alerts are skipped. Needs the
+history up to that moment, from the audit trail). Open alerts are skipped, and so are alerts
+about automated test identities (names starting "E2E-", e.g. scripts/e2e_m1_fixture.py). Needs the
 database running (npm start or docker compose up -d postgres). Reads only; changes nothing.
 """
 
@@ -31,6 +32,7 @@ from app.services.risk.live import AUDIT_KIND, FAILED, _asset_info, history_for,
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LABEL = {"DISMISSED": 0, "IDENTITY_REVOKED": 1}
+TEST_PREFIX = "E2E-"   # automated browser-test identities: their decisions are not real judgements
 
 
 async def export(out_path: str) -> int:
@@ -43,7 +45,7 @@ async def export(out_path: str) -> int:
             ev = (await db.execute(select(AuditEvent).where(AuditEvent.id == a.source_event_id))).scalar_one_or_none()
             person = (await db.execute(select(User).where(User.did == a.subject_did))).scalar_one_or_none()
             kind = AUDIT_KIND.get(ev.event_type) if ev else None
-            if ev is None or person is None or kind is None:
+            if ev is None or person is None or kind is None or (person.name or "").startswith(TEST_PREFIX):
                 continue
             if kind == "DOWNLOAD" and isinstance(ev.risk_factors, dict) and ev.risk_factors.get("mode") == "MODIFICATION":
                 kind = "MOD_COPY"
