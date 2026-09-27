@@ -1,30 +1,37 @@
-# LexCorp2 remote access: VPN with Google sign-in on every connection. See README.md.
+# LexCorp2 remote access, GATEWAY: runs on the public server (e.g. a free Oracle Cloud VM).
 #
-#   internet --UDP VPN_PORT--> openvpn (172.30.0.2) --only HTTPS--> caddy (172.30.0.10) --> app on this machine
-#   browser  --TCP LOGIN_PORT--> caddy --> auth (172.30.0.3) --> Google
+#   internet --UDP VPN_PORT--> openvpn 172.29.0.2 --(site link, HTTPS only)--> site: caddy 172.30.0.10 --> LexCorp2
+#   browser  --TCP LOGIN_PORT--> caddy 172.29.0.4 --> auth 172.29.0.3 --> Google
+#   site machine --UDP 51820--> openvpn (WireGuard end of the site link)
 #
-# Everything is configured from network/vpn/.env (copy .env.example). Keys, certificates and the
-# client profile are created under network/vpn/data/ (git-ignored).
-name: lexcorp2-vpn
+#   docker compose -f gateway.compose.yml --env-file gateway.env up -d
+# See README.md. Keys, certificates and the client profile live under ./data (never committed).
+name: lexcorp-vpn-gateway
 
 services:
   openvpn:
-    build: ./openvpn
     image: lexcorp2-vpn:local
+    build: ./openvpn
     entrypoint: ["/usr/local/bin/entrypoint-openvpn.sh"]
     environment:
       VPN_HOST: ${VPN_HOST}
       VPN_PORT: ${VPN_PORT:-1194}
       APP_IP: 172.30.0.10
-      MGMT_ADDR: 172.30.0.2
+      SITE_NET: 172.30.0.0/24
+      MGMT_ADDR: 172.29.0.2
+      WG_GATEWAY_PRIVATE_KEY: ${WG_GATEWAY_PRIVATE_KEY}
+      WG_SITE_PUBLIC_KEY: ${WG_SITE_PUBLIC_KEY}
+      WG_PRESHARED_KEY: ${WG_PRESHARED_KEY}
     cap_add: [NET_ADMIN]
     devices: ["/dev/net/tun:/dev/net/tun"]
     sysctls:
       net.ipv4.ip_forward: "1"
-    ports: ["${VPN_PORT:-1194}:1194/udp"]
+    ports:
+      - "${VPN_PORT:-1194}:1194/udp"
+      - "51820:51820/udp"
     volumes: ["./data/openvpn:/data"]
     networks:
-      vpn: {ipv4_address: 172.30.0.2}
+      gw: {ipv4_address: 172.29.0.2}
     restart: unless-stopped
 
   auth:
@@ -37,30 +44,27 @@ services:
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
       ALLOWED_EMAILS: ${ALLOWED_EMAILS}
-      MGMT_ADDR: 172.30.0.2
+      MGMT_ADDR: 172.29.0.2
     volumes: ["./data/openvpn/shared:/shared:ro"]
     networks:
-      vpn: {ipv4_address: 172.30.0.3}
+      gw: {ipv4_address: 172.29.0.3}
     restart: unless-stopped
 
   caddy:
-    build: ./caddy
     image: lexcorp2-vpn-caddy:local
+    build: ./caddy
     environment:
+      CADDY_ROLE: gateway
       VPN_HOST: ${VPN_HOST}
-      APP_HOST: ${APP_HOST}
-      APP_IP: 172.30.0.10
       DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
-    cap_add: [NET_ADMIN]
-    extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["${LOGIN_PORT:-9443}:9443/tcp"]
     volumes: ["./data/caddy:/data"]
     networks:
-      vpn: {ipv4_address: 172.30.0.10}
+      gw: {ipv4_address: 172.29.0.4}
     restart: unless-stopped
 
-  # Keeps the two DuckDNS names pointing the right way: the VPN name to this network's public IP
-  # (it may change), the app name to the proxy's private address inside the VPN.
+  # Keeps the DuckDNS names right: the VPN name follows this server's public IP, the app name points
+  # to the web proxy's private address at the site (reachable only through the VPN).
   duckdns:
     image: curlimages/curl:latest
     environment:
@@ -79,6 +83,6 @@ services:
     restart: unless-stopped
 
 networks:
-  vpn:
+  gw:
     ipam:
-      config: [{subnet: 172.30.0.0/24}]
+      config: [{subnet: 172.29.0.0/24}]

@@ -60,6 +60,8 @@ _scratch_archive/
 backend/offchain_storage/
 network/vpn/data/
 network/vpn/.env
+network/vpn/gateway.env
+network/vpn/site.env
 
 # Playwright MCP scratch output (reference screenshots are not committed)
 .playwright-mcp/

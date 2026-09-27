@@ -6,18 +6,23 @@ company's existing login**. For this demonstration, the company login is played 
 **Sign in with Google**, restricted to an allowlist of accounts.
 
 ```
-                 (1) first time: company portal -> download lexcorp2-remote.ovpn
-                                  (demo stand-in: company-portal-demo/, on Vercel)
+            (1) first time: company portal -> download lexcorp2-remote.ovpn (demo stand-in: company-portal-demo/)
 
- remote laptop                           this machine (Docker)
- OpenVPN GUI --- UDP VPN_PORT ---------> openvpn 172.30.0.2 --(only HTTPS)--> caddy 172.30.0.10 --> LexCorp2 (Vite :5173)
-     |                                        |
-     | (2) every connection: browser opens    | "who is this?"
-     v                                        v
- https://VPN_HOST:LOGIN_PORT --- TCP -----> caddy --> auth 172.30.0.3 --> Google: signed in? on ALLOWED_EMAILS?
-                                                                           yes -> connected, no -> refused
- (3) connected: open https://APP_HOST  (resolves to 172.30.0.10, reachable only through the VPN)
+ remote laptop                      GATEWAY: public server (free Oracle Cloud VM)        SITE: machine running LexCorp2
+ OpenVPN GUI --UDP 1194----------> openvpn 172.29.0.2 ==site link (WireGuard, 51820)==> sitelink 172.30.0.2 --HTTPS only--> caddy 172.30.0.10 --> LexCorp2
+     |                                   |                   opened FROM the site, so it works behind carrier-grade NAT
+     | (2) every connection: browser     | "who is this?"
+     v                                   v
+ https://VPN_HOST:9443 --TCP------> caddy --> auth --> Google: signed in? verified email on ALLOWED_EMAILS? yes -> connected, no -> refused
+ (3) connected: open https://APP_HOST  (DuckDNS points it to 172.30.0.10, reachable only through the VPN)
 ```
+
+The **gateway** is the public front door: the VPN server, the Google sign-in service, the sign-in
+page and the DuckDNS updater. The **site** is where LexCorp2 runs; it keeps an encrypted
+WireGuard link open to the gateway and forwards VPN users' HTTPS requests to the app. The site
+needs no open ports, so it can sit behind a home or campus connection with carrier-grade NAT
+(as the development machine does). In a company, the gateway is the VPN appliance at the network
+edge and the site is the internal network.
 
 - **OpenVPN Community Edition** (free, no connection limit) with **openvpn-auth-oauth2**
   (open source, MIT), which asks the identity provider at every connection. In a company,
@@ -38,15 +43,15 @@ company's existing login**. For this demonstration, the company login is played 
 - **Cost: none.** OpenVPN, openvpn-auth-oauth2, Caddy, DuckDNS, Let's Encrypt, a Google OAuth
   client (testing mode, up to 100 listed users) and the OpenVPN GUI client are all free.
 
-Only two ports are opened on the router: the VPN (UDP) and the sign-in page (TCP). The app
-itself is never exposed.
+Only the gateway has open ports: UDP 1194 (VPN), TCP 9443 (sign-in page), UDP 51820 (site link).
+The site and the app are never exposed.
 
 ## Setup (once)
 
 ### 1. DuckDNS: two names and a token
 
 1. Sign in at <https://www.duckdns.org> (you can use your Google account).
-2. Add two domains, for example `lexcorp2-vpn` and `lexcorp2-app`. Names are first come,
+2. Add two domains, for example `lexcorp-vpn` and `lexcorp-app`. Names are first come,
    first served, so pick others if these are taken.
 3. Copy the **token** shown at the top of the page.
 
@@ -63,55 +68,69 @@ public IP (which changes), and the app name points to the proxy's private addres
 3. **APIs & Services → Credentials → Create credentials → OAuth client ID**, type **Web
    application**, name "LexCorp2 VPN sign-in".
    - **Authorised redirect URIs:** `https://<VPN_HOST>:<LOGIN_PORT>/oauth2/callback`,
-     for example `https://lexcorp2-vpn.duckdns.org:9443/oauth2/callback`.
+     for example `https://lexcorp-vpn.duckdns.org:9443/oauth2/callback`.
    - If you will also use the demo company portal (`company-portal-demo/`), add its address
      under **Authorised JavaScript origins**, for example `https://lexcorp2-portal.vercel.app`.
 4. Copy the **Client ID** and **Client secret**.
 
-### 3. `network/vpn/.env`
+### 3. A public server for the gateway (free)
 
-Copy `.env.example` to `.env` (git-ignored) and fill in the two DuckDNS names, the token, the
-Google client ID and secret, and `ALLOWED_EMAILS` (comma-separated).
+Any Linux server with a public IPv4 address works. The development setup uses an Oracle Cloud
+"Always Free" VM (VM.Standard.E2.1.Micro, Ubuntu, 1 GB memory is enough):
 
-### 4. Router: forward two ports to this machine
+1. Create the instance with a public IPv4 address and download its SSH key.
+2. In its VCN's security list, add ingress rules from `0.0.0.0/0`: UDP 1194, TCP 9443, UDP 51820.
+3. On the server: add swap (`fallocate -l 2G /swapfile`...), install `docker.io` and
+   `docker-compose-v2`, load WireGuard (`modprobe wireguard`, plus `/etc/modules-load.d/wireguard.conf`),
+   and on Oracle's Ubuntu images open the same three ports in iptables before the final REJECT rule
+   (`iptables -I INPUT 5 -p udp --dport 1194 -m state --state NEW -j ACCEPT`, etc., then
+   `netfilter-persistent save`).
 
-In the router's admin page (often `http://192.168.1.1`), forward to this machine's local
-address (Windows: `ipconfig`, "IPv4 Address" of the Wi-Fi or Ethernet adapter):
+### 4. Settings and keys
 
-| Port | Protocol | Purpose |
-|---|---|---|
-| `VPN_PORT` (1194) | UDP | the VPN |
-| `LOGIN_PORT` (9443) | TCP | the sign-in page |
+Put the DuckDNS names and token, the Google client ID and secret, and `ALLOWED_EMAILS` in
+`network/vpn/.env` (git-ignored; the keys are the same as in `gateway.env.example`), then run:
 
-Give this machine a fixed local address (a DHCP reservation in the router) so the forwarding
-keeps working. Allow Docker Desktop through the Windows firewall if Windows asks.
+```
+python scripts/vpn_site_link_keys.py
+```
 
-> **Check for carrier-grade NAT.** The router's status page shows its WAN (internet) address.
-> If it doesn't match <https://api.ipify.org>, or starts with `100.64`–`100.127` or `10.`,
-> your provider shares one public address between customers and nothing hosted at home can be
-> reached from outside. Ask the provider for a public IPv4 address. It is often free on request.
+It creates `network/vpn/gateway.env` and `network/vpn/site.env` (both git-ignored) with fresh
+site-link keys. Copy `gateway.env` to the gateway; `site.env` stays on the site.
 
 ### 5. Tell LexCorp2 its VPN address
 
 In `backend/.env` add:
 
 ```
-REMOTE_APP_ORIGIN=https://lexcorp2-app.duckdns.org
+REMOTE_APP_ORIGIN=https://lexcorp-app.duckdns.org
 ```
 
 (your `APP_HOST`), then restart `npm start`. This adds the name to the allowed origins, lets
 Vite answer for it, and makes passkeys created there belong to that name.
 
-### 6. Start the VPN
+### 6. Start it
+
+**Gateway** (on the server, in a folder with `gateway.compose.yml`, `gateway.env`, `openvpn/` and `caddy/`):
 
 ```
-cd network/vpn
-docker compose up -d --build
-docker compose logs -f           # Ctrl+C to stop watching
+docker compose -f gateway.compose.yml --env-file gateway.env up -d --build
 ```
 
 On first start it creates the certificate authority, keys and the client profile
-`network/vpn/data/client/lexcorp2-remote.ovpn`. Caddy may take a minute to get its certificates.
+`data/openvpn/client/lexcorp2-remote.ovpn`. On a 1 GB server, build the images on another
+machine and copy them (`docker save lexcorp2-vpn:local lexcorp2-vpn-caddy:local | gzip | ssh ... "gunzip | docker load"`),
+then start with `--no-build`.
+
+**Site** (on the machine running LexCorp2, from `network/vpn`):
+
+```
+docker compose -f site.compose.yml --env-file site.env up -d --build
+docker compose -f site.compose.yml --env-file site.env logs -f sitelink
+```
+
+The site link reports if it can't reach the gateway. Caddy may take a minute to get the
+app's certificate.
 
 ## Connecting (each remote person)
 
@@ -124,7 +143,7 @@ On first start it creates the certificate authority, keys and the client profile
 4. **Every time:** right-click → **Connect**. A browser window opens at the sign-in page and
    sends you to Google. Sign in with an approved account and the VPN connects. Anyone else is
    refused.
-5. Open **https://lexcorp2-app.duckdns.org** (your `APP_HOST`) and sign in to LexCorp2 as
+5. Open **https://lexcorp-app.duckdns.org** (your `APP_HOST`) and sign in to LexCorp2 as
    usual. The VPN only gets you to the door; LexCorp2's own sign-in and factors still apply.
 
 **Passkeys belong to the address they were created on.** A passkey made on `localhost` (on
@@ -136,20 +155,23 @@ Each person can have one passkey per purpose per address.
 
 - **Add or remove a person:** edit `ALLOWED_EMAILS` in `.env` (and the Google test users),
   then `docker compose up -d`. Removing someone takes effect at their next connection.
-- **See who connected:** `docker compose logs auth` (each sign-in, the account, accepted or refused).
-- **Stop:** `docker compose down`. **Start again:** `docker compose up -d`.
-- **Start over with new keys:** stop, delete `network/vpn/data/`, start. Everyone needs the new profile.
+- **See who connected:** on the gateway, `docker compose -f gateway.compose.yml --env-file gateway.env logs auth`
+  (each sign-in, the account, accepted or refused).
+- **Stop / start:** `docker compose -f <gateway|site>.compose.yml --env-file <gateway|site>.env down` / `up -d`.
+- **New site-link keys:** `python scripts/vpn_site_link_keys.py --rotate`, copy `gateway.env` to the gateway, restart both.
+- **Start over with new VPN keys:** on the gateway stop, delete `data/openvpn/`, start. Everyone needs the new profile.
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| OpenVPN GUI times out, nothing opens | UDP `VPN_PORT` not forwarded, carrier-grade NAT, or the VPN name points to an old IP (check `docker compose logs duckdns`) |
-| Browser opens but the page doesn't load | TCP `LOGIN_PORT` not forwarded, or Caddy has no certificate yet (`docker compose logs caddy`) |
+| OpenVPN GUI times out, nothing opens | UDP 1194 not open on the gateway (cloud security list and the server's iptables), or the VPN name points to an old IP (gateway `logs duckdns`) |
+| Browser opens but the page doesn't load | TCP 9443 not open on the gateway, or its Caddy has no certificate yet (gateway `logs caddy`) |
+| Connected, but the app times out | The site link is down: site `logs sitelink` ("no handshake": UDP 51820 blocked on the gateway, or the keys in the two env files don't match) |
 | Google: "Error 400: redirect_uri_mismatch" | The redirect URI in Google Cloud must be exactly `https://VPN_HOST:LOGIN_PORT/oauth2/callback` |
 | Google: "access blocked" / app not verified | The account isn't a test user on the consent screen |
 | Signed in but the VPN still refuses | The email isn't in `ALLOWED_EMAILS` (`docker compose logs auth` says why) |
-| Connected but `https://APP_HOST` doesn't resolve | Some routers and DNS filters block public names that point to private addresses. Use another DNS server (e.g. 1.1.1.1) or add `172.30.0.10 lexcorp2-app.duckdns.org` to the laptop's hosts file |
+| Connected but `https://APP_HOST` doesn't resolve | Some routers and DNS filters block public names that point to private addresses. Use another DNS server (e.g. 1.1.1.1) or add `172.30.0.10 lexcorp-app.duckdns.org` to the laptop's hosts file |
 | "Blocked request. This host is not allowed" | `REMOTE_APP_ORIGIN` isn't set in `backend/.env`, or `npm start` wasn't restarted |
 
 ## What was verified, and what wasn't
@@ -165,5 +187,7 @@ Verified locally on 27 Sept 2026 with a test client container:
   host were all blocked;
 - the app receives the client's own VPN address.
 
-Not yet verified: a real Google sign-in and a connection from outside through the router,
-which need the accounts and port forwarding above.
+Deployed on 27 Sept 2026 with the gateway on an Oracle Cloud VM and the site on the development
+machine (behind carrier-grade NAT): the site link is up, the sign-in page is reachable from the
+internet with a valid certificate, and the app answers through the site proxy with a valid
+certificate. Not yet verified: a real person connecting from outside with a Google sign-in.

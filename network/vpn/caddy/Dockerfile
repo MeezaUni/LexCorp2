@@ -5,7 +5,7 @@ RUN xcaddy build --with github.com/caddy-dns/duckdns
 
 FROM caddy:2
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
-COPY Caddyfile /etc/caddy/Caddyfile
+COPY Caddyfile.gateway Caddyfile.site /etc/caddy/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

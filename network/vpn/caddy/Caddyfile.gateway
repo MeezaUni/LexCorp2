@@ -1,0 +1,13 @@
+# Gateway: the VPN sign-in page (public; the person's browser opens it before the VPN is connected).
+# It only forwards to the sign-in service, which sends people to Google.
+{
+	admin off
+}
+
+https://{$VPN_HOST}:9443 {
+	tls {
+		dns duckdns {env.DUCKDNS_TOKEN}
+		resolvers 1.1.1.1
+	}
+	reverse_proxy auth:9000
+}

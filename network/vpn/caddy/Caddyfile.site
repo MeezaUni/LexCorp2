@@ -1,0 +1,15 @@
+# Site: LexCorp2 itself, only on this container's private address, which VPN clients reach through
+# the gateway and the site link (the app's DuckDNS name points to it). Forwards to the app on the
+# host machine.
+{
+	admin off
+}
+
+https://{$APP_HOST} {
+	bind {$APP_IP}
+	tls {
+		dns duckdns {env.DUCKDNS_TOKEN}
+		resolvers 1.1.1.1
+	}
+	reverse_proxy host.docker.internal:5173
+}

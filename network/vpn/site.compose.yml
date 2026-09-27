@@ -1,0 +1,46 @@
+# LexCorp2 remote access, SITE: runs on the machine that runs LexCorp2 (npm start).
+#
+#   gateway --site link (WireGuard, opened from here)--> sitelink 172.30.0.2 --HTTPS only--> caddy 172.30.0.10 --> LexCorp2 (Vite :5173)
+#
+#   docker compose -f site.compose.yml --env-file site.env up -d
+# Works behind carrier-grade NAT: nothing needs to be opened on this network's router.
+name: lexcorp-vpn-site
+
+services:
+  sitelink:
+    image: lexcorp2-vpn:local
+    build: ./openvpn
+    entrypoint: ["/usr/local/bin/entrypoint-sitelink.sh"]
+    environment:
+      GATEWAY_ENDPOINT: ${GATEWAY_ENDPOINT}
+      WG_SITE_PRIVATE_KEY: ${WG_SITE_PRIVATE_KEY}
+      WG_GATEWAY_PUBLIC_KEY: ${WG_GATEWAY_PUBLIC_KEY}
+      WG_PRESHARED_KEY: ${WG_PRESHARED_KEY}
+      APP_IP: 172.30.0.10
+    cap_add: [NET_ADMIN]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    networks:
+      site: {ipv4_address: 172.30.0.2}
+    restart: unless-stopped
+
+  caddy:
+    image: lexcorp2-vpn-caddy:local
+    build: ./caddy
+    environment:
+      CADDY_ROLE: site
+      APP_HOST: ${APP_HOST}
+      APP_IP: 172.30.0.10
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
+      VPN_GATEWAY: 172.30.0.2
+    cap_add: [NET_ADMIN]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes: ["./data/caddy-site:/data"]
+    networks:
+      site: {ipv4_address: 172.30.0.10}
+    restart: unless-stopped
+
+networks:
+  site:
+    ipam:
+      config: [{subnet: 172.30.0.0/24}]

@@ -1,5 +1,5 @@
 #!/bin/sh
-# LexCorp2 remote-access VPN server (OpenVPN Community Edition).
+# LexCorp2 remote-access VPN gateway (OpenVPN Community Edition), run on the public server.
 #
 # First start: creates the certificate authority, the server certificate, one shared client
 # certificate for the demo profile, and the tls-crypt-v2 keys, all under /data (git-ignored).
@@ -11,6 +11,11 @@
 # waits on its management interface ("management-hold") until that service is attached, so
 # nobody can connect without the sign-in step. Connected people can reach only the LexCorp2
 # web proxy (APP_IP, HTTPS); everything else is dropped.
+#
+# The web proxy runs next to LexCorp2 on the site machine, which may be behind carrier-grade NAT.
+# That machine opens a WireGuard tunnel (the "site link", entrypoint-sitelink.sh) to this gateway;
+# traffic from VPN clients to APP_IP is routed over it. Routed, not translated, so LexCorp2 sees
+# each person's own VPN address.
 set -eu
 
 : "${VPN_HOST:?set VPN_HOST in network/vpn/.env}"
@@ -18,8 +23,12 @@ VPN_PORT="${VPN_PORT:-1194}"
 VPN_SUBNET="${VPN_SUBNET:-10.8.0.0}"
 VPN_NETMASK="${VPN_NETMASK:-255.255.255.0}"
 APP_IP="${APP_IP:-172.30.0.10}"
-MGMT_ADDR="${MGMT_ADDR:-172.30.0.2}"
+SITE_NET="${SITE_NET:-172.30.0.0/24}"
+MGMT_ADDR="${MGMT_ADDR:-172.29.0.2}"
 MGMT_PORT="${MGMT_PORT:-7505}"
+: "${WG_GATEWAY_PRIVATE_KEY:?set WG_GATEWAY_PRIVATE_KEY in gateway.env}"
+: "${WG_SITE_PUBLIC_KEY:?set WG_SITE_PUBLIC_KEY in gateway.env}"
+: "${WG_PRESHARED_KEY:?set WG_PRESHARED_KEY in gateway.env}"
 
 export EASYRSA_PKI=/data/pki EASYRSA_BATCH=1 EASYRSA_NO_VARS=1 EASYRSA_ALGO=ec EASYRSA_CURVE=secp384r1 \
        EASYRSA_DN=cn_only EASYRSA_CA_EXPIRE=3650 EASYRSA_CERT_EXPIRE=825
@@ -129,16 +138,32 @@ $(cat /data/secrets/tls-crypt-v2-client.key)
 EOF
 echo "Client profile written to network/vpn/data/client/lexcorp2-remote.ovpn (remote ${VPN_HOST}:${VPN_PORT})"
 
-# Firewall: VPN clients may open HTTPS to the web proxy and nothing else, and never this container.
+# Site link: WireGuard to the site machine (10.9.0.1 here, 10.9.0.2 there). Only the site's key
+# is accepted, and only the site's network is routed to it.
+ip link del wg0 2>/dev/null || true
+ip link add wg0 type wireguard
+printf '%s' "$WG_GATEWAY_PRIVATE_KEY" > /run/wg.key
+printf '%s' "$WG_PRESHARED_KEY" > /run/wg.psk
+wg set wg0 listen-port 51820 private-key /run/wg.key   peer "$WG_SITE_PUBLIC_KEY" preshared-key /run/wg.psk allowed-ips "10.9.0.2/32,${SITE_NET}"
+rm -f /run/wg.key /run/wg.psk
+unset WG_GATEWAY_PRIVATE_KEY WG_PRESHARED_KEY
+ip addr add 10.9.0.1/24 dev wg0
+ip link set wg0 up
+ip route replace "${SITE_NET}" dev wg0
+
+# Firewall: VPN clients may open HTTPS to the web proxy (over the site link) and nothing else.
+# The site can't start connections to VPN clients or to this gateway's services.
 iptables -F FORWARD
 iptables -P FORWARD DROP
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -A FORWARD -i tun0 -d "${APP_IP}" -p tcp --dport 443 -j ACCEPT
-iptables -A FORWARD -i tun0 -d "${APP_IP}" -p icmp --icmp-type echo-request -j ACCEPT
+iptables -A FORWARD -i tun0 -o wg0 -d "${APP_IP}" -p tcp --dport 443 -j ACCEPT
+iptables -A FORWARD -i tun0 -o wg0 -d "${APP_IP}" -p icmp --icmp-type echo-request -j ACCEPT
 iptables -F INPUT
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -i tun0 -j DROP
+iptables -A INPUT -i wg0 -p icmp --icmp-type echo-request -j ACCEPT
+iptables -A INPUT -i wg0 -j DROP
 
 mkdir -p /dev/net
 [ -c /dev/net/tun ] || mknod /dev/net/tun c 10 200

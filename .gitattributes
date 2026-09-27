@@ -1,4 +1,4 @@
 # Files run inside Linux containers must keep Unix line endings on every checkout
 *.sh text eol=lf
-network/vpn/caddy/Caddyfile text eol=lf
+network/vpn/caddy/Caddyfile.* text eol=lf
 network/vpn/**/Dockerfile text eol=lf
