@@ -49,19 +49,19 @@
     <section class="card">
       <h2><span class="step">2</span> Install the VPN client</h2>
       <ul>
-        <li><strong>Windows:</strong> the OpenVPN Community client, version 2.6 or later ("OpenVPN GUI"), from
-          <a href="https://openvpn.net/community-downloads/" rel="noopener">openvpn.net/community-downloads</a>.
-          It's free. (OpenVPN Connect only partly supports the sign-in step.)</li>
-        <li><strong>macOS:</strong> Tunnelblick 4 or later.</li>
+        <li><strong>OpenVPN Connect</strong> (free, Windows and macOS) from
+          <a href="https://openvpn.net/client/" rel="noopener">openvpn.net/client</a>: double-click the downloaded
+          <code>lexcorp2-remote.ovpn</code> and it's imported.</li>
+        <li>or the <strong>OpenVPN Community client 2.6+</strong> ("OpenVPN GUI", Windows) from
+          <a href="https://openvpn.net/community-downloads/" rel="noopener">openvpn.net/community-downloads</a>:
+          right-click its tray icon, <strong>Import file…</strong>, and pick the file. On macOS, Tunnelblick 4 also works.</li>
       </ul>
-      <p>Then right-click the OpenVPN icon in the taskbar tray, choose <strong>Import file…</strong>, and pick
-        <code>lexcorp2-remote.ovpn</code>.</p>
     </section>
 
     <section class="card">
       <h2><span class="step">3</span> Connect, every time</h2>
       <ol>
-        <li>Right-click the OpenVPN icon and choose <strong>Connect</strong>.</li>
+        <li>In OpenVPN, choose <strong>Connect</strong> on the LexCorp profile.</li>
         <li>Your browser opens and asks you to sign in with your company account (Google, for the demo).</li>
         <li>If your account is approved, the VPN connects. If not, the connection is refused.</li>
         <li>Open the LexCorp2 address you were given, and sign in to LexCorp2 as usual. Its own sign-in and

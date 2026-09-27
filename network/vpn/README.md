@@ -136,14 +136,14 @@ app's certificate.
 
 1. **First time:** get `lexcorp2-remote.ovpn` from the company portal (for the demo, the
    stand-in in `company-portal-demo/`), or directly from the administrator.
-2. Install the **OpenVPN Community client for Windows 2.6 or later** ("OpenVPN GUI",
-   <https://openvpn.net/community-downloads/>). OpenVPN Connect only partly supports the
-   browser sign-in. On macOS use Tunnelblick 4.
-3. Right-click the OpenVPN GUI tray icon → **Import file…** → choose the profile.
-4. **Every time:** right-click → **Connect**. A browser window opens at the sign-in page and
+2. Install **OpenVPN Connect** (<https://openvpn.net/client/>, tested 27 Sept 2026) and
+   double-click the profile to import it, or the **OpenVPN Community client 2.6+** ("OpenVPN GUI",
+   <https://openvpn.net/community-downloads/>) and use its tray icon's **Import file…**. On macOS,
+   Tunnelblick 4 also works.
+3. **Every time:** **Connect**. A browser window opens at the sign-in page and
    sends you to Google. Sign in with an approved account and the VPN connects. Anyone else is
    refused.
-5. Open **https://lexcorp-app.duckdns.org** (your `APP_HOST`) and sign in to LexCorp2 as
+4. Open **https://lexcorp-app.duckdns.org** (your `APP_HOST`) and sign in to LexCorp2 as
    usual. The VPN only gets you to the door; LexCorp2's own sign-in and factors still apply.
 
 **Passkeys belong to the address they were created on.** A passkey made on `localhost` (on
