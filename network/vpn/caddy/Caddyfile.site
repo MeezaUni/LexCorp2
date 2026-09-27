@@ -1,4 +1,4 @@
-# Site: LexCorp2 itself, only on this container's private address, which VPN clients reach through
+# Site: LexCorp itself, only on this container's private address, which VPN clients reach through
 # the gateway and the site link (the app's DuckDNS name points to it). Forwards to the app on the
 # host machine.
 {
@@ -12,4 +12,12 @@ https://{$APP_HOST} {
 		resolvers 1.1.1.1
 	}
 	reverse_proxy host.docker.internal:5173
+
+	# When the app isn't running, say so in a page. Without this the error has no body or type,
+	# and phone browsers save it as an empty "document.txt".
+	handle_errors 502 503 504 {
+		header Content-Type "text/html; charset=utf-8"
+		header Cache-Control "no-store"
+		respond `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LexCorp is not available</title><style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f5f6f8;color:#1c2330}main{max-width:32rem;padding:24px}h1{font-size:1.4rem;margin:0 0 8px}p{margin:0 0 8px;color:#5b6474}@media (prefers-color-scheme:dark){body{background:#12161d;color:#e6e9ee}p{color:#9aa3b2}}</style></head><body><main><h1>LexCorp is not available right now</h1><p>You are connected through the VPN, but the LexCorp server isn't answering. It may be stopped or restarting.</p><p>Try again in a minute. If it keeps happening, contact the administrator.</p></main></body></html>` {err.status_code}
+	}
 }

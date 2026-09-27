@@ -139,7 +139,8 @@ app's certificate.
 2. Install **OpenVPN Connect** (<https://openvpn.net/client/>, tested 27 Sept 2026) and
    double-click the profile to import it, or the **OpenVPN Community client 2.6+** ("OpenVPN GUI",
    <https://openvpn.net/community-downloads/>) and use its tray icon's **Import file…**. On macOS,
-   Tunnelblick 4 also works.
+   Tunnelblick 4 also works. **Phones:** OpenVPN Connect for iOS or Android (tested on a phone,
+   27 Sept 2026): open the downloaded profile with it.
 3. **Every time:** **Connect**. A browser window opens at the sign-in page and
    sends you to Google. Sign in with an approved account and the VPN connects. Anyone else is
    refused.
