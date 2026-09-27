@@ -157,12 +157,12 @@ file (Windows: `C:\Windows\System32\drivers\etc\hosts`, as administrator):
 127.0.0.1 lexcorp-app.duckdns.org
 ```
 
-A passkey created at `localhost` keeps working only there. At the shared address, register a
-login passkey in **My identity**; if login is already set up, adding it asks for the login
-authenticator code (or an existing login passkey) first, never just the session. Each person has
-one passkey per purpose per address. A passkey saved in Google Password Manager or iCloud
-Keychain syncs to the person's other devices; a Windows Hello passkey stays on that PC, and other
-devices use the authenticator code.
+A passkey created at `localhost` keeps working only there. In **My identity → Login passkeys**,
+people add a passkey on each device they sign in from (PC, laptop, phone; up to 10 per
+purpose). Once login is set up, adding or removing one asks for the login authenticator code or
+another login passkey, never just the session, and the last login passkey can only be replaced
+through an administrator reset. A passkey saved in Google Password Manager or iCloud Keychain
+also syncs to the person's other devices; a Windows Hello passkey stays on that PC.
 
 ## Day to day
 

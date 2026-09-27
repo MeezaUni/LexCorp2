@@ -22,6 +22,7 @@ export default function Identity() {
   const localWallet = storedWalletAddress();
   const walletMatches = localWallet && localWallet.toLowerCase() === user.wallet_address.toLowerCase();
   const has = (scope) => (passkeys.data || []).some((p) => p.factor_scope === scope);
+  const loginKeys = (passkeys.data || []).filter((k) => k.factor_scope === 'login');
 
   return (
     <>
@@ -59,6 +60,23 @@ export default function Identity() {
             ['Login authenticator (TOTP 1)', user.is_totp_enabled ? <Status key="t" value="ACTIVE">Configured</Status> : <Status key="t" value="PENDING">Missing</Status>],
             ['Login passkey (Passkey 1)', user.has_login_passkey ? <Status key="p" value="ACTIVE">Configured</Status> : <Status key="p" value="PENDING">Missing</Status>],
           ]} />
+          <h3 style={{ marginTop: 16 }}>Login passkeys</h3>
+          <p className="small muted">
+            Add one on each device you sign in from (this PC, a laptop, your phone). Adding or removing one asks for your login
+            authenticator code or another login passkey. A passkey works only at the address where you added it: this page is{' '}
+            <strong>{window.location.hostname}</strong>.
+          </p>
+          {loginKeys.map((k) => (
+            <div key={k.credential_id} className="row" style={{ justifyContent: 'space-between' }}>
+              <span className="small">{k.device_name}<span className="muted">, works on {k.site}, added {formatDate(k.created_at, false)}</span></span>
+              {loginKeys.length > 1
+                ? <Button size="sm" variant="quiet" onClick={() => setFlow({ kind: 'passkey-remove', purpose: 'login', credential: k })}>Remove</Button>
+                : <span className="small muted">your only login passkey</span>}
+            </div>
+          ))}
+          {user.has_login_passkey && (
+            <div style={{ marginTop: 8 }}><Button onClick={() => setFlow({ kind: 'passkey-add', purpose: 'login' })}>Add a passkey on this device</Button></div>
+          )}
           {user.reset_path === 'server_operator' ? (
             <Notice tone="info" title="You are the only administrator">
               No one in LexCorp2 can approve a login reset for you, and you can't approve your own. If you lose a login factor, the person who runs the LexCorp2 server resets it with <code>python backend/scripts/bootstrap_admin.py --reset-login</code>. Registering a second administrator lets you approve each other's resets instead.
@@ -66,7 +84,7 @@ export default function Identity() {
           ) : (
             <>
               <p className="small muted" style={{ marginTop: 12 }}>
-                Login factors cannot be changed by yourself. If you lose one, ask {user.reset_path === 'another_administrator' ? 'another administrator (you cannot approve your own reset)' : 'an administrator'}; they verify you in person, then your login factors and sessions are reset and you receive a new provisioning PIN.
+                Your login authenticator and your last login passkey cannot be changed by yourself. If you lose them, ask {user.reset_path === 'another_administrator' ? 'another administrator (you cannot approve your own reset)' : 'an administrator'}; they verify you in person, then your login factors and sessions are reset and you receive a new provisioning PIN.
               </p>
               {user.reset_requested ? <Notice tone="info">Your reset request is waiting for {user.reset_path === 'another_administrator' ? 'another administrator' : 'an administrator'}.</Notice>
                 : <Button onClick={() => setFlow({ kind: 'reset' })}>{user.reset_path === 'another_administrator' ? 'Ask another administrator to reset my login factors' : 'Ask an administrator to reset my login factors'}</Button>}
@@ -148,7 +166,7 @@ export default function Identity() {
           onSubmit={async (code) => { await api.resetFactorTotp(flow.purpose, await api.stepUp(`${flow.purpose}.manage`, code)); await reload('Authenticator removed.'); }} />
       )}
       {flow?.kind === 'passkey-add' && (
-        <StepUpDialog factor={flow.purpose} actionLabel="Add a passkey to this factor" confirmLabel="Continue" onClose={() => setFlow(null)}
+        <StepUpDialog factor={flow.purpose} actionLabel={flow.purpose === 'login' ? 'Add a login passkey on this device' : 'Add a passkey to this factor'} confirmLabel="Continue" onClose={() => setFlow(null)}
           extra={<p className="small">Prove the factor you already have, then your device asks you to create the new passkey.</p>}
           onSubmit={async (code) => { await addPasskey(flow.purpose, await api.stepUp(`${flow.purpose}.manage`, code)); await reload('Passkey registered.'); }} />
       )}

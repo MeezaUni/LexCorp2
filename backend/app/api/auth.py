@@ -534,6 +534,7 @@ async def verify_totp_factor(factor: str, request: Request, response: Response, 
     return await _totp_verify(user, factor, token, request, response, db)
 
 
+MAX_PASSKEYS_PER_PURPOSE = 10
 _ADMIN_ASSIST = "Login factors cannot be reset self-service. Use REQUEST ADMIN ASSISTANCE; an administrator will re-provision your identity."
 
 
@@ -601,16 +602,19 @@ async def get_webauthn_registration_options(
         raise HTTPException(status_code=400, detail="factor_scope must be login, factor2 or factor3")
     if scope != "login":
         _refuse_if_linked(user, scope)
-    # one passkey per purpose per site name: a passkey only works where it was created (localhost
-    # on the server machine, the VPN name remotely)
+    # A passkey only works on the site name it was created for (localhost, or the VPN name).
+    # People may keep one on each device they use, up to MAX_PASSKEYS_PER_PURPOSE per purpose.
     rp_id = mfa.rp_id_for(request.headers.get("origin"))
     existing = await mfa.scoped_credentials(db, user, scope, rp_id)
+    if len(await mfa.scoped_credentials(db, user, scope)) >= MAX_PASSKEYS_PER_PURPOSE:
+        raise HTTPException(status_code=400, detail=f"You already have {MAX_PASSKEYS_PER_PURPOSE} passkeys for this purpose. Remove one first.")
     if scope == "login":
-        if existing:
-            raise HTTPException(status_code=403, detail="Login Passkey is already configured. " + _ADMIN_ASSIST)
-        if not user.onboarding_pending:
-            # Login is already set up (with a passkey for another address, or the authenticator): a
-            # login passkey for this address needs the login factor, not just the session.
+        if user.onboarding_pending:
+            if existing:
+                raise HTTPException(status_code=403, detail="Login Passkey is already configured. " + _ADMIN_ASSIST)
+        else:
+            # Another device's login passkey: needs the login factor (authenticator code or an
+            # existing login passkey), never just the session.
             await mfa.require_factor(db, user, "login.manage", totp_code=reg_req.totp_code,
                                      step_up_token=reg_req.step_up_token or step_up_header)
     else:
@@ -730,8 +734,9 @@ async def disable_webauthn_credential(
     ))).scalar_one_or_none()
     if not credential:
         raise HTTPException(status_code=404, detail="Passkey not found")
-    if credential.factor_scope == "login":
-        raise HTTPException(status_code=403, detail=_ADMIN_ASSIST)
+    if credential.factor_scope == "login" and len(await mfa.scoped_credentials(db, user, "login")) <= 1:
+        # The last login passkey is part of the login set-up; only an administrator reset replaces it.
+        raise HTTPException(status_code=403, detail="This is your only login passkey. " + _ADMIN_ASSIST)
     await mfa.require_factor(db, user, f"{credential.factor_scope}.manage", totp_code=body.totp_code,
                              step_up_token=body.step_up_token or step_up_header)
     credential.is_active = False

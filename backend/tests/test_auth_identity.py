@@ -20,7 +20,7 @@ from app.models.domain import User, WebAuthnCredential
 from app.services import mfa
 from app.services.auth import create_jwt
 from tests.conftest import mfa_headers, totp_code
-from tests.webauthn_soft import ORIGIN, SoftPasskey
+from tests.webauthn_soft import ORIGIN, SoftPasskey, b64url
 
 ADMIN_WALLET = "0x95ea9708bcf136d710a4b8e76fe20f895eca003a"
 ADMIN_VERSION = 5
@@ -474,8 +474,9 @@ async def test_user_cannot_self_reset_login_factors(client, db_session):
         assert r.status_code == 403 and "ADMIN ASSISTANCE" in r.json()["detail"], url
     r = await client.request("DELETE", f"/api/auth/webauthn/credentials/{ident['pk1'].credential_id_hex}", headers=bearer(t))
     assert r.status_code == 403
+    # another login passkey needs the login factor, not just the session (see test_several_login_passkeys...)
     r = await client.post("/api/auth/webauthn/register/options", headers=bearer(t, Origin=ORIGIN), json={"factor_scope": "login"})
-    assert r.status_code == 403
+    assert r.status_code == 401
     r = await client.post("/api/auth/2fa/setup", headers=bearer(t))
     assert r.status_code == 403
 
@@ -709,17 +710,40 @@ async def test_session_probe_never_errors_and_reveals_nothing(client, db_session
 
 @pytest.mark.asyncio
 async def test_login_passkey_for_another_address_needs_the_login_factor(client, db_session, monkeypatch):
-    """With a login passkey on localhost, a login passkey for the VPN address is allowed (passkeys only
-    work on the name they were created for) but only with the login factor, never with the session alone."""
+    """A login passkey for the VPN address (passkeys only work on the name they were created for)
+    needs the login factor, never the session alone, and belongs to that address."""
     from app.core.config import settings
     remote = "https://lexcorp-app.example.org"
     monkeypatch.setattr(settings, "WEBAUTHN_ORIGINS", [*settings.WEBAUTHN_ORIGINS, remote])
     ident = await onboard(client, db_session)
     t = ident["token"]
     url, body = "/api/auth/webauthn/register/options", {"factor_scope": "login"}
-    assert (await client.post(url, headers=bearer(t, Origin=ORIGIN), json=body)).status_code == 403     # one per address
     assert (await client.post(url, headers=bearer(t, Origin=remote), json=body)).status_code == 401     # session alone
     proof = await mfa_headers(db_session, t, ident["wallet"], "login.manage")
     r = await client.post(url, headers={**proof, "Origin": remote}, json=body)
     assert r.status_code == 200, r.text
     assert r.json()["options"]["rp"]["id"] == "lexcorp-app.example.org"
+
+
+@pytest.mark.asyncio
+async def test_several_login_passkeys_one_per_device_and_the_last_one_stays(client, db_session):
+    ident = await onboard(client, db_session)
+    t, wallet = ident["token"], ident["wallet"]
+    # a second device: allowed with the login factor
+    proof = await mfa_headers(db_session, t, wallet, "login.manage")
+    phone = await register_passkey(client, t, "login", {"X-Step-Up-Token": proof["X-Step-Up-Token"]})
+    listed = (await client.get("/api/auth/webauthn/credentials", headers=bearer(t))).json()
+    assert sum(1 for c in listed if c["factor_scope"] == "login") == 2
+    # the device already registered is excluded, so a device can't be added twice
+    proof = await mfa_headers(db_session, t, wallet, "login.manage")
+    opt = await client.post("/api/auth/webauthn/register/options", headers={**proof, "Origin": ORIGIN}, json={"factor_scope": "login"})
+    excluded = {c["id"] for c in opt.json()["options"]["excludeCredentials"]}
+    assert {b64url(ident["pk1"].credential_id), b64url(phone.credential_id)} <= excluded
+    # removing one needs the login factor; the last one can't be removed self-service
+    url = f"/api/auth/webauthn/credentials/{ident['pk1'].credential_id_hex}"
+    assert (await client.request("DELETE", url, headers=bearer(t))).status_code == 401
+    removed = await client.request("DELETE", url, headers=await mfa_headers(db_session, t, wallet, "login.manage"))
+    assert removed.status_code == 200, removed.text
+    last = await client.request("DELETE", f"/api/auth/webauthn/credentials/{phone.credential_id_hex}",
+                                headers=await mfa_headers(db_session, t, wallet, "login.manage"))
+    assert last.status_code == 403 and "only login passkey" in last.json()["detail"]
