@@ -42,19 +42,6 @@ async def raise_alert(db: AsyncSession, event: AuditEvent, source: str = "RULE")
     existing = (await db.execute(select(SecurityAlert).where(SecurityAlert.source_event_id == event.id))).scalar_one_or_none()
     if existing:
         return existing
-    if source == "AI" and event.actor_did:
-        # One incident, one alert: while an AI alert about this person from the last 24 h is still
-        # open, further unusual actions are recorded in the audit trail but don't open new alerts.
-        from datetime import datetime, timedelta, UTC
-        recent = (await db.execute(select(SecurityAlert).where(
-            SecurityAlert.subject_did == event.actor_did, SecurityAlert.source == "AI",
-            SecurityAlert.state.in_(OPEN_STATES), SecurityAlert.created_at >= datetime.now(UTC) - timedelta(hours=24),
-        ))).scalars().first()
-        if recent is not None:
-            return recent
-    subject = None
-    if event.actor_did:
-        subject = (await db.execute(select(User).where(User.did == event.actor_did))).scalar_one_or_none()
     factors = event.risk_factors if isinstance(event.risk_factors, dict) else {}
     ai_reasons = (factors.get("ai") or {}).get("reasons") if isinstance(factors.get("ai"), dict) else None
     if source == "AI" and ai_reasons:
@@ -63,6 +50,19 @@ async def raise_alert(db: AsyncSession, event: AuditEvent, source: str = "RULE")
         reason = factors.get("reason") or factors.get("explanation") or (
             f"{event.event_type} scored {event.risk_label} by the local risk model"
             if source == "AI" else f"{event.event_type} flagged {event.risk_label}")
+    if source == "AI" and event.actor_did:
+        # One incident, one alert: while an AI alert about this person from the last 24 h is still
+        # open, further unusual actions are recorded in the audit trail and update that alert.
+        from datetime import datetime, timedelta, UTC
+        recent = (await db.execute(select(SecurityAlert).where(
+            SecurityAlert.subject_did == event.actor_did, SecurityAlert.source == "AI",
+            SecurityAlert.state.in_(OPEN_STATES), SecurityAlert.created_at >= datetime.now(UTC) - timedelta(hours=24),
+        ))).scalars().first()
+        if recent is not None:
+            return _add_evidence(db, recent, event, str(reason))
+    subject = None
+    if event.actor_did:
+        subject = (await db.execute(select(User).where(User.did == event.actor_did))).scalar_one_or_none()
     alert = SecurityAlert(
         alert_id=await next_action_id(db, "ALT"), source=source, source_event_id=event.id,
         subject_user_id=subject.id if subject else None, subject_did=event.actor_did,
@@ -76,7 +76,28 @@ async def raise_alert(db: AsyncSession, event: AuditEvent, source: str = "RULE")
     db.add(alert)
     await db.flush()
     db.add(SecurityAlertAction(alert_id=alert.id, action="RAISED", from_state=None, to_state=AUDITOR_REVIEW,
-                               note=f"Raised by {source} from {event.event_type}"))
+                               note=f"Raised by {source} from {event.event_type}: {reason}"[:1000]))
+    return alert
+
+
+LEVEL_RANK = {"HIGH": 1, "CRITICAL": 2}
+
+
+def _add_evidence(db: AsyncSession, alert: SecurityAlert, event: AuditEvent, reason: str) -> SecurityAlert:
+    """A further unusual action by the subject of an open AI alert. The model's reasons are
+    counts over the last hour / day, so the latest at the same or a higher severity carry the
+    most evidence ("12 documents never touched before" rather than the first action's "1"):
+    the alert shows them. Severity only rises, and each rise is added to the alert's history
+    (the reason the alert was raised with stays in its RAISED entry)."""
+    level = (event.risk_label or "").upper()
+    if LEVEL_RANK.get(level, 0) < LEVEL_RANK.get(alert.risk_level, 0):
+        return alert
+    if LEVEL_RANK.get(level, 0) > LEVEL_RANK.get(alert.risk_level, 0):
+        db.add(SecurityAlertAction(alert_id=alert.id, action="SEVERITY_RAISED", from_state=None, to_state=alert.state,
+                                   note=f"{alert.risk_level} to {level} after {event.event_type}: {reason}"[:1000]))
+        alert.risk_level = level
+    alert.reason = reason[:1000]
+    alert.risk_score = max(alert.risk_score or 0.0, event.risk_score or 0.0)
     return alert
 
 

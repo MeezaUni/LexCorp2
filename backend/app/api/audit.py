@@ -137,7 +137,8 @@ async def list_events(
     if role or identity or department:
         query = query.join(User, AuditEvent.actor_did == User.did, isouter=True)
         if role:
-            query = query.filter(func.upper(User.role) == role.strip().upper())
+            # the role at the time of the event; older events (before migration 0014) use the current one
+            query = query.filter(func.upper(func.coalesce(AuditEvent.actor_role, User.role)) == role.strip().upper())
         if identity:
             query = query.filter(User.name.ilike(f"%{identity.strip()}%"))
         if department:

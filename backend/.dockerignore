@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 *.log
 *.pid
+ml/data/
+**/__pycache__/

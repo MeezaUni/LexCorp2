@@ -154,6 +154,7 @@ try {
     ['exactly one alert about the burst user', burstRows === 1, `${burstRows} alert(s)`],
     ['raised by AI-assisted risk analysis', raisedBy.includes('AI-assisted'), raisedBy || '-'],
     ['reason in plain words', /Unusual activity/.test(reason) && reason.length > 40, reason || '-'],
+    ['alert shows the strongest evidence of the burst', /documents never touched before/.test(reason), reason || '-'],
     ['no server errors', errors.length === 0, errors.slice(0, 3).join(' | ') || 'none'],
   ];
   for (const [name, ok, detail] of checks) log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}: ${detail}`);

@@ -224,6 +224,7 @@ class AuditEventBase(BaseSchema):
     tx_hash: str
     block_number: int
     actor_did: Optional[str] = None
+    actor_role: Optional[str] = None  # role when the event happened (None for events before migration 0014)
     target_did: Optional[str] = None
     asset_serial: Optional[str] = None
     client_ip: Optional[str] = None

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { width: 1920px; height: 1080px; overflow: hidden; background: #0a0812; font-family: 'Inter', sans-serif; }
+
+      .scene-7 { position: absolute; width: 100%; height: 100%; padding: 60px 100px; display: flex; flex-direction: column; }
+      .audit-header { display: flex; align-items: center; gap: 16px; margin-bottom: 40px; }
+      .audit-title { font-size: 32px; font-weight: 700; color: #f8fafc; }
+
+      .event-container { width: 100%; }
+      .event-row { display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 20px 24px; margin-bottom: 12px; opacity: 0; }
+      .text-mono { font-family: 'JetBrains Mono', monospace; font-size: 15px; color: #f8fafc; }
+
+      .risk-low { color: #34d399; background: rgba(52,211,153,0.15); border: 1px solid #34d399; padding: 8px 16px; border-radius: 8px; font-weight: 700; }
+      .risk-high { color: #f87171; background: rgba(248,113,113,0.15); border: 1px solid #f87171; padding: 8px 16px; border-radius: 8px; font-weight: 700; }
+      .ai-label { font-family: 'JetBrains Mono', monospace; color: #c084fc; font-size: 14px; margin-top: 24px; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="scene7" data-start="0" data-duration="8" data-width="1920" data-height="1080">
+      <div class="scene-7">
+        <div class="audit-header">
+          <div class="audit-title">Local Out-of-Band AI Anomaly Detection</div>
+        </div>
+        <div class="event-container">
+          <div class="event-row" id="ev-1">
+            <span class="text-mono" style="color: #c084fc;">AssetMinted</span>
+            <span class="text-mono">Block #1482</span>
+            <div class="text-mono risk-low">AI: LOW RISK (0.02)</div>
+          </div>
+          <div class="event-row" id="ev-2">
+            <span class="text-mono" style="color: #f87171;">AccessAttempted</span>
+            <span class="text-mono">Block #1485 (UNAUTHORIZED DID)</span>
+            <div class="text-mono risk-high" id="risk-alert">AI: HIGH RISK (0.91)</div>
+          </div>
+        </div>
+        <div class="ai-label">Scikit-Learn IsolationForest Model 2.1 — Executed Locally. 0 Cloud Requests.</div>
+      </div>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      tl.to("#ev-1", { opacity: 1, duration: 0.4 }, 0.5);
+      tl.to("#ev-2", { opacity: 1, duration: 0.4, y: -10 }, 1.5);
+      tl.to("#risk-alert", { scale: 1.05, duration: 0.2, yoyo: true, repeat: 5, ease: "power1.inOut" }, 1.7);
+      window.__timelines["scene7"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

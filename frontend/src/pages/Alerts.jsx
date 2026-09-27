@@ -126,7 +126,7 @@ function AlertDetail({ alert, user, onClose, onDone }) {
             {full.history.map((h, i) => (
               <li key={i}><time dateTime={h.at}>{formatDate(h.at)}</time>
                 <div><strong>{h.action.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase())}</strong>
-                  <span className="muted"> {h.from ? `${h.from.replace('_', ' ').toLowerCase()} to ` : ''}{h.to.replace('_', ' ').toLowerCase()}{h.actor_role ? `, by ${roleName(h.actor_role)}` : ''}</span>
+                  {h.action !== 'SEVERITY_RAISED' && <span className="muted"> {h.from ? `${h.from.replace('_', ' ').toLowerCase()} to ` : ''}{h.to.replace('_', ' ').toLowerCase()}{h.actor_role ? `, by ${roleName(h.actor_role)}` : ''}</span>}
                   {h.note && <div className="small">“{h.note}”</div>}</div></li>
             ))}
           </ul>

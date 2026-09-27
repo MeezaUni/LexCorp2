@@ -107,3 +107,30 @@ async def test_one_open_ai_alert_per_person_per_day(db_session):
     events = (await db_session.execute(select(AuditEvent).where(AuditEvent.actor_did == user.did,
                                                                AuditEvent.risk_label == "HIGH"))).scalars().all()
     assert len(events) >= 3
+
+
+@pytest.mark.asyncio
+async def test_open_ai_alert_takes_the_strongest_evidence(db_session):
+    from app.api.dependencies import record_audit
+    from app.models.domain import SecurityAlertAction
+    did = f"did:ethr:1337:0x{uuid.uuid4().hex[:40]}"
+    db_session.add(User(wallet_address=did[-42:], did=did, name="Evidence Person", role="USER", department="Avionics",
+                        onboarding_pending=False))
+    await db_session.commit()
+
+    async def act(level, reason):
+        await record_audit(db_session, "DOCUMENT_VIEWED", actor_did=did, risk_label=level, risk_score=100.0,
+                           details={"ai": {"reasons": [reason]}})
+        await db_session.commit()
+
+    await act("HIGH", "1 documents never touched before, in 24 h")
+    await act("CRITICAL", "12 documents never touched before, in 24 h")
+    await act("HIGH", "at the weekend")                     # weaker than what the alert already shows
+    alerts = (await db_session.execute(select(SecurityAlert).where(SecurityAlert.subject_did == did))).scalars().all()
+    assert len(alerts) == 1
+    a = alerts[0]
+    assert a.risk_level == "CRITICAL" and "12 documents" in a.reason
+    history = (await db_session.execute(select(SecurityAlertAction).where(SecurityAlertAction.alert_id == a.id)
+                                        .order_by(SecurityAlertAction.created_at))).scalars().all()
+    assert [h.action for h in history] == ["RAISED", "SEVERITY_RAISED"]
+    assert "1 documents" in history[0].note and "HIGH to CRITICAL" in history[1].note

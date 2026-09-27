@@ -3,6 +3,7 @@ from datetime import date, datetime
 from typing import Optional, List
 
 from sqlalchemy import Index, text, String, Enum, Float, ForeignKey, Text, JSON, Uuid, Boolean, Integer, BigInteger, UniqueConstraint, DateTime, Date
+from sqlalchemy import event, func, or_, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -285,6 +286,9 @@ class AuditEvent(Base, TimestampMixin):
     log_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # chain events: unique with tx_hash
     block_number: Mapped[int] = mapped_column(index=True)
     actor_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The actor's role WHEN the event happened (stamped on insert; later role changes don't alter it).
+    # Events recorded before migration 0014 have none; readers fall back to the current identity.
+    actor_role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     target_did: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     asset_serial: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     client_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -296,6 +300,17 @@ class AuditEvent(Base, TimestampMixin):
     
     # Workflow integration for Security Incidents
     alert_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # legacy column; alert state lives in security_alerts
+
+
+@event.listens_for(AuditEvent, "before_insert")
+def _stamp_actor_role(mapper, connection, target: AuditEvent) -> None:
+    """Every audit row, however it is created, records the actor's role at that moment. The actor
+    is a DID, or a wallet address for failed sign-ins."""
+    if target.actor_role is None and target.actor_did:
+        users = User.__table__
+        actor = target.actor_did.strip()
+        target.actor_role = connection.execute(select(users.c.role).where(
+            or_(users.c.did == actor, func.lower(users.c.wallet_address) == actor.lower())).limit(1)).scalar()
 
 
 class VerifiableCredential(Base, TimestampMixin):

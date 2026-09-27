@@ -81,3 +81,29 @@ async def test_filters_never_widen_role_scope(client, seeded):
     uh = {"Authorization": f"Bearer {create_jwt(USER, f'did:ethr:13371:{USER}', 'USER', 1, client_ip='127.0.0.1')}"}
     r = await client.get("/api/audit/events", params={"asset_serial": seeded, "role": "MANAGER"}, headers=uh)
     assert r.status_code == 200 and r.json() == []
+
+
+@pytest.mark.asyncio
+async def test_role_is_the_one_held_when_the_event_happened(client, db_session):
+    from sqlalchemy import select
+    from app.models.domain import User
+    tag = uuid.uuid4().hex[:8]
+    wallet = "0x" + uuid.uuid4().hex + tag
+    person = User(wallet_address=wallet, did=f"did:ethr:13371:{wallet}", name=f"Role Change {tag}", role="USER",
+                  department="Avionics", onboarding_pending=False)
+    db_session.add(person)
+    await db_session.commit()
+    serial = f"ROLE-{tag}"
+    db_session.add(AuditEvent(event_type="DOCUMENT_VIEWED", tx_hash=f"0xrole{tag}", block_number=0, actor_did=person.did,
+                              asset_serial=serial, risk_label="LOW"))
+    db_session.add(AuditEvent(event_type="AuthenticationFailed", tx_hash=f"0xrolefail{tag}", block_number=0,
+                              actor_did=wallet.upper().replace("0X", "0x"), asset_serial=serial))   # failed sign-in: wallet as actor
+    await db_session.commit()
+    person = (await db_session.execute(select(User).where(User.id == person.id))).scalar_one()
+    person.role = "MANAGER"                                          # promoted afterwards
+    await db_session.commit()
+
+    rows = (await client.get("/api/audit/events", params={"asset_serial": serial}, headers=H)).json()
+    assert {r["event_type"]: r["actor_role"] for r in rows} == {"DOCUMENT_VIEWED": "USER", "AuthenticationFailed": "USER"}
+    assert len(await types(client, serial, role="USER")) == 2
+    assert await types(client, serial, role="MANAGER") == []

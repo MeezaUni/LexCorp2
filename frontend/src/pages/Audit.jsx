@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button, Dialog, Facts, Field, Id, Notice, PageHeader, Panel, Register, Status, formatDate, useAsync } from '../components/ui';
 import { humanEvent } from './Dashboard';
 import { useAuth } from '../context/AuthContext';
+import { roleName } from '../components/Shell';
 import * as api from '../services/api';
 
 const CATEGORIES = [['', 'All categories'], ['AUTH', 'Sign-in and sessions'], ['IDENTITY', 'Identity administration'], ['VIEW', 'Document views'],
@@ -74,6 +75,7 @@ export default function Audit() {
             ['Event type', <Id key="t">{open.event_type}</Id>],
             ['Recorded', formatDate(open.created_at)],
             ['Actor', open.actor_did && <Id key="a">{open.actor_did}</Id>],
+            ['Actor role at the time', open.actor_role && roleName(open.actor_role)],
             ['Target', open.target_did && <Id key="g">{open.target_did}</Id>],
             ['Asset', open.asset_serial && <Id key="s">{open.asset_serial}</Id>],
             ['Network address', open.client_ip],
