@@ -83,3 +83,51 @@ async def test_reviewer_is_told_where_forward_goes(client, db_session):
         r = await client.get(f"/api/alerts/{alert.alert_id}", headers=AUDITOR_H)
         assert r.status_code == 200, r.text
         assert r.json()["forward_to"] == expected, department
+
+
+@pytest.mark.asyncio
+async def test_signing_in_elsewhere_is_recorded_on_both_sides(client, db_session):
+    import pyotp
+    from app.core.crypto import encrypt_secret
+    from app.models.domain import WebAuthnCredential
+    secret = pyotp.random_base32()
+    u = await person(db_session)
+    u.totp_secret, u.is_totp_enabled, u.session_version = encrypt_secret(secret), True, 3
+    db_session.add(WebAuthnCredential(user_id=u.id, credential_id=uuid.uuid4().hex, public_key="00", factor_scope="login"))
+    db_session.add(AuditEvent(event_type="AuthenticationSucceeded", tx_hash=f"0x{uuid.uuid4().hex}", block_number=0,
+                              actor_did=u.did, client_ip="10.8.0.5", created_at=datetime.now(UTC) - timedelta(minutes=5)))
+    await db_session.commit()
+    laptop = create_jwt(u.wallet_address, u.did, "USER", 3, client_ip="10.8.0.5")      # the session in use
+
+    phone = await client.post("/api/auth/login/totp", headers={"X-Forwarded-For": "10.8.0.9"},
+                              json={"wallet_address": u.wallet_address, "token": pyotp.TOTP(secret).now()})
+    assert phone.status_code == 200, phone.text
+    replaced = (await db_session.execute(select(AuditEvent).where(
+        AuditEvent.actor_did == u.did, AuditEvent.event_type == "SESSION_REPLACED_BY_NEW_LOGIN"))).scalar_one()
+    assert replaced.client_ip == "10.8.0.9" and replaced.risk_factors["previous_session_ip"] == "10.8.0.5"
+    assert replaced.risk_label == "MEDIUM"
+    signin = (await db_session.execute(select(AuditEvent).where(
+        AuditEvent.actor_did == u.did, AuditEvent.event_type == "AuthenticationSucceeded",
+        AuditEvent.client_ip == "10.8.0.9"))).scalar_one()
+    assert signin.risk_label is not None          # scored by the AI (or its baseline without a model)
+
+    for _ in range(2):                            # the laptop's next requests: signed out, recorded once
+        r = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {laptop}", "X-Forwarded-For": "10.8.0.5"})
+        assert r.status_code == 401 and "signed in on another device" in r.json()["detail"]
+    ended = (await db_session.execute(select(AuditEvent).where(
+        AuditEvent.actor_did == u.did, AuditEvent.event_type == "SESSION_ENDED_REPLACED"))).scalars().all()
+    assert len(ended) == 1 and ended[0].risk_factors["session_ip"] == "10.8.0.5"
+
+
+@pytest.mark.asyncio
+async def test_unscored_events_get_their_baseline_level(db_session):
+    from app.api.dependencies import record_audit
+    u = await person(db_session)
+    await record_audit(db_session, "LOGOUT", actor_did=u.did)
+    await record_audit(db_session, "PROVISIONING_PIN_REISSUED", actor_did=u.did)
+    await record_audit(db_session, "DOCUMENT_VIEWED", actor_did=u.did, risk_label="LOW", risk_score=12.0)   # scored: kept
+    await db_session.commit()
+    rows = {e.event_type: e for e in (await db_session.execute(select(AuditEvent).where(AuditEvent.actor_did == u.did))).scalars()}
+    assert rows["LOGOUT"].risk_label == "LOW" and "not scored by the AI" in rows["LOGOUT"].risk_factors["risk_basis"]
+    assert rows["PROVISIONING_PIN_REISSUED"].risk_label == "MEDIUM"
+    assert rows["DOCUMENT_VIEWED"].risk_score == 12.0 and "risk_basis" not in (rows["DOCUMENT_VIEWED"].risk_factors or {})

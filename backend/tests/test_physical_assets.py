@@ -134,9 +134,10 @@ async def test_duplicate_mac_address_attempt_audited(client, db_session):
     assert response.status_code == 400
     assert "MAC address is already registered" in response.json()["detail"]
     events = await duplicate_audits(db_session, serial_attempt)
-    # One alert per attempt: the specific event is HIGH; the generic category row is audit-only.
+    # One alert per attempt: the specific event is HIGH; the generic category row gets the baseline
+    # MEDIUM (from its event type), which never raises an alert.
     assert events["DUPLICATE_MAC_ATTEMPT"].risk_score == 0.85 and events["DUPLICATE_MAC_ATTEMPT"].risk_label == "HIGH"
-    assert events["DUPLICATE_PHYSICAL_ASSET_ATTEMPT"].risk_label is None
+    assert events["DUPLICATE_PHYSICAL_ASSET_ATTEMPT"].risk_label == "MEDIUM"
     assert events["DUPLICATE_PHYSICAL_ASSET_ATTEMPT"].risk_factors["specific_event"] == "DUPLICATE_MAC_ATTEMPT"
     from app.models.domain import SecurityAlert
     alerts = (await db_session.execute(select(SecurityAlert).where(SecurityAlert.asset_serial == serial_attempt))).scalars().all()

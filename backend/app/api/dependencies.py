@@ -115,6 +115,31 @@ async def record_audit(
     return event
 
 
+async def _record_replaced_session(db: AsyncSession, user: User, payload: dict, request: Request) -> None:
+    """The first request of a session that a newer sign-in replaced: record that this device was
+    signed out (once per session). Sessions ended by sign-out, revocation or expiry aren't this."""
+    from app.models.domain import AuditEvent
+    jti, issued = payload.get("jti"), payload.get("iat")
+    if not jti or not issued:
+        return
+    newer = (await db.execute(select(AuditEvent.created_at).where(
+        AuditEvent.actor_did == user.did, AuditEvent.event_type == "AuthenticationSucceeded",
+    ).order_by(AuditEvent.created_at.desc()).limit(1))).scalar_one_or_none()
+    if newer is None or newer.timestamp() <= float(issued):
+        return
+    seen = (await db.execute(select(AuditEvent.id).where(
+        AuditEvent.actor_did == user.did, AuditEvent.event_type == "SESSION_ENDED_REPLACED",
+        AuditEvent.risk_factors["jti"].as_string() == jti,
+    ).limit(1))).scalar_one_or_none()
+    if seen is not None:
+        return
+    await record_audit(db, "SESSION_ENDED_REPLACED", actor_did=user.did, target_did=user.did,
+                       client_ip=get_request_client_ip(request),
+                       details={"jti": jti, "session_ip": payload.get("client_ip"),
+                                "reason": "the account signed in on another device (one session at a time)"})
+    await db.commit()
+
+
 def _in_vpn_subnet(ip: Optional[str]) -> bool:
     import ipaddress
     try:
@@ -153,6 +178,7 @@ async def _authenticate(
     if not user.is_active or user.revoked_at is not None:
         raise HTTPException(status_code=403, detail="Account is disabled or identity has been revoked")
     if payload.get("session_version", 0) != (user.session_version or 0):
+        await _record_replaced_session(db, user, payload, request)
         raise HTTPException(status_code=401, detail="This account signed in on another device (only one session at a time), or the session was revoked. Sign in again to continue here.")
 
     # IP session binding: a changed effective client IP terminates the session.

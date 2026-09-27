@@ -307,8 +307,14 @@ class AuditEvent(Base, TimestampMixin):
 
 @event.listens_for(AuditEvent, "before_insert")
 def _stamp_actor_role(mapper, connection, target: AuditEvent) -> None:
-    """Every audit row, however it is created, records the actor's role at that moment. The actor
-    is a DID, or a wallet address for failed sign-ins."""
+    """Every audit row, however it is created, records the actor's role at that moment (the actor
+    is a DID, or a wallet address for failed sign-ins) and has a risk level: the AI's or a rule's
+    when one scored it, otherwise the event type's baseline (app.models.audit_levels)."""
+    if target.risk_label is None:
+        from app.models import audit_levels
+        target.risk_label = audit_levels.baseline(target.event_type)
+        target.risk_score = audit_levels.SCORES[target.risk_label]
+        target.risk_factors = {**(target.risk_factors or {}), "risk_basis": audit_levels.BASIS}
     if target.actor_role is None and target.actor_did:
         users = User.__table__
         actor = target.actor_did.strip()

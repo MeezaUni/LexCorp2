@@ -1153,10 +1153,12 @@ async def _grant_share(db, action, asset, approver, max_views, allow_download, e
     details.update({"approved_max_views": max_views, "approved_until": expires_at.isoformat() if expires_at else None,
                     "approved_download": bool(allow_download)})
     action.details = details
+    risk = await ai_assess(db, "DELEGATE", approver, asset=asset, client_ip=client_ip)
     await record_audit(
         db, "ACCESS_GRANTED", actor_did=approver.did, target_did=target_did, asset_serial=asset.serial_number,
-        client_ip=client_ip,
-        details={"request_action_id": action.action_id, "requested_by": action.actor_did,
+        client_ip=client_ip, risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
+        details={**({"ai": risk["ai"]} if risk.get("ai") else {}),
+                 "request_action_id": action.action_id, "requested_by": action.actor_did,
                  "max_views": max_views, "expires_at": expires_at.isoformat() if expires_at else None,
                  "can_download": bool(allow_download), "asset_version": asset.version_number,
                  "versions": sorted(v.version_number or 1 for v in versions)},
@@ -2245,8 +2247,10 @@ async def owner_decision_on_download(
     else:
         raise HTTPException(status_code=400, detail="Invalid decision.")
     action.details = d
+    risk = await ai_assess(db, "APPROVE", current_user, asset=asset, client_ip=client_ip)
     await record_audit(db, event, actor_did=current_user.did, target_did=action.actor_did, asset_serial=asset.serial_number,
-                       client_ip=client_ip, details={"download_id": action.action_id})
+                       client_ip=client_ip, risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
+                       details={"download_id": action.action_id, **({"ai": risk["ai"]} if risk.get("ai") else {})})
     await db.commit()
     return {"action_id": action.action_id, "status": action.status, "owner_approved": bool(d.get("owner_approved_by"))}
 

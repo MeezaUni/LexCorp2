@@ -56,7 +56,8 @@ async def test_identity_lifecycle_drives_onchain_roles(client, db_session, fake_
     assert user.session_version == 1
     ev = (await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "ROLE_CHANGED",
                                                             AuditEvent.target_did == user.did))).scalar_one()
-    assert ev.risk_factors == {"from": "MANAGER", "to": "USER"}
+    assert {k: ev.risk_factors[k] for k in ("from", "to")} == {"from": "MANAGER", "to": "USER"}
+    assert ev.risk_label == "MEDIUM"      # a role change: baseline level from the event type
 
 
 @pytest.mark.asyncio

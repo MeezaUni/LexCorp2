@@ -45,7 +45,7 @@ from app.api.dependencies import (
 from app.core.config import settings
 from app.core.crypto import decrypt_secret, encrypt_secret, hash_pin, verify_pin
 from app.core.limiter import limiter
-from app.models.domain import User, WebAuthnCredential
+from app.models.domain import AuditEvent, User, WebAuthnCredential
 from app.services import auth, mfa, security, vc
 
 logger = logging.getLogger(__name__)
@@ -176,13 +176,31 @@ async def _issue_session(
     complete = await mfa.login_setup_complete(db, user)
     user.onboarding_pending = not complete
     scope = auth.SCOPE_FULL if complete else auth.SCOPE_SETUP
-    user.session_version = (user.session_version or 0) + 1
-    user.last_activity_at = mfa.utcnow()
     client_ip = get_request_client_ip(request)
+    now = mfa.utcnow()
+    last = user.last_activity_at
+    if last is not None and now - last < timedelta(minutes=settings.INACTIVITY_TIMEOUT_MINUTES):
+        # One session at a time: this sign-in ends a session still in use (on another device, or
+        # another browser). Record where that session was.
+        previous = (await db.execute(select(AuditEvent).where(
+            AuditEvent.actor_did == user.did, AuditEvent.event_type == "AuthenticationSucceeded",
+        ).order_by(AuditEvent.created_at.desc()).limit(1))).scalar_one_or_none()
+        await record_audit(db, "SESSION_REPLACED_BY_NEW_LOGIN", actor_did=user.did, target_did=user.did, client_ip=client_ip,
+                           details={"previous_session_ip": previous.client_ip if previous else None,
+                                    "previous_sign_in": previous.created_at.isoformat() if previous and previous.created_at else None,
+                                    "last_activity": last.isoformat(), "method": method})
+    risk = {}
+    if complete:
+        # The sign-in itself is behaviour the risk model knows (time, new address, failures before it)
+        from app.services.alerts import ai_assess
+        risk = await ai_assess(db, "LOGIN", user, client_ip=client_ip)
+    user.session_version = (user.session_version or 0) + 1
+    user.last_activity_at = now
     await record_audit(
         db, "AuthenticationSucceeded",
         actor_did=user.did, target_did=user.did, client_ip=client_ip,
-        details={"method": method, "session_scope": scope},
+        risk_label=risk.get("risk_label"), risk_score=risk.get("risk_score"),
+        details={"method": method, "session_scope": scope, **({"ai": risk["ai"]} if risk.get("ai") else {})},
     )
     await db.commit()
     token = auth.create_jwt(
@@ -365,6 +383,7 @@ async def login_with_passkey(passkey_req: PasskeyLoginVerifyRequest, request: Re
 @router.post("/logout")
 async def logout(response: Response, request: Request, user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
     user.session_version = (user.session_version or 0) + 1
+    user.last_activity_at = None     # signed out: no session in use (so the next sign-in isn't "replacing" one)
     await record_audit(db, "LOGOUT", actor_did=user.did, client_ip=get_request_client_ip(request))
     await db.commit()
     response.delete_cookie("session", path="/", httponly=True, samesite="strict", secure=settings.is_production)

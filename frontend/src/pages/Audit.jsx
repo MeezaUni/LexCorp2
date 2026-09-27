@@ -9,6 +9,11 @@ const CATEGORIES = [['', 'All categories'], ['AUTH', 'Sign-in and sessions'], ['
   ['DOWNLOAD', 'Downloads'], ['MODIFICATION', 'Modifications'], ['DIGITAL', 'Digital assets'], ['PHYSICAL', 'Physical assets'],
   ['ACCESS', 'Access delegation'], ['ALERT', 'Alert decisions'], ['CHAIN', 'Ledger and roles']];
 const PAGE = 50;
+// Where an event's risk level came from: the local AI model, an integrity/security rule, or the
+// event type's baseline (events neither scores; see backend/app/models/audit_levels.py).
+const riskBasis = (e) => (e.risk_factors?.risk_basis ? 'type' : e.risk_factors?.ai ? 'AI' : 'rule');
+const riskBasisLong = (e) => ({ type: 'level from the event type, not scored by the AI', AI: 'scored by the AI model', rule: 'set by an integrity or security rule' }[riskBasis(e)]);
+
 const EMPTY = { category: '', risk_label: '', result: '', asset_serial: '', actor_did: '', from_date: '', to_date: '', escalation_state: '' };
 
 export default function Audit() {
@@ -63,7 +68,7 @@ export default function Audit() {
               { key: 'e', label: 'Event', render: (e) => <><strong>{humanEvent(e.event_type)}</strong><div className="small muted">{e.event_type}</div></> },
               { key: 'a', label: 'Actor', render: (e) => (e.actor_did ? <Id>{e.actor_did.split(':').pop().slice(0, 10)}…</Id> : '—') },
               { key: 's', label: 'Asset', render: (e) => (e.asset_serial ? <Id>{e.asset_serial}</Id> : '—') },
-              { key: 'r', label: 'Risk', render: (e) => (e.risk_label ? <Status value={e.risk_label} /> : '—') },
+              { key: 'r', label: 'Risk', render: (e) => (e.risk_label ? <span><Status value={e.risk_label} /> <span className="small muted">{riskBasis(e)}</span></span> : '—') },
               { key: 'al', label: 'Alert', render: (e) => (e.alert_status ? <Status value={e.alert_status} /> : '—') },
               { key: 'src', label: 'Source', render: (e) => (e.block_number > 0 ? `Ledger block ${e.block_number}` : 'LexCorp2') },
             ]} />
@@ -79,7 +84,7 @@ export default function Audit() {
             ['Target', open.target_did && <Id key="g">{open.target_did}</Id>],
             ['Asset', open.asset_serial && <Id key="s">{open.asset_serial}</Id>],
             ['Network address', open.client_ip],
-            ['Risk', open.risk_label && <span key="r"><Status value={open.risk_label} /> {open.risk_score != null ? Number(open.risk_score).toFixed(2) : ''}</span>],
+            ['Risk', open.risk_label && <span key="r"><Status value={open.risk_label} /> {open.risk_score != null ? Number(open.risk_score).toFixed(2) : ''} <span className="small muted">({riskBasisLong(open)})</span></span>],
             ['Alert state', open.alert_status && <Status key="al" value={open.alert_status} />],
             [open.block_number > 0 ? 'Transaction hash' : 'Record reference', <Id key="h">{open.tx_hash}</Id>],
             ['Ledger block', open.block_number > 0 ? open.block_number : 'Not a ledger event'],
