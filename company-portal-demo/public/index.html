@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Company Portal (demo) – Remote access</title>
-  <meta name="description" content="Demonstration stand-in for a company portal that issues the LexCorp2 VPN profile.">
+  <meta name="description" content="Demonstration stand-in for a company portal that issues the LexCorp VPN profile.">
   <meta name="robots" content="noindex, nofollow">
   <link rel="stylesheet" href="/styles.css">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -13,8 +13,8 @@
 <body>
   <div class="demo-banner" role="note">
     <strong>Demonstration stand-in.</strong> This page plays the part of a company's existing employee portal for the
-    LexCorp2 project demo. It is not affiliated with, endorsed by or connected to any real organisation, and it is not
-    linked to LexCorp2 itself.
+    LexCorp project demo (SIH26125). It is not affiliated with, endorsed by or connected to any real organisation, and it is not
+    linked to LexCorp itself.
   </div>
 
   <header class="top">
@@ -27,7 +27,7 @@
   <main class="wrap">
     <section class="hero">
       <h1>Remote access to internal systems</h1>
-      <p class="lede">Internal systems such as LexCorp2 are never published on the internet. From outside the company
+      <p class="lede">Internal systems such as LexCorp are never published on the internet. From outside the company
         network you connect through the company VPN, and every connection asks you to sign in with your company account.</p>
     </section>
 
@@ -51,7 +51,7 @@
       <ul>
         <li><strong>OpenVPN Connect</strong> (free, Windows and macOS) from
           <a href="https://openvpn.net/client/" rel="noopener">openvpn.net/client</a>: double-click the downloaded
-          <code>lexcorp2-remote.ovpn</code> and it's imported.</li>
+          <code>lexcorp-remote.ovpn</code> and it's imported.</li>
         <li>or the <strong>OpenVPN Community client 2.6+</strong> ("OpenVPN GUI", Windows) from
           <a href="https://openvpn.net/community-downloads/" rel="noopener">openvpn.net/community-downloads</a>:
           right-click its tray icon, <strong>Import file…</strong>, and pick the file. On macOS, Tunnelblick 4 also works.</li>
@@ -64,7 +64,7 @@
         <li>In OpenVPN, choose <strong>Connect</strong> on the LexCorp profile.</li>
         <li>Your browser opens and asks you to sign in with your company account (Google, for the demo).</li>
         <li>If your account is approved, the VPN connects. If not, the connection is refused.</li>
-        <li>Open the LexCorp2 address you were given, and sign in to LexCorp2 as usual. Its own sign-in and
+        <li>Open the LexCorp address you were given, and sign in to LexCorp as usual. Its own sign-in and
           factor checks still apply: the VPN only gets you to the door.</li>
       </ol>
     </section>
@@ -77,9 +77,9 @@
         <li><strong>VPN (OpenVPN Community Edition + openvpn-auth-oauth2):</strong> at every connection it sends your
           browser to the company login and accepts the connection only for approved accounts. Clients that can't do
           the browser sign-in are refused.</li>
-        <li><strong>Inside:</strong> a connected device can reach only the LexCorp2 web address, over HTTPS. Nothing
+        <li><strong>Inside:</strong> a connected device can reach only the LexCorp web address, over HTTPS. Nothing
           else on the network is reachable through the VPN, and your own internet traffic doesn't use it.</li>
-        <li><strong>LexCorp2:</strong> its own sign-in, per-action factors, watermarking and audit trail apply as normal.</li>
+        <li><strong>LexCorp:</strong> its own sign-in, per-action factors, watermarking and audit trail apply as normal.</li>
       </ol>
     </section>
 
@@ -88,14 +88,14 @@
       <p>At an organisation that runs its own employee or supplier portal (for example a defence manufacturer's
         existing sign-in portal), this download would sit behind that portal's login, and the VPN would ask the
         organisation's own identity provider (for example Microsoft Entra ID, AD FS or Keycloak) instead of Google.
-        That's the same open standard (OpenID Connect) with different settings, so nothing in LexCorp2 changes.</p>
-      <p>This demo site is deliberately separate: LexCorp2 doesn't trust it or share accounts with it. It only
+        That's the same open standard (OpenID Connect) with different settings, so nothing in LexCorp changes.</p>
+      <p>This demo site is deliberately separate: LexCorp doesn't trust it or share accounts with it. It only
         illustrates where the VPN profile would come from.</p>
     </section>
   </main>
 
   <footer class="wrap foot">
-    <p class="muted small">LexCorp2 final-year project demonstration. No real company's systems, branding or accounts are used.</p>
+    <p class="muted small">LexCorp: a Smart India Hackathon (SIH) project, problem statement SIH26125. No real company's systems, branding or accounts are used.</p>
   </footer>
 </body>
 </html>

@@ -21,6 +21,6 @@ export default async function handler(req, res) {
   }
   console.log(`profile issued to ${result.email}`);
   res.setHeader('Content-Type', 'application/x-openvpn-profile');
-  res.setHeader('Content-Disposition', 'attachment; filename="lexcorp2-remote.ovpn"');
+  res.setHeader('Content-Disposition', 'attachment; filename="lexcorp-remote.ovpn"');
   return res.status(200).send(profile);
 }

@@ -20,7 +20,7 @@ async function download(credential) {
     throw new Error(body.error || `Download failed (${res.status}).`);
   }
   const url = URL.createObjectURL(await res.blob());
-  const a = Object.assign(document.createElement('a'), { href: url, download: 'lexcorp2-remote.ovpn' });
+  const a = Object.assign(document.createElement('a'), { href: url, download: 'lexcorp-remote.ovpn' });
   document.body.append(a);
   a.click();
   a.remove();
