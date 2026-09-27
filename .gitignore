@@ -65,3 +65,6 @@ network/vpn/wireguard_data/
 
 # Simulated training data for the risk model (regenerate with backend/ml/simulate.py)
 backend/ml/data/
+
+# Promotional video project and renders (kept locally, not in git)
+brag-output/
