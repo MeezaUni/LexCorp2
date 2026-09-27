@@ -31,6 +31,18 @@ def test_features_use_only_the_past_and_describe_the_burst():
     assert f["volume_ratio_24h"] > 10                               # far above this person's usual day
 
 
+def test_explanations_never_leave_a_flagged_event_without_a_reason():
+    names = list(risk_model.FEATURE_TEXT)
+    bundle = {"baseline": {"median": {k: 1.0 for k in names}, "spread": {k: 2.0 for k in names}}}
+    quiet = {k: 1.0 for k in names}
+    # exactly 1.5 spreads above normal counts as a reason
+    assert risk_model.explain(bundle, {**quiet, "copies_24h": 4.0}) == ["4 downloads/copies in the last 24 h (usual about 1)"]
+    # nothing reaches 1.5, but moderately raised features are still named (at most two)
+    moderate = {**quiet, "copies_24h": 3.0, "new_assets_24h": 3.5, "events_1h": 3.2}
+    assert len(risk_model.explain(bundle, moderate)) == 2
+    assert risk_model.explain(bundle, quiet) == []
+
+
 @pytest.fixture(scope="module")
 def tiny_bundle(tmp_path_factory):
     """A small but real simulate -> train run."""

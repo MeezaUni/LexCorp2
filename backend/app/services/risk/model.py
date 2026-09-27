@@ -80,7 +80,11 @@ def label_for(bundle: dict, risk: float) -> str:
 
 
 def explain(bundle: dict, feats: Dict[str, float], limit: int = 3) -> List[str]:
-    """The most unusual features of this event compared with normal activity, in words."""
+    """The most unusual features of this event compared with normal activity, in words.
+
+    Features at least 1.5 spreads above normal are the reasons. When none reaches that (the
+    classifier can flag a combination of several moderately raised features), the few that are
+    clearly raised are given instead, so a flagged event is never left without a reason."""
     med, spread = bundle["baseline"]["median"], bundle["baseline"]["spread"]
     scored = []
     for name, text in FEATURE_TEXT.items():
@@ -88,12 +92,14 @@ def explain(bundle: dict, feats: Dict[str, float], limit: int = 3) -> List[str]:
         if v is None:
             continue
         z = (v - med[name]) / spread[name]
-        if z <= 1.5:
+        if z < 0.75:
             continue
         sentence = text(v, med[name])
         if sentence:
             scored.append((z, sentence))
-    return [s for _, s in sorted(scored, reverse=True)[:limit]]
+    scored.sort(reverse=True)
+    strong = [s for z, s in scored if z >= 1.5]
+    return strong[:limit] if strong else [s for _, s in scored[:2]]
 
 
 def assess(feats: Dict[str, float], bundle: Optional[dict] = None) -> Optional[dict]:

@@ -19,7 +19,9 @@ python ml/evaluate.py          # measures it on the held-out period, writes ml/r
 ```
 
 Then restart the app (`npm start`): it loads `ml/models/risk_model.joblib` automatically.
-Until a model has been trained, the app keeps using the old bundled model.
+A trained model and its report (`ml/reports/evaluation.md`) are committed, so a fresh clone uses
+the new model straight away; retrain only to change the model. The simulated data in `ml/data/`
+is not committed.
 
 Useful options:
 
