@@ -4,7 +4,7 @@ authenticated JSON-RPC relay used by the browser wallet.
 Besu's JSON-RPC is bound to 127.0.0.1 and accepts no browser origins. Browsers reach
 the chain only through /api/chain/rpc, which requires a fully onboarded session,
 allows a fixed set of read / submit methods, and accepts a raw transaction only if it
-is signed by the caller's own wallet and addressed to the LexCorp2 contract.
+is signed by the caller's own wallet and addressed to the LexCorp contract.
 """
 
 import asyncio
@@ -86,7 +86,7 @@ async def rpc_relay(request: Request, current_user: User = Depends(get_onboarded
             await db.commit()
             return JSONResponse(_rpc_error(req_id, -32000, "Transaction must be signed by your own wallet"), status_code=403)
         if not to_addr or to_addr.lower() != d["address"].lower():
-            return JSONResponse(_rpc_error(req_id, -32000, "Transactions may only target the LexCorp2 contract"), status_code=403)
+            return JSONResponse(_rpc_error(req_id, -32000, "Transactions may only target the LexCorp contract"), status_code=403)
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:

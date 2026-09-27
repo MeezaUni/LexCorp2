@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { listAlerts, pendingDocuments, pendingDownloads, pendingPhysical } from '../services/api';
 import { Button, shortWallet } from './ui';
 
-/** Original LexCorp2 mark: a custody seal (square frame, inset bar and key notch). */
+/** Original LexCorp mark: a custody seal (square frame, inset bar and key notch). */
 export function Mark({ size = 30 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
@@ -88,9 +88,9 @@ export default function Shell() {
   return (
     <div className={`shell${open ? ' nav-open' : ''}`}>
       <header className="masthead">
-        <NavLink to="/" className="brand" aria-label="LexCorp2 dashboard">
+        <NavLink to="/" className="brand" aria-label="LexCorp dashboard">
           <Mark />
-          <span><span className="brand-name">LexCorp2</span><span className="brand-sub">Asset Assurance &amp; Custody</span></span>
+          <span><span className="brand-name">LexCorp</span><span className="brand-sub">Asset Assurance &amp; Custody</span></span>
         </NavLink>
         <button type="button" className="menu-button" aria-expanded={open} aria-controls="primary-nav" onClick={() => setOpen(!open)}>
           {open ? 'Close menu' : 'Menu'}

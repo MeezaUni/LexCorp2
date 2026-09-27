@@ -1,4 +1,4 @@
-"""Generate LexCorp2 local secrets (idempotent). Prints only public addresses and paths.
+"""Generate LexCorp local secrets (idempotent). Prints only public addresses and paths.
 
 Creates, if missing (existing values are kept unless --rotate NAME is given):
 
@@ -85,9 +85,9 @@ def main() -> int:
         keep(backend, "DATA_ENCRYPTION_KEYS", lambda: base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())
     backend.setdefault("PUBLIC_BASE_URL", "http://localhost:5173")
 
-    write_env(FILES["root"], root, "docker compose variables for LexCorp2")
-    write_env(FILES["chain"], chain, "LexCorp2 contract deployment (governance) credentials")
-    write_env(FILES["backend"], backend, "LexCorp2 backend configuration")
+    write_env(FILES["root"], root, "docker compose variables for LexCorp")
+    write_env(FILES["chain"], chain, "LexCorp contract deployment (governance) credentials")
+    write_env(FILES["backend"], backend, "LexCorp backend configuration")
 
     print("Secrets written (values not shown):")
     for k, p in FILES.items():

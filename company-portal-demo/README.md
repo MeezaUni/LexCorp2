@@ -16,7 +16,7 @@ isn't enough to get in anyway: the VPN asks for the Google sign-in again at ever
 
 ## Deploy (free Vercel Hobby plan)
 
-Prerequisites: the VPN is set up and has written `network/vpn/data/openvpn/client/lexcorp2-remote.ovpn`
+Prerequisites: the VPN is set up and has written `network/vpn/data/openvpn/client/lexcorp-remote.ovpn`
 (see `network/vpn/README.md`), and you have a Vercel account (sign up with GitHub or Google).
 
 ```
@@ -35,7 +35,7 @@ npx vercel env add ALLOWED_EMAILS production          # the same list as network
 and the profile, base64-encoded. In PowerShell, from the repository root:
 
 ```
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("network\vpn\data\openvpn\client\lexcorp2-remote.ovpn")) | npx vercel env add VPN_PROFILE_B64 production
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("network\vpn\data\openvpn\client\lexcorp-remote.ovpn")) | npx vercel env add VPN_PROFILE_B64 production
 ```
 
 Then deploy:

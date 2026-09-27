@@ -1,4 +1,4 @@
-"""Simulate months of LexCorp2 activity, with labelled misuse, for training and evaluation.
+"""Simulate months of LexCorp activity, with labelled misuse, for training and evaluation.
 
     cd backend
     python ml/simulate.py                       # defaults: 3 organisations (~80 people each), 120 days -> ml/data/

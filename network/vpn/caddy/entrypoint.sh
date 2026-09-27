@@ -1,7 +1,7 @@
 #!/bin/sh
 # CADDY_ROLE=gateway (sign-in page) or site (the app). At the site, replies to VPN clients
 # (10.8.0.0/24) go back through the site-link container: a route, not address translation, so
-# LexCorp2 sees each remote person's own VPN address in its audit trail.
+# LexCorp sees each remote person's own VPN address in its audit trail.
 set -eu
 case "${CADDY_ROLE:-}" in
   gateway|site) ;;

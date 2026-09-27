@@ -27,9 +27,9 @@ export default function Enrolment() {
   return (
     <div className="auth-screen">
       <aside className="auth-aside">
-        <div className="row"><Mark size={40} /><div><div className="brand-name">LexCorp2</div><div className="brand-sub">Identity enrolment</div></div></div>
+        <div className="row"><Mark size={40} /><div><div className="brand-name">LexCorp</div><div className="brand-sub">Identity enrolment</div></div></div>
         <h1>Set up your login factors</h1>
-        <p>Your wallet is provisioned. Before you can use LexCorp2, register both login factors. Afterwards you sign in with either one.</p>
+        <p>Your wallet is provisioned. Before you can use LexCorp, register both login factors. Afterwards you sign in with either one.</p>
         <ul>
           <li>Identity: {user.name || 'Unnamed'}</li>
           <li>Role: {user.role}{user.department ? `, ${user.department}` : ''}</li>
@@ -52,7 +52,7 @@ export default function Enrolment() {
                 <div className="step-body">
                   {!totp && (
                     <>
-                      <p className="muted small">Add LexCorp2 to an authenticator app (for example Microsoft or Google Authenticator) on a device you keep with you.</p>
+                      <p className="muted small">Add LexCorp to an authenticator app (for example Microsoft or Google Authenticator) on a device you keep with you.</p>
                       <div><Button variant="primary" busy={busy} onClick={() => act(async () => setTotp(await startTotp('login')))}>Start authenticator setup</Button></div>
                     </>
                   )}
@@ -62,7 +62,7 @@ export default function Enrolment() {
                         <img className="qr" src={totp.qr_data_uri} alt="Authenticator enrolment QR code" data-sensitive="true" />
                         <div className="stack" style={{ flex: 1, minWidth: 200 }}>
                           <span className="small muted">Scan the code, or type this key into the app:</span>
-                          <span className="small muted">Only this newest code works. If your app already has a LexCorp2 Login entry from an earlier attempt, delete it.</span>
+                          <span className="small muted">Only this newest code works. If your app already has a LexCorp Login entry from an earlier attempt, delete it.</span>
                           <div className="secret-box" data-sensitive="true" data-testid="totp-secret">{totp.secret}</div>
                         </div>
                       </div>

@@ -10,7 +10,7 @@ import { sendPreparedCalldata } from './web3';
 export async function signAndConfirm(getSigner, calldata, contractAddress, serial, onProgress = () => {}) {
   onProgress('Unlocking your wallet on this device');
   const signer = await getSigner();
-  onProgress('Submitting the transaction to the LexCorp2 ledger');
+  onProgress('Submitting the transaction to the LexCorp ledger');
   const { txHash } = await sendPreparedCalldata(signer, calldata, contractAddress);
   onProgress('Verifying the receipt and contract state');
   return confirmChainEffect(serial, txHash);

@@ -994,7 +994,7 @@ async def delete_asset(
 
 
 async def _resolve_recipient(db: AsyncSession, recipient_address: Optional[str], recipient_did: Optional[str]) -> Optional[User]:
-    """The identity an asset is created for must be a registered, active LexCorp2 identity,
+    """The identity an asset is created for must be a registered, active LexCorp identity,
     so the registry owner, the on-chain token holder and the on-chain owner DID agree."""
     target = None
     if recipient_did:
@@ -1002,7 +1002,7 @@ async def _resolve_recipient(db: AsyncSession, recipient_address: Optional[str],
     if target is None and recipient_address:
         target = (await db.execute(select(User).where(func.lower(User.wallet_address) == recipient_address.strip().lower()))).scalar_one_or_none()
     if (recipient_did or recipient_address) and (target is None or not target.is_active or target.revoked_at is not None):
-        raise HTTPException(status_code=400, detail="The recipient must be a registered, active LexCorp2 identity.")
+        raise HTTPException(status_code=400, detail="The recipient must be a registered, active LexCorp identity.")
     if target is not None and recipient_address and target.wallet_address.lower() != recipient_address.strip().lower():
         raise HTTPException(status_code=400, detail="Recipient DID and wallet address belong to different identities.")
     return target
@@ -1934,7 +1934,7 @@ async def _create_revision(
         raise HTTPException(status_code=409, detail=f"Revisions must be based on the latest approved version (v{latest}).")
     if pending:
         raise HTTPException(status_code=409, detail="A revision of this document is already pending approval.")
-    # Verify every watermark element against what was issued, then remove LexCorp2's layers:
+    # Verify every watermark element against what was issued, then remove LexCorp's layers:
     # the version is stored clean, so later copies carry one watermark instead of a stack.
     manifest = d.get("watermark_manifest")
     check = copy_integrity.check_copy(content, dl.action_id, dl.watermark_text or "")

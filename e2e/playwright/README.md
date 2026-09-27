@@ -1,6 +1,6 @@
 # Browser verification harness (Playwright)
 
-These scripts drive the **real running LexCorp2 stack** (Vite frontend, FastAPI backend,
+These scripts drive the **real running LexCorp stack** (Vite frontend, FastAPI backend,
 PostgreSQL, the Besu network and the AssetNFT v3 contract) through the browser. They were
 executed through the Playwright MCP tool (`browser_run_code_unsafe`, each file is one
 `async (page) => { ... }` function). Results and screenshots are recorded in

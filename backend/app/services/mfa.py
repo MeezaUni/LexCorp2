@@ -334,7 +334,7 @@ async def verify_passkey_assertion(
         logger.warning("Passkey assertion rejected (purpose=%s): %s", purpose, error)
         if "user verification is required" in str(error).lower():
             raise HTTPException(status_code=401, detail=(
-                "This passkey was used without a PIN, fingerprint or face check, which LexCorp2 requires. "
+                "This passkey was used without a PIN, fingerprint or face check, which LexCorp requires. "
                 "That usually means it is saved in a browser or extension password manager that skips the check. "
                 "Use your authenticator code, or use a passkey saved in Windows Hello or on your phone."))
         # Outside production the library's reason (no secrets: e.g. "Unexpected RP ID hash") is

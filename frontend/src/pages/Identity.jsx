@@ -79,7 +79,7 @@ export default function Identity() {
           )}
           {user.reset_path === 'server_operator' ? (
             <Notice tone="info" title="You are the only administrator">
-              No one in LexCorp2 can approve a login reset for you, and you can't approve your own. If you lose a login factor, the person who runs the LexCorp2 server resets it with <code>python backend/scripts/bootstrap_admin.py --reset-login</code>. Registering a second administrator lets you approve each other's resets instead.
+              No one in LexCorp can approve a login reset for you, and you can't approve your own. If you lose a login factor, the person who runs the LexCorp server resets it with <code>python backend/scripts/bootstrap_admin.py --reset-login</code>. Registering a second administrator lets you approve each other's resets instead.
             </Notice>
           ) : (
             <>

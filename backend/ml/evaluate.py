@@ -45,7 +45,7 @@ def evaluate(df, bundle, split="test"):
     te["level"] = np.select([te["risk"] >= t["CRITICAL"], te["risk"] >= t["HIGH"], te["risk"] >= t["MEDIUM"]],
                             ["CRITICAL", "HIGH", "MEDIUM"], "LOW")
     te["alert"] = te["level"].isin(["HIGH", "CRITICAL"])
-    # LexCorp2's deterministic rules raise HIGH alerts for these regardless of the AI
+    # LexCorp's deterministic rules raise HIGH alerts for these regardless of the AI
     te["rule"] = te["kind"].isin(list(RULE_KINDS))
     # ordinary events by a person in the 24 h after their own attack: the consequences of that
     # incident (reported separately, not counted as false alerts)
@@ -113,7 +113,7 @@ def evaluate(df, bundle, split="test"):
 
 
 def report(r, bundle) -> str:
-    lines = [f"# LexCorp2 risk model evaluation ({datetime.now(UTC):%Y-%m-%d %H:%M} UTC)", "",
+    lines = [f"# LexCorp risk model evaluation ({datetime.now(UTC):%Y-%m-%d %H:%M} UTC)", "",
              f"Model `{bundle.get('version')}`, thresholds {bundle['thresholds']}.",
              f"Test period: {r['days']:.0f} days, {r['people']} people, {r['events']:,} events "
              f"({r['misuse_events']:,} misuse events). **Synthetic data.**", "",

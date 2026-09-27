@@ -1,6 +1,6 @@
-# LexCorp2 — Asset Assurance & Custody
+# LexCorp — Asset Assurance & Custody
 
-LexCorp2 manages controlled digital documents and registered physical equipment for an
+LexCorp manages controlled digital documents and registered physical equipment for an
 organisation. Every sensitive action is tied to a verified wallet identity, approved by a
 responsible officer, recorded in an append-only audit trail and anchored to a permissioned
 Hyperledger Besu ledger.
@@ -52,7 +52,7 @@ Hyperledger Besu ledger.
 | Path | Contents |
 |---|---|
 | `backend/` | FastAPI app, Alembic migrations, scripts, pytest suite |
-| `frontend/` | React/Vite UI with the LexCorp2 design system in `src/styles/app.css` |
+| `frontend/` | React/Vite UI with the LexCorp design system in `src/styles/app.css` |
 | `contracts/` | AssetNFT v3 (Solidity), Hardhat tests, deploy, verify and registrar-rotation scripts |
 | `network/besu/` | Generated 3-validator QBFT network (chain 13371). Keys and data are git-ignored |
 | `scripts/` | `init_secrets.py`, `generate_besu_network.py`, `e2e_fixture_server.py` (development only) |

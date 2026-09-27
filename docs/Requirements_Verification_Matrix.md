@@ -1,4 +1,4 @@
-# LexCorp2 — Requirements Verification Matrix
+# LexCorp — Requirements Verification Matrix
 
 Updated 2026-09-26 against the final code on branch `feature/security-workflow-upgrades`.
 
@@ -102,7 +102,7 @@ Manual test IDs refer to `backend/Final_Manual_Test_Checklist.md`.
 |---|---|---|---|
 | Manager/Admin only; serial + (MAC xor unique address); global normalised uniqueness enforced by the DB | IMPLEMENTED + VERIFIED | `test_physical_assets` (14); Playwright 06 (MAC in another notation refused, serial refused) | L1–L5 |
 | One alert per duplicate attempt; raw identifiers never logged | IMPLEMENTED + VERIFIED | Fixed this round (double alerting) | L3 |
-| NFT card with exactly 5 fields (LexCorp2 styling) | IMPLEMENTED + VERIFIED | `test_asset_cards`; Playwright 07 | L7 |
+| NFT card with exactly 5 fields (LexCorp styling) | IMPLEMENTED + VERIFIED | `test_asset_cards`; Playwright 07 | L7 |
 | Role-based redaction (MAC, unique address, location) | IMPLEMENTED + VERIFIED | Playwright 07 (hidden from custodian user and public; shown to Manager/Auditor) | L9 |
 | Lifecycle, status (Factor 3), maintenance, audit | IMPLEMENTED + VERIFIED | `test_physical_lifecycle`; Playwright 06 and 12 | L10 |
 
@@ -133,7 +133,7 @@ Manual test IDs refer to `backend/Final_Manual_Test_Checklist.md`.
 |---|---|---|---|
 | Besu 13371, 3 new validators (keys generated locally, git-ignored), empty alloc, zero-fee | IMPLEMENTED + VERIFIED | Rebuild record; `qbft_getValidatorsByBlockNumber` | Q1 |
 | RPC on 127.0.0.1 only; ETH/NET/WEB3/QBFT only; no CORS; host allow-list | IMPLEMENTED + VERIFIED | curl probes (403 CORS / Host; admin and debug methods disabled) | Q4, R6 |
-| Browser chain access only through the authenticated relay (method allow-list; own-wallet signer; LexCorp2 contract only) | IMPLEMENTED + VERIFIED | `test_chain_roles_and_relay` (11); all Playwright transactions went through it | Q5 |
+| Browser chain access only through the authenticated relay (method allow-list; own-wallet signer; LexCorp contract only) | IMPLEMENTED + VERIFIED | `test_chain_roles_and_relay` (11); all Playwright transactions went through it | Q5 |
 | On-chain roles follow the identity registry (grant, demote, revoke, periodic reconcile, orphan removal) | IMPLEMENTED + VERIFIED | Tests; orphan revoked live; integrity checker | D9, O4 |
 | Registrar key rotation | IMPLEMENTED + VERIFIED | Performed live after an in-session exposure (`rotate_registrar.js`) | — |
 | Postgres on 127.0.0.1 with a generated password; development password rejected | IMPLEMENTED + VERIFIED | Rebuild record | R6 |
@@ -145,7 +145,7 @@ Manual test IDs refer to `backend/Final_Manual_Test_Checklist.md`.
 
 | Requirement | Status | Evidence | Manual |
 |---|---|---|---|
-| Original LexCorp2 institutional design system; no third-party branding | IMPLEMENTED + VERIFIED | `frontend/src/styles/app.css`; screenshots; the organisation default changed to "LexCorp2" | D6 |
+| Original LexCorp institutional design system; no third-party branding | IMPLEMENTED + VERIFIED | `frontend/src/styles/app.css`; screenshots; the organisation default changed to "LexCorp" | D6 |
 | All major pages redesigned and wired to real data (no invented statistics) | IMPLEMENTED + VERIFIED | Playwright 01–12 | — |
 | Responsive at 1920, 1366, 768 and 390 px | IMPLEMENTED + VERIFIED | Playwright 10 and 11 (no overflow, no off-screen controls, drawer works) | — |
 | No console errors or failed critical requests | IMPLEMENTED + VERIFIED | Playwright 10 and 11 | — |
@@ -168,5 +168,5 @@ Manual test IDs refer to `backend/Final_Manual_Test_Checklist.md`.
 4. **react-router advisory** (open redirect via backslash) is fixed only in v7. It was assessed as not exploitable here: link targets are fixed paths and serials are URL-encoded. Tracked.
 5. **Development toolchain advisories** (46 in Hardhat dev dependencies) do not ship.
 6. **Old Postgres container** `lexcorp_postgres_legacy_sihv2` and its volume are kept (stopped). Other local LexCorp copies that used it will not connect with the development password.
-7. **A globally installed editable package** from another local project (`lexcorp_sih_backend`) provides a top-level `app` module. It can shadow imports when scripts run from other directories. LexCorp2's scripts insert `backend/` first.
+7. **A globally installed editable package** from another local project (`lexcorp_sih_backend`) provides a top-level `app` module. It can shadow imports when scripts run from other directories. LexCorp's scripts insert `backend/` first.
 8. **Backups** in `db_backups/` contain data from retired test identities. Delete them after validation.

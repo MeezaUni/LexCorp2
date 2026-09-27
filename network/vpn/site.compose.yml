@@ -1,6 +1,6 @@
-# LexCorp2 remote access, SITE: runs on the machine that runs LexCorp2 (npm start).
+# LexCorp remote access, SITE: runs on the machine that runs LexCorp (npm start).
 #
-#   gateway --site link (WireGuard, opened from here)--> sitelink 172.30.0.2 --HTTPS only--> caddy 172.30.0.10 --> LexCorp2 (Vite :5173)
+#   gateway --site link (WireGuard, opened from here)--> sitelink 172.30.0.2 --HTTPS only--> caddy 172.30.0.10 --> LexCorp (Vite :5173)
 #
 #   docker compose -f site.compose.yml --env-file site.env up -d
 # Works behind carrier-grade NAT: nothing needs to be opened on this network's router.
@@ -8,7 +8,7 @@ name: lexcorp-vpn-site
 
 services:
   sitelink:
-    image: lexcorp2-vpn:local
+    image: lexcorp-vpn:local
     build: ./openvpn
     entrypoint: ["/usr/local/bin/entrypoint-sitelink.sh"]
     environment:
@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
 
   caddy:
-    image: lexcorp2-vpn-caddy:local
+    image: lexcorp-vpn-caddy:local
     build: ./caddy
     environment:
       CADDY_ROLE: site

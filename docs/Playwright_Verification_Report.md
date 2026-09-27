@@ -1,4 +1,4 @@
-# LexCorp2 — Playwright browser verification report (2026-09-26)
+# LexCorp — Playwright browser verification report (2026-09-26)
 
 This is **automated browser verification** against the real running stack: Vite on
 :5173, FastAPI on 127.0.0.1:8000, PostgreSQL, the 3-validator Besu network and AssetNFT v3.

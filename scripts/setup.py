@@ -1,4 +1,4 @@
-"""One command from a fresh clone to a running LexCorp2 (development).
+"""One command from a fresh clone to a running LexCorp (development).
 
     npm run setup                 # install, configure, start everything, then run the app
     npm run setup -- --no-start   # prepare everything but don't start the app
@@ -191,7 +191,7 @@ def contract():
         code = rpc("eth_getCode", [d.get("address", "0x0000000000000000000000000000000000000000"), "latest"])
         deployed = bool(code) and code != "0x"
     if not deployed:
-        print("No LexCorp2 contract on this ledger yet: deploying a fresh one.")
+        print("No LexCorp contract on this ledger yet: deploying a fresh one.")
         run([NPM, "run", "contract:deploy"])
     if run([NPM, "run", "-s", "contract:verify"], check=False).returncode != 0:
         fail("the contract at contracts/deployments/besu.json did not pass verification (see the lines above). "

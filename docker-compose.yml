@@ -1,4 +1,9 @@
-# LexCorp2 - local PostgreSQL (bound to localhost; password from the git-ignored .env)
+# LexCorp - local PostgreSQL (bound to localhost; password from the git-ignored .env)
+
+# Fixed project name: the database lives in the volume "lexcorp2_postgres_data", named when the
+# folder was LexCorp2. Pinning it keeps that volume whatever the folder is called; changing it
+# would start an empty database.
+name: lexcorp2
 
 services:
   postgres:

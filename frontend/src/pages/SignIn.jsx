@@ -32,7 +32,7 @@ export default function SignIn() {
   return (
     <div className="auth-screen">
       <aside className="auth-aside">
-        <div className="row"><Mark size={40} /><div><div className="brand-name">LexCorp2</div><div className="brand-sub">Asset Assurance &amp; Custody</div></div></div>
+        <div className="row"><Mark size={40} /><div><div className="brand-name">LexCorp</div><div className="brand-sub">Asset Assurance &amp; Custody</div></div></div>
         <h1>Controlled records for digital and physical assets</h1>
         <p>Every document view, download and change is tied to a verified identity, approved by a responsible officer, watermarked and anchored to the organisation's permissioned ledger.</p>
         <ul>
@@ -73,8 +73,8 @@ function SignInForm({ busy, run, done }) {
   const addressOk = ethers.isAddress(address.trim());
   return (
     <form className="form" onSubmit={(e) => { e.preventDefault(); run('Checking your login authenticator code', async () => { await loginWithTotp(address.trim(), code); await done(); }); }}>
-      <h2>Sign in to LexCorp2</h2>
-      <Field label="Wallet address" hint="Type the address of your LexCorp2 wallet. It is not remembered on this device.">
+      <h2>Sign in to LexCorp</h2>
+      <Field label="Wallet address" hint="Type the address of your LexCorp wallet. It is not remembered on this device.">
         <input className="input mono" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="0x…"
           autoComplete="off" spellCheck={false} required aria-invalid={address && !addressOk ? 'true' : undefined} />
       </Field>

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Site link: the encrypted tunnel (WireGuard) from the machine running LexCorp2 to the VPN gateway.
+# Site link: the encrypted tunnel (WireGuard) from the machine running LexCorp to the VPN gateway.
 #
 # The site opens the tunnel outwards, so it works behind carrier-grade NAT and needs no ports
 # opened at the site. Replies and keepalives keep it up. VPN clients' requests to the web proxy

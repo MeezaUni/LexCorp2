@@ -142,7 +142,7 @@ async def seed(db):
         ("owner", f"{TAG} Document Owner {run}", "USER", FIN, False),
     ):
         wallet = "0x" + secrets.token_hex(20)
-        user = User(wallet_address=wallet, name=name, organization="LexCorp2", department=dept, role=role,
+        user = User(wallet_address=wallet, name=name, organization="LexCorp", department=dept, role=role,
                     did=f"did:ethr:{settings.CHAIN_ID}:{wallet}", is_active=True, onboarding_pending=False, pin_used=True,
                     created_at=now - timedelta(days=HISTORY_DAYS + 9))
         if signs_in:

@@ -1,4 +1,4 @@
-# LexCorp2 risk model evaluation (2026-09-27 08:40 UTC)
+# LexCorp risk model evaluation (2026-09-27 08:40 UTC)
 
 Model `20260927-0834-97ed7cdd47`, thresholds {'MEDIUM': 99.4922, 'HIGH': 99.9488, 'CRITICAL': 99.9907}.
 Test period: 36 days, 244 people, 93,195 events (906 misuse events). **Synthetic data.**

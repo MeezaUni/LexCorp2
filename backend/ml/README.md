@@ -1,6 +1,6 @@
-# LexCorp2 risk model (local, free, no external services)
+# LexCorp risk model (local, free, no external services)
 
-The AI part of LexCorp2's security alerts. It scores each sensitive action (views,
+The AI part of LexCorp's security alerts. It scores each sensitive action (views,
 downloads, modification copies, revisions, registrations, failed sign-ins and factor
 codes) against **that person's own recent behaviour** and against what is ordinary for the
 organisation, and explains its score in plain words to the Auditor. It only advises:
@@ -104,7 +104,7 @@ weekend workers, night shifts, sick days and some cross-department work.
 
 ## Public datasets (optional, for research)
 
-These are free but don't match LexCorp2's activity directly. They're useful for choosing
+These are free but don't match LexCorp's activity directly. They're useful for choosing
 signals and sanity-checking the method.
 
 - **CERT Insider Threat Test Dataset** (Carnegie Mellon; search "CERT Insider Threat Test

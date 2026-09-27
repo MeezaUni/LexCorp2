@@ -85,7 +85,7 @@ async def test_live_scoring_reads_the_audit_trail_and_explains(tiny_bundle, db_s
     await db_session.commit()
     r = await ai_assess(db_session, "DOWNLOAD", user, asset_serial="RISK-NEW", client_ip="172.16.5.5")
     assert r["risk_label"] in ("HIGH", "CRITICAL"), r
-    assert r["ai"]["model"].startswith("LexCorp2 risk model") and r["ai"]["reasons"]
+    assert r["ai"]["model"].startswith("LexCorp risk model") and r["ai"]["reasons"]
     assert any("downloads" in x or "actions" in x or "documents" in x for x in r["ai"]["reasons"])
 
 

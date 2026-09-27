@@ -67,7 +67,7 @@ export default function Admin() {
               {(departments.data || []).length ? <ul style={{ margin: 0, paddingLeft: 18 }}>{departments.data.map((d) => <li key={d}>{d}</li>)}</ul> : <Empty title="No departments" />}
             </Panel>
             <Panel title="Ledger roles" aside={<Button size="sm" onClick={async () => { try { const r = await api.reconcileRoles(); reload(`Ledger roles reconciled: ${r.synced} identities checked, ${r.unregistered_revoked} unregistered holders revoked, ${r.failed} failures.`); } catch (err) { setError(errorText(err)); } }}>Reconcile now</Button>}>
-              <p className="small muted">Managers and Administrators hold the minting, anchoring and management roles on the ledger; Auditors hold the audit role; Users hold none. LexCorp2 keeps the ledger in step automatically and removes roles from revoked or unknown wallets.</p>
+              <p className="small muted">Managers and Administrators hold the minting, anchoring and management roles on the ledger; Auditors hold the audit role; Users hold none. LexCorp keeps the ledger in step automatically and removes roles from revoked or unknown wallets.</p>
               {chain.data && <Facts items={[
                 ['Contract', <Id key="c">{chain.data.contract_address}</Id>], ['Chain', chain.data.chain_id], ['Head block', chain.data.head_block],
                 ...Object.entries(chain.data.checks || {}).map(([k, v]) => [k.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()), v === true ? 'Pass' : String(v)]),
@@ -132,7 +132,7 @@ function CreateIdentity({ departments, roles, onClose, onDone }) {
         {!generated && <div><Button size="sm" variant="quiet" onClick={() => { const w = ethers.Wallet.createRandom(); setGenerated({ address: w.address, phrase: w.mnemonic.phrase }); setF({ ...f, wallet: w.address }); setAck(false); }}>The person cannot create one: generate a wallet for them</Button></div>}
         {generated && (
           <Notice tone="warning" title="Custodial hand-over">
-            You now know this person's recovery phrase. Hand it over privately and ask them to keep it secret. It is not stored anywhere by LexCorp2.
+            You now know this person's recovery phrase. Hand it over privately and ask them to keep it secret. It is not stored anywhere by LexCorp.
             <div className="secret-box" data-sensitive="true" style={{ margin: '8px 0' }}>{generated.phrase}</div>
             <label className="choice"><input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />I have recorded the phrase for secure hand-over.</label>
           </Notice>

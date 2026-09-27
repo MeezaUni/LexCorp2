@@ -111,7 +111,7 @@ function RegisterDocument({ onClose, onDone }) {
     <>
       <Dialog title="Register a document" onClose={onClose} wide
         footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!valid} onClick={() => setStepUp(true)}>{direct ? 'Register and record' : 'Submit for approval'}</Button></>}>
-        <p className="muted small">The file is stored in the LexCorp2 vault and its SHA-256 is computed by the server. {direct
+        <p className="muted small">The file is stored in the LexCorp vault and its SHA-256 is computed by the server. {direct
           ? 'As a Manager or Administrator you register it directly: your wallet records it on the ledger straight away.'
           : 'A Manager or Administrator of the department approves it before it is recorded on the ledger.'}</p>
         {error && <Notice tone="error">{error}</Notice>}

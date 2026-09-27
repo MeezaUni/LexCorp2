@@ -1,4 +1,4 @@
-// Deploy AssetNFT v3 to the LexCorp2 Besu network.
+// Deploy AssetNFT v3 to the LexCorp Besu network.
 //
 //   npx hardhat run scripts/deploy.js --network besu
 //

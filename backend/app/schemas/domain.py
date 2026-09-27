@@ -14,7 +14,7 @@ class UserBase(BaseSchema):
     wallet_address: str
     name: Optional[str] = None
     contact_number: Optional[str] = None
-    organization: Optional[str] = "LexCorp2"
+    organization: Optional[str] = "LexCorp"
     department: Optional[str] = None
     did: Optional[str] = None
     role: str = "USER"

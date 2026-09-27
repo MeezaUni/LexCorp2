@@ -1,4 +1,4 @@
-# LexCorp2 QBFT network (chain 13371): 3 validators.
+# LexCorp QBFT network (chain 13371): 3 validators.
 # Static file. The machine-specific parts are git-ignored and written by
 # scripts/generate_besu_network.py (run automatically by `npm run setup`):
 #   networkFiles/genesis.json, networkFiles/keys/, and .env (BESU_NODE1_ENODE, a public key).

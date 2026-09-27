@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     RP_ID: str = "localhost"
     WEBAUTHN_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     # The app's address for people connected through the VPN (network/vpn/README.md), e.g.
-    # https://lexcorp2-app.duckdns.org. Added to CORS_ORIGINS and WEBAUTHN_ORIGINS; passkeys
+    # https://lexcorp-app.duckdns.org. Added to CORS_ORIGINS and WEBAUTHN_ORIGINS; passkeys
     # created there belong to that name (see app.services.mfa.rp_id_for).
     REMOTE_APP_ORIGIN: str = ""
     # Addresses the VPN gives connected devices (network/vpn). Every VPN connection gets a new one,
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
         "eth_getTransactionReceipt", "eth_getTransactionByHash", "eth_sendRawTransaction", "eth_getCode",
     ]
 
-    # Public base URL of the LexCorp2 web app; QR codes point to its /verify pages.
+    # Public base URL of the LexCorp web app; QR codes point to its /verify pages.
     PUBLIC_BASE_URL: str = "http://localhost:5173"
 
     OFFCHAIN_STORAGE_DIR: str = str(BASE_DIR / "offchain_storage")

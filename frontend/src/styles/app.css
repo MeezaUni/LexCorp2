@@ -1,4 +1,4 @@
-/* LexCorp2 design system - single stylesheet, token driven. */
+/* LexCorp design system - single stylesheet, token driven. */
 
 @import '@fontsource/ibm-plex-sans/400.css';
 @import '@fontsource/ibm-plex-sans/500.css';
@@ -294,7 +294,7 @@ a.sr-only:focus { position: fixed; top: 8px; left: 8px; width: auto; height: aut
 .protected-pages canvas { display: block; max-width: 100%; height: auto; background: #fff; box-shadow: 0 1px 3px rgba(14, 34, 64, 0.35); -webkit-user-drag: none; }
 @media print {
   body.protected-view-open * { display: none !important; }
-  body.protected-view-open::after { content: "Printing is disabled for protected LexCorp2 views."; display: block; padding: 2cm; font: 14pt sans-serif; }
+  body.protected-view-open::after { content: "Printing is disabled for protected LexCorp views."; display: block; padding: 2cm; font: 14pt sans-serif; }
 }
 
 /* verification & card */

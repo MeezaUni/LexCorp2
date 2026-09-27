@@ -70,7 +70,7 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader title={`${greeting()}, ${user.name || 'colleague'}`}
-        lede={`${roleName(user.role)}${user.department ? `, ${user.department}` : ''}. Figures below are read live from LexCorp2 and cover only what your role may see.`}
+        lede={`${roleName(user.role)}${user.department ? `, ${user.department}` : ''}. Figures below are read live from LexCorp and cover only what your role may see.`}
         ribbon={ribbon} />
       <div className="content">
         <div className="grid-main-side">

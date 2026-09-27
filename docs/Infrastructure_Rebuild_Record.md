@@ -1,4 +1,4 @@
-# LexCorp2 infrastructure rebuild record (2026-09-26)
+# LexCorp infrastructure rebuild record (2026-09-26)
 
 This file records a controlled rebuild of the development infrastructure. It covers
 why each component was replaced, what was backed up, what was preserved or discarded,

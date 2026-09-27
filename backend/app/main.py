@@ -121,7 +121,7 @@ from app.api.alerts import router as alerts_router
 from app.api.chain import router as chain_router
 
 app = FastAPI(
-    title="LexCorp2 - Digital & Physical Asset Management",
+    title="LexCorp - Digital & Physical Asset Management",
     description="Wallet identity, purpose-bound MFA, RBAC, controlled documents, physical asset registry, Besu anchoring",
     version=settings.APP_VERSION,
     lifespan=lifespan,

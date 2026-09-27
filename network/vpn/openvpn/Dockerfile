@@ -1,6 +1,6 @@
 # OpenVPN Community Edition (Debian's 2.6) + openvpn-auth-oauth2 + WireGuard tools, one image used by
 # the VPN server, the sign-in service that asks Google who is connecting, and the site link
-# (the encrypted tunnel from the machine running LexCorp2 to the gateway).
+# (the encrypted tunnel from the machine running LexCorp to the gateway).
 FROM debian:trixie-slim
 
 ARG OAUTH2_VERSION=2.2.0

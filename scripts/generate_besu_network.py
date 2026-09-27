@@ -1,4 +1,4 @@
-"""Generate a fresh 3-validator QBFT network for LexCorp2 (chain id 13371).
+"""Generate a fresh 3-validator QBFT network for LexCorp (chain id 13371).
 
   python scripts/generate_besu_network.py            # refuses if chain data exists
   python scripts/generate_besu_network.py --force    # moves existing chain data to

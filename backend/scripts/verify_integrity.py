@@ -1,4 +1,4 @@
-"""Read-only integrity check of the running LexCorp2 environment. Prints PASS/FAIL lines
+"""Read-only integrity check of the running LexCorp environment. Prints PASS/FAIL lines
 (no secret values). Exit code 0 only when every check passes.
 
     cd backend && python scripts/verify_integrity.py

@@ -185,7 +185,7 @@ async def test_relay_rejects_transactions_to_other_contracts(client, db_session)
 
 @pytest.mark.asyncio
 async def test_reconciler_revokes_roles_of_unregistered_wallets(db_session, fake_chain_roles):
-    """A wallet holding an operational role on-chain but unknown to LexCorp2 (e.g. an
+    """A wallet holding an operational role on-chain but unknown to LexCorp (e.g. an
     identity removed by a database rebuild) loses that role; registered ones converge."""
     from app.services.chain import reconcile_all
     orphan = "0x" + uuid.uuid4().hex + uuid.uuid4().hex[:8]

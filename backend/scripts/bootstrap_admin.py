@@ -1,4 +1,4 @@
-"""Bootstrap the FIRST LexCorp2 administrator (and the initial department list).
+"""Bootstrap the FIRST LexCorp administrator (and the initial department list).
 
 Administrators cannot create administrators through the API, so the first one is
 created here, out-of-band, by whoever operates the server:
@@ -79,7 +79,7 @@ async def main() -> int:
             await db.commit()
         SECRETS.mkdir(exist_ok=True)
         (SECRETS / "bootstrap_admin_pin.txt").write_text(
-            f"LexCorp2 bootstrap administrator\nwallet: {u.wallet_address}\nprovisioning PIN (single use, expires "
+            f"LexCorp bootstrap administrator\nwallet: {u.wallet_address}\nprovisioning PIN (single use, expires "
             f"{u.pin_expires_at.isoformat()}): {pin}\n", encoding="utf-8")
         print(f"New PIN written to {SECRETS / 'bootstrap_admin_pin.txt'} (not shown); the previous PIN no longer works.")
         return 0
@@ -127,7 +127,7 @@ async def main() -> int:
         await db.refresh(admin)
 
         (SECRETS / "bootstrap_admin_pin.txt").write_text(
-            f"LexCorp2 bootstrap administrator\nwallet: {address}\nprovisioning PIN (single use, expires "
+            f"LexCorp bootstrap administrator\nwallet: {address}\nprovisioning PIN (single use, expires "
             f"{admin.pin_expires_at.isoformat()}): {pin}\n", encoding="utf-8")
         if generated:
             (SECRETS / "bootstrap_admin_wallet.json").write_text(json.dumps(generated, indent=2), encoding="utf-8")
@@ -172,7 +172,7 @@ async def reset_admin_login(wallet_address) -> int:
         await db.commit()
     SECRETS.mkdir(exist_ok=True)
     (SECRETS / "bootstrap_admin_pin.txt").write_text(
-        "LexCorp2 administrator login reset\n"
+        "LexCorp administrator login reset\n"
         f"wallet: {target.wallet_address}\n"
         f"provisioning PIN (single use, expires {expires_at.isoformat()}): {pin}\n",
         encoding="utf-8")

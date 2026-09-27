@@ -1,4 +1,4 @@
-"""Behavioural features for LexCorp2's local risk model: ONE implementation, used by the
+"""Behavioural features for LexCorp's local risk model: ONE implementation, used by the
 simulator, training, evaluation and the live app, so the model never sees features computed
 one way in training and another way in production (the flaw of the previous model).
 

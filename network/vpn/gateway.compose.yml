@@ -1,6 +1,6 @@
-# LexCorp2 remote access, GATEWAY: runs on the public server (e.g. a free Oracle Cloud VM).
+# LexCorp remote access, GATEWAY: runs on the public server (e.g. a free Oracle Cloud VM).
 #
-#   internet --UDP VPN_PORT--> openvpn 172.29.0.2 --(site link, HTTPS only)--> site: caddy 172.30.0.10 --> LexCorp2
+#   internet --UDP VPN_PORT--> openvpn 172.29.0.2 --(site link, HTTPS only)--> site: caddy 172.30.0.10 --> LexCorp
 #   browser  --TCP LOGIN_PORT--> caddy 172.29.0.4 --> auth 172.29.0.3 --> Google
 #   site machine --UDP 51820--> openvpn (WireGuard end of the site link)
 #
@@ -10,7 +10,7 @@ name: lexcorp-vpn-gateway
 
 services:
   openvpn:
-    image: lexcorp2-vpn:local
+    image: lexcorp-vpn:local
     build: ./openvpn
     entrypoint: ["/usr/local/bin/entrypoint-openvpn.sh"]
     environment:
@@ -35,7 +35,7 @@ services:
     restart: unless-stopped
 
   auth:
-    image: lexcorp2-vpn:local
+    image: lexcorp-vpn:local
     entrypoint: ["/usr/local/bin/entrypoint-auth.sh"]
     depends_on: [openvpn]
     environment:
@@ -51,7 +51,7 @@ services:
     restart: unless-stopped
 
   caddy:
-    image: lexcorp2-vpn-caddy:local
+    image: lexcorp-vpn-caddy:local
     build: ./caddy
     environment:
       CADDY_ROLE: gateway

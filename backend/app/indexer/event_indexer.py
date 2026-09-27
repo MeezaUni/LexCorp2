@@ -330,7 +330,7 @@ class EventIndexer:
 
         if anomaly:
             # Deterministic integrity rule (not an AI judgement): the chain disagrees with
-            # the LexCorp2 registry. Raised as HIGH so humans triage it.
+            # the LexCorp registry. Raised as HIGH so humans triage it.
             risk_label = "HIGH"
             risk_score = max(risk_score or 0.0, 0.9)
             risk_factors = {**(risk_factors or {}), "integrity_anomaly": anomaly}
@@ -370,7 +370,7 @@ class EventIndexer:
         return (await session.execute(select(User).where(func.lower(User.wallet_address) == wallet.lower()))).scalar_one_or_none()
 
     async def _reconcile_mint(self, session: AsyncSession, event_name: str, args: dict) -> Optional[dict]:
-        """A mint must correspond to an approved LexCorp2 registry record with the same
+        """A mint must correspond to an approved LexCorp registry record with the same
         token ID, serial, owner and (digital) file hash. The registry is never rewritten
         from chain data and no identity is ever created here."""
         token_id, serial = args.get("tokenId"), args.get("serialNumber")
@@ -407,7 +407,7 @@ class EventIndexer:
         return None
 
     async def _reconcile_transfer(self, session: AsyncSession, token_id, new_owner: Optional[str]) -> Optional[dict]:
-        """Custody may only move to an active LexCorp2 identity; the registry follows it."""
+        """Custody may only move to an active LexCorp identity; the registry follows it."""
         user = await self._user_by_wallet(session, new_owner)
         if user is None or not user.is_active:
             return {"rule": "TRANSFER_TO_UNKNOWN_IDENTITY", "token_id": token_id, "new_owner": new_owner}
@@ -419,7 +419,7 @@ class EventIndexer:
         return None
 
     async def _reconcile_role_event(self, session: AsyncSession, event_name: str, args: dict) -> Optional[dict]:
-        """On-chain roles must match the LexCorp2 identity (see services/chain.py)."""
+        """On-chain roles must match the LexCorp identity (see services/chain.py)."""
         from app.services.chain import desired_roles
         role_names = {}
         for name in ("MINTER_ROLE", "ANCHOR_ROLE", "MANAGER_ROLE", "AUDITOR_ROLE", "REGISTRAR_ROLE", "DEFAULT_ADMIN_ROLE"):

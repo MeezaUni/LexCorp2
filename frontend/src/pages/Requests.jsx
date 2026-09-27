@@ -153,7 +153,7 @@ function Decision({ action, onClose, onDone, getSigner }) {
             <label className="choice span-2"><input type="checkbox" checked={allowDownload} onChange={(e) => setAllowDownload(e.target.checked)} />Allow this identity to request downloads (still individually approved)</label>
           </div>
         )}
-        {onChain && <p className="small muted">Approving produces a ledger transaction that your wallet signs next. LexCorp2 marks it recorded only after verifying the receipt and the contract state.</p>}
+        {onChain && <p className="small muted">Approving produces a ledger transaction that your wallet signs next. LexCorp marks it recorded only after verifying the receipt and the contract state.</p>}
         {progress && <Notice tone="info">{progress}</Notice>}
       </>}
       onSubmit={async (code) => {

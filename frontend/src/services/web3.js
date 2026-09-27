@@ -7,14 +7,14 @@ import deployment from '../../../contracts/deployments/besu.json';
  * The Besu JSON-RPC endpoint is NOT reachable from browsers (bound to 127.0.0.1, no
  * CORS origins). All chain traffic goes through the authenticated backend relay
  * /api/chain/rpc, which only allows read/submit methods and only forwards
- * transactions signed by the logged-in user's own wallet to the LexCorp2 contract.
+ * transactions signed by the logged-in user's own wallet to the LexCorp contract.
  * Authorization is enforced by the AssetNFT v3 contract roles, not by this code.
  */
 
 export const CHAIN_ID = 13371;
 export const CONTRACT_ADDRESS = deployment.address;
 const ABI = deployment.abi;
-const NETWORK = new ethers.Network('lexcorp2-besu', CHAIN_ID);
+const NETWORK = new ethers.Network('lexcorp-besu', CHAIN_ID);
 
 export function getRpcProvider() {
   // Same-origin fetch (browser default credentials) sends the HttpOnly session cookie.
@@ -35,7 +35,7 @@ async function waitForReceipt(txHash, timeoutMs = 60000) {
   while (Date.now() - start < timeoutMs) {
     const rcpt = await provider.getTransactionReceipt(txHash).catch(() => null);
     if (rcpt && rcpt.status !== undefined && rcpt.status !== null) {
-      if (rcpt.status !== 1) throw new Error('The transaction was rejected by the LexCorp2 contract (reverted).');
+      if (rcpt.status !== 1) throw new Error('The transaction was rejected by the LexCorp contract (reverted).');
       return rcpt;
     }
     await new Promise((r) => setTimeout(r, 1000));
@@ -47,7 +47,7 @@ async function waitForReceipt(txHash, timeoutMs = 60000) {
 export async function sendPreparedCalldata(wallet, calldata, contractAddress) {
   const to = calldata.to || contractAddress;
   if (!to || to.toLowerCase() !== CONTRACT_ADDRESS.toLowerCase()) {
-    throw new Error('Refusing to sign: calldata is not addressed to the LexCorp2 contract.');
+    throw new Error('Refusing to sign: calldata is not addressed to the LexCorp contract.');
   }
   const signer = wallet.connect(getRpcProvider());
   const tx = await signer.sendTransaction({ to, data: calldata.data, ...TX });

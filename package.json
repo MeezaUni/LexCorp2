@@ -2,7 +2,7 @@
   "name": "lexcorp-local",
   "private": true,
   "version": "1.0.0",
-  "description": "LexCorp2 local orchestration",
+  "description": "LexCorp local orchestration",
   "scripts": {
     "setup": "python scripts/setup.py",
     "secrets:init": "python scripts/init_secrets.py",

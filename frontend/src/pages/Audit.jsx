@@ -70,7 +70,7 @@ export default function Audit() {
               { key: 's', label: 'Asset', render: (e) => (e.asset_serial ? <Id>{e.asset_serial}</Id> : '—') },
               { key: 'r', label: 'Risk', render: (e) => (e.risk_label ? <span><Status value={e.risk_label} /> <span className="small muted">{riskBasis(e)}</span></span> : '—') },
               { key: 'al', label: 'Alert', render: (e) => (e.alert_status ? <Status value={e.alert_status} /> : '—') },
-              { key: 'src', label: 'Source', render: (e) => (e.block_number > 0 ? `Ledger block ${e.block_number}` : 'LexCorp2') },
+              { key: 'src', label: 'Source', render: (e) => (e.block_number > 0 ? `Ledger block ${e.block_number}` : 'LexCorp') },
             ]} />
         </Panel>
       </div>

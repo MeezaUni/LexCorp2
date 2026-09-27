@@ -1,7 +1,7 @@
 """Chain integrity checks and on-chain role synchronisation.
 
 The backend's chain-operator key holds ONLY REGISTRAR_ROLE on AssetNFT v3. It is used
-to make on-chain roles follow the LexCorp2 identity lifecycle:
+to make on-chain roles follow the LexCorp identity lifecycle:
 
     ADMIN, MANAGER (active)  -> MINTER_ROLE, ANCHOR_ROLE, MANAGER_ROLE
     AUDITOR (active)         -> AUDITOR_ROLE
@@ -162,7 +162,7 @@ class RoleSync:
 
 
 async def sync_user_chain_roles(db, user, *, actor_did: Optional[str] = None, client_ip: Optional[str] = None) -> dict:
-    """Converge one user's on-chain roles with their LexCorp2 role and status.
+    """Converge one user's on-chain roles with their LexCorp role and status.
     Never raises: failures are audited (HIGH) and returned so callers can surface them;
     the periodic reconciler retries."""
     import asyncio

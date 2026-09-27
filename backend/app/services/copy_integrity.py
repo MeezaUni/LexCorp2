@@ -1,10 +1,10 @@
-"""Is an uploaded file an untampered LexCorp2 copy of one specific action?
+"""Is an uploaded file an untampered LexCorp copy of one specific action?
 
 Used when a modification copy comes back as a revision: the file must still carry the
-watermark LexCorp2 put on it. Two independent checks:
+watermark LexCorp put on it. Two independent checks:
   * QR: at least one QR code in the file decodes to this action's verification reference;
   * Document Control block: the block for this action is present and every field on it
-    (downloaded by, wallet, IP, date, Download ID, owner) equals what LexCorp2 recorded
+    (downloaded by, wallet, IP, date, Download ID, owner) equals what LexCorp recorded
     when the copy was made.
 Works for PDF, Word, PowerPoint and Excel copies. Images carry their details only as
 pixels, so for them only the QR check applies. Nothing in the file is trusted beyond
@@ -149,7 +149,7 @@ def _decode_qr(image_bytes: bytes) -> list[str]:
 
 
 def qr_references(data: bytes) -> set[str]:
-    """LexCorp2 action references found in the file's QR codes."""
+    """LexCorp action references found in the file's QR codes."""
     refs = set()
     for image in _images(data):
         for payload in _decode_qr(image):
@@ -184,6 +184,6 @@ def check_copy(data: bytes, action_id: str, watermark_text: str) -> CopyCheck:
     mismatches = [label for label in LABELS if label in block and block[label] != recorded.get(label)]
     mismatches += [label for label in REQUIRED if label not in block]
     if mismatches:
-        return CopyCheck(False, "The watermark on the file does not match LexCorp2's record (changed: "
+        return CopyCheck(False, "The watermark on the file does not match LexCorp's record (changed: "
                                 + ", ".join(sorted(set(mismatches))) + ").", True, True, sorted(set(mismatches)))
     return CopyCheck(True, "QR code and watermark details match the record.", True, True)

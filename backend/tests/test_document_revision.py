@@ -36,7 +36,7 @@ async def test_revise_document_success(client, db_session):
     mod = rev.json()
     assert mod["action_id"].startswith("MOD-") and mod["status"] == "PENDING"
     assert mod["details"]["download_id"] == dl
-    # The version is stored WITHOUT LexCorp2's watermark (layers verified, then removed): it holds the
+    # The version is stored WITHOUT LexCorp's watermark (layers verified, then removed): it holds the
     # person's edit, and later copies of it carry one fresh watermark instead of a stack.
     from app.api.assets import OFFCHAIN_STORAGE_DIR
     from app.services.copy_integrity import document_text

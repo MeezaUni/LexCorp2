@@ -1,20 +1,20 @@
 #!/bin/sh
-# LexCorp2 remote-access VPN gateway (OpenVPN Community Edition), run on the public server.
+# LexCorp remote-access VPN gateway (OpenVPN Community Edition), run on the public server.
 #
 # First start: creates the certificate authority, the server certificate, one shared client
 # certificate for the demo profile, and the tls-crypt-v2 keys, all under /data (git-ignored).
 # Every start: writes the server configuration and the client profile
-# /data/client/lexcorp2-remote.ovpn, sets the firewall, and starts OpenVPN.
+# /data/client/lexcorp-remote.ovpn, sets the firewall, and starts OpenVPN.
 #
 # Who may connect is decided at every connection by the sign-in service (entrypoint-auth.sh):
 # the person signs in with Google in their browser and must be on ALLOWED_EMAILS. OpenVPN
 # waits on its management interface ("management-hold") until that service is attached, so
-# nobody can connect without the sign-in step. Connected people can reach only the LexCorp2
+# nobody can connect without the sign-in step. Connected people can reach only the LexCorp
 # web proxy (APP_IP, HTTPS); everything else is dropped.
 #
-# The web proxy runs next to LexCorp2 on the site machine, which may be behind carrier-grade NAT.
+# The web proxy runs next to LexCorp on the site machine, which may be behind carrier-grade NAT.
 # That machine opens a WireGuard tunnel (the "site link", entrypoint-sitelink.sh) to this gateway;
-# traffic from VPN clients to APP_IP is routed over it. Routed, not translated, so LexCorp2 sees
+# traffic from VPN clients to APP_IP is routed over it. Routed, not translated, so LexCorp sees
 # each person's own VPN address.
 set -eu
 
@@ -43,7 +43,7 @@ chown nobody:nogroup /data/state /run/lexcorp
 if [ ! -f /data/pki/ca.crt ]; then
   echo "Creating the VPN certificate authority and certificates (first start)"
   "$EASYRSA" init-pki
-  EASYRSA_REQ_CN="LexCorp2 VPN CA" "$EASYRSA" build-ca nopass
+  EASYRSA_REQ_CN="LexCorp VPN CA" "$EASYRSA" build-ca nopass
   "$EASYRSA" build-server-full lexcorp2-vpn-server nopass
   "$EASYRSA" build-client-full lexcorp2-remote nopass
 fi
@@ -76,7 +76,7 @@ status-version 2
 # would disconnect the first. Each connection is still identified by its own Google sign-in.
 duplicate-cn
 
-# Split tunnel: only the LexCorp2 web proxy is reached through the VPN; everything else
+# Split tunnel: only the LexCorp web proxy is reached through the VPN; everything else
 # (the person's own internet traffic) stays on their own connection.
 push "route ${APP_IP} 255.255.255.255"
 
@@ -116,8 +116,8 @@ verb 3
 errors-to-stderr
 EOF
 
-cat > /data/client/lexcorp2-remote.ovpn <<EOF
-# LexCorp2 remote access (demo). Import into the OpenVPN Community client (OpenVPN GUI 2.6+).
+cat > /data/client/lexcorp-remote.ovpn <<EOF
+# LexCorp remote access (demo). Import into the OpenVPN Community client (OpenVPN GUI 2.6+).
 # Connecting opens your browser to sign in with Google; only approved accounts are let in.
 client
 dev tun
@@ -149,7 +149,7 @@ $(cat /data/pki/private/lexcorp2-remote.key)
 $(cat /data/secrets/tls-crypt-v2-client.key)
 </tls-crypt-v2>
 EOF
-echo "Client profile written to network/vpn/data/client/lexcorp2-remote.ovpn (remote ${VPN_HOST}:${VPN_PORT})"
+echo "Client profile written to network/vpn/data/client/lexcorp-remote.ovpn (remote ${VPN_HOST}:${VPN_PORT})"
 
 # Site link: WireGuard to the site machine (10.9.0.1 here, 10.9.0.2 there). Only the site's key
 # is accepted, and only the site's network is routed to it.

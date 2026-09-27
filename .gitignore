@@ -38,7 +38,7 @@ network/besu/data_corrupted/
 # Local DB backups (contain secrets)
 db_backups/
 
-# ---- LexCorp2 secrets and local state (never commit) ----
+# ---- LexCorp secrets and local state (never commit) ----
 secrets/
 backend/.env
 network/besu/networkFiles/keys/

@@ -33,7 +33,7 @@ def generate_totp_secret() -> str:
     """Generate a high-entropy secret for new TOTP enrollment."""
     return pyotp.random_base32()
 
-def get_totp_uri(username: str, secret: str, issuer_name: str = "LexCorp2") -> str:
+def get_totp_uri(username: str, secret: str, issuer_name: str = "LexCorp") -> str:
     """Generate OTP Auth URI for QR code generation."""
     return pyotp.totp.TOTP(secret).provisioning_uri(
         name=username,
@@ -101,7 +101,7 @@ def generate_webauthn_registration_options(user_id: str, username: str, user_wal
 
     return generate_registration_options(
         rp_id=rp_id, # Dynamically determined from request
-        rp_name="LexCorp2",
+        rp_name="LexCorp",
         user_id=user_id.encode(),
         user_name=scoped_username,
         user_display_name=display_name,

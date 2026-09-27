@@ -11,7 +11,7 @@ function VerifyFrame({ title, reference, children }) {
       <header className="verify-top">
         <div className="inner">
           <Mark size={32} />
-          <div><div className="brand-name">LexCorp2</div><div className="brand-sub">Record verification</div></div>
+          <div><div className="brand-name">LexCorp</div><div className="brand-sub">Record verification</div></div>
         </div>
       </header>
       <main className="verify-body stack">
@@ -20,7 +20,7 @@ function VerifyFrame({ title, reference, children }) {
           <p className="page-lede">Reference <Id>{reference}</Id></p>
         </div>
         {children}
-        <p className="small muted">This page reads the authoritative LexCorp2 record. Nothing printed on a label, card or document is trusted on its own. <Link to="/">Sign in</Link> as an authorized employee to see more detail.</p>
+        <p className="small muted">This page reads the authoritative LexCorp record. Nothing printed on a label, card or document is trusted on its own. <Link to="/">Sign in</Link> as an authorized employee to see more detail.</p>
       </main>
     </div>
   );
@@ -42,7 +42,7 @@ export function VerifyAsset() {
       {data && (
         <>
           <div className={`verdict ${data.on_chain_verified ? 'ok' : 'bad'}`} role="status">
-            {data.on_chain_verified ? 'Registered LexCorp2 asset, confirmed on the ledger' : 'Registered in LexCorp2, but not confirmed on the ledger'}
+            {data.on_chain_verified ? 'Registered LexCorp asset, confirmed on the ledger' : 'Registered in LexCorp, but not confirmed on the ledger'}
           </div>
           <section className="panel"><div className="panel-body">
             <Facts items={[
@@ -94,7 +94,7 @@ export function VerifyAction() {
       {!data && !error && <Loading label="Checking the record" />}
       {data && (
         <>
-          <div className="verdict ok" role="status">Authentic LexCorp2 record ({data.detail_level === 'AUTHORIZED' ? 'authorized detail' : 'public view'})</div>
+          <div className="verdict ok" role="status">Authentic LexCorp record ({data.detail_level === 'AUTHORIZED' ? 'authorized detail' : 'public view'})</div>
           <section className="panel"><div className="panel-body">
             <Facts items={[
               ['Action', `${data.action_type?.toLowerCase()} ${data.action_id}`],

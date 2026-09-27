@@ -478,8 +478,8 @@ async def _totp_setup(user: User, purpose: str, db: AsyncSession) -> dict:
             raise HTTPException(status_code=403, detail="Login Authenticator is already configured. Use REQUEST ADMIN ASSISTANCE to reset it.")
         raise HTTPException(status_code=400, detail=f"{mfa.PURPOSE_LABELS[purpose]} TOTP is already enabled.")
     secret = security.generate_totp_secret()
-    issuer = {"login": "LexCorp2 Login (Factor 1)", "factor2": "LexCorp2 Factor 2 (view, submit)",
-              "factor3": "LexCorp2 Factor 3 (approve, modify)"}[purpose]
+    issuer = {"login": "LexCorp Login (Factor 1)", "factor2": "LexCorp Factor 2 (view, submit)",
+              "factor3": "LexCorp Factor 3 (approve, modify)"}[purpose]
     mfa.set_totp_secret(user, purpose, secret)
     await db.commit()
     # Returned once to the enrolling user only, for their authenticator app. Never logged.
@@ -498,7 +498,7 @@ async def _totp_verify(user: User, purpose: str, code: str, request: Request, re
         raise HTTPException(status_code=400, detail="TOTP is already enabled.")
     if not mfa.verify_totp_code(user, purpose, code, require_enabled=False):
         # 400, not 401: a mistyped enrolment code is not the end of the session.
-        raise HTTPException(status_code=400, detail="That code didn't match. Use the newest LexCorp2 entry for this factor in your "
+        raise HTTPException(status_code=400, detail="That code didn't match. Use the newest LexCorp entry for this factor in your "
                                                     "authenticator app (delete older ones from earlier attempts), check your "
                                                     "phone's clock is set automatically, and try the next code.")
     _, enabled_field, _ = mfa._TOTP_FIELDS[purpose]
@@ -648,7 +648,7 @@ async def get_webauthn_registration_options(
     label = mfa.PURPOSE_LABELS[scope]
     options = webauthn.generate_registration_options(
         rp_id=rp_id,
-        rp_name="LexCorp2",
+        rp_name="LexCorp",
         user_id=f"{user.id}_{scope}".encode(),
         user_name=f"{user.wallet_address} ({label})",
         user_display_name=f"{user.name or user.wallet_address} [{label}]",
@@ -872,8 +872,8 @@ async def request_admin_reset(request: Request, payload: ResetRequestPayload = B
                               user: User = Depends(get_setup_user), db: AsyncSession = Depends(get_db)):
     """Signed-in user (My Identity) asks an administrator to reset login factors."""
     if await _reset_path(db, user) == "server_operator":
-        raise HTTPException(status_code=409, detail="You are the only administrator, so no one in LexCorp2 can approve a reset for you. "
-                                                    "The person who runs the LexCorp2 server resets it with: "
+        raise HTTPException(status_code=409, detail="You are the only administrator, so no one in LexCorp can approve a reset for you. "
+                                                    "The person who runs the LexCorp server resets it with: "
                                                     "python backend/scripts/bootstrap_admin.py --reset-login")
     user.reset_requested = True
     user.reset_requested_at = mfa.utcnow()

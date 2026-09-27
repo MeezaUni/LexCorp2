@@ -1,5 +1,5 @@
 #!/bin/sh
-# Sign-in service for the LexCorp2 VPN (openvpn-auth-oauth2).
+# Sign-in service for the LexCorp VPN (openvpn-auth-oauth2).
 #
 # When someone connects, OpenVPN hands the connection to this service over its management
 # interface. The person's VPN client opens https://VPN_HOST:LOGIN_PORT (served through Caddy),

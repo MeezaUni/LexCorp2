@@ -36,7 +36,7 @@ def generate_physical_card_svg(serial_number: str, token_id: int, creation_date:
     <rect x="1" y="1" width="30" height="30" rx="3" fill="none" stroke="#fff" stroke-width="2"/>
     <rect x="7" y="7" width="5" height="18" fill="#fff"/><rect x="7" y="20" width="18" height="5" fill="#fff"/><rect x="17" y="7" width="8" height="8" fill="#1f5fbf"/>
   </g>
-  <text x="72" y="42" font-size="21" font-weight="600" fill="#ffffff">LexCorp2 registered asset</text>
+  <text x="72" y="42" font-size="21" font-weight="600" fill="#ffffff">LexCorp registered asset</text>
   <text x="72" y="60" font-size="11" fill="#aebcd0">Asset Assurance &amp; Custody</text>
   {''.join(rows)}
   <rect x="404" y="98" width="208" height="208" fill="#ffffff" stroke="#d6dde6"/>

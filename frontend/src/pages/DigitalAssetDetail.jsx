@@ -116,7 +116,7 @@ export default function DigitalAssetDetail() {
         })()}
         {manages && asset.approval_status === 'APPROVED' && !recorded(asset) && (
           <Notice tone="warning" title="Approved but not yet recorded on the ledger">
-            The approval exists in LexCorp2 but no verified ledger transaction has been recorded for this version.
+            The approval exists in LexCorp but no verified ledger transaction has been recorded for this version.
             <div style={{ marginTop: 8 }}><Button size="sm" variant="primary" onClick={() => setDialog('ledger')}>Record on ledger</Button></div>
           </Notice>
         )}
@@ -200,7 +200,7 @@ export default function DigitalAssetDetail() {
       )}
       {dialog === 'own-modify' && (
         <StepUpDialog factor="factor3" actionLabel="Download a modification copy" confirmLabel="Download"
-          extra={<p className="small">As a Manager or Administrator who owns this document, no request is needed. Edit the copy and upload it from My requests as the next version; keep its watermark, which LexCorp2 verifies and removes.</p>}
+          extra={<p className="small">As a Manager or Administrator who owns this document, no request is needed. Edit the copy and upload it from My requests as the next version; keep its watermark, which LexCorp verifies and removes.</p>}
           onClose={() => setDialog(null)}
           onSubmit={async (code) => {
             try {
@@ -271,7 +271,7 @@ export function RequestActions({ a, onMessage }) {
         <StepUpDialog factor="factor3" actionLabel={`Submit revision of ${a.asset_serial}`} confirmLabel="Submit revision"
           extra={<>
             <p className="small">Upload the copy you downloaded as {a.action_id}, with your changes. Keep its watermark, QR code and
-              Document Control page: LexCorp2 checks them against its record, and a file whose watermark was removed or
+              Document Control page: LexCorp checks them against its record, and a file whose watermark was removed or
               altered is refused and reported as possible tampering.</p>
             {progress && <Notice tone="info">{progress}</Notice>}
             <Field label="Revised file" hint="The edited copy. It becomes the next version.">
@@ -307,7 +307,7 @@ function RequestCopy({ mode, serial, privileged, owner, onClose, onDone }) {
       confirmLabel="Send request" onClose={onClose}
       extra={<>
         <p className="small">{mode === 'MODIFICATION'
-          ? 'A modification copy lets you edit the document outside LexCorp2 and upload the result as a new version.'
+          ? 'A modification copy lets you edit the document outside LexCorp and upload the result as a new version.'
           : 'A download is a watermarked copy you keep.'} {who}</p>
         <Field label="Purpose"><input className="input" value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Why do you need a copy?" /></Field>
       </>}
@@ -371,7 +371,7 @@ function LedgerDialog({ asset, onClose, onSubmit }) {
   return (
     <StepUpDialog factor="factor3" actionLabel="Record this version on the ledger" confirmLabel="Sign and record" onClose={onClose}
       extra={<>
-        <p className="small">Your wallet signs the transaction. The LexCorp2 contract accepts it only from a wallet holding the minting or anchoring role, and LexCorp2 records it only after verifying the receipt and the resulting contract state.</p>
+        <p className="small">Your wallet signs the transaction. The LexCorp contract accepts it only from a wallet holding the minting or anchoring role, and LexCorp records it only after verifying the receipt and the resulting contract state.</p>
         <Facts items={[['Asset ID', <Id key="s">{asset.serial_number}</Id>], ['SHA-256', <Id key="h">{asset.file_hash}</Id>]]} />
         {progress && <Notice tone="info">{progress}</Notice>}
       </>}

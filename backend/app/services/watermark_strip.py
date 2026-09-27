@@ -1,4 +1,4 @@
-"""Verify, then remove, LexCorp2's own watermark layers from a returned copy.
+"""Verify, then remove, LexCorp's own watermark layers from a returned copy.
 
 watermark.render_protected_copy_with_manifest() records a MANIFEST for every copy it
 issues: fingerprints of each watermark element. strip_watermark() takes the returned file
@@ -6,7 +6,7 @@ and that manifest and, for every element:
   * checks it is still there and unchanged (a changed or missing element is a FINDING,
     with the page / slide / sheet where it was found);
   * removes it, together with the copy's control page/section/slide/sheet.
-The result is the person's edit without any LexCorp2 watermark, which becomes the new
+The result is the person's edit without any LexCorp watermark, which becomes the new
 version; later copies of it get one fresh watermark instead of a stack.
 
 Findings: severity "tamper" (a watermark element was changed, removed or could not be

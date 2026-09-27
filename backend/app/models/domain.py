@@ -18,7 +18,7 @@ class User(Base, TimestampMixin):
     wallet_address: Mapped[str] = mapped_column(String(42), unique=True, index=True)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     contact_number: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    organization: Mapped[str] = mapped_column(String(255), default="LexCorp2")
+    organization: Mapped[str] = mapped_column(String(255), default="LexCorp")
     department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # MANAGER only: departments managed in addition to `department`.
     managed_departments: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)

@@ -1,15 +1,15 @@
 # Remote access: VPN with company sign-in on every connection
 
-LexCorp2 is never published on the internet. People on the company network reach it directly.
+LexCorp is never published on the internet. People on the company network reach it directly.
 People outside connect through this VPN, and **every connection requires signing in with the
 company's existing login**. For this demonstration, the company login is played by
 **Sign in with Google**, restricted to an allowlist of accounts.
 
 ```
-            (1) first time: company portal -> download lexcorp2-remote.ovpn (demo stand-in: company-portal-demo/)
+            (1) first time: company portal -> download lexcorp-remote.ovpn (demo stand-in: company-portal-demo/)
 
- remote laptop                      GATEWAY: public server (free Oracle Cloud VM)        SITE: machine running LexCorp2
- OpenVPN GUI --UDP 1194----------> openvpn 172.29.0.2 ==site link (WireGuard, 51820)==> sitelink 172.30.0.2 --HTTPS only--> caddy 172.30.0.10 --> LexCorp2
+ remote laptop                      GATEWAY: public server (free Oracle Cloud VM)        SITE: machine running LexCorp
+ OpenVPN GUI --UDP 1194----------> openvpn 172.29.0.2 ==site link (WireGuard, 51820)==> sitelink 172.30.0.2 --HTTPS only--> caddy 172.30.0.10 --> LexCorp
      |                                   |                   opened FROM the site, so it works behind carrier-grade NAT
      | (2) every connection: browser     | "who is this?"
      v                                   v
@@ -18,7 +18,7 @@ company's existing login**. For this demonstration, the company login is played 
 ```
 
 The **gateway** is the public front door: the VPN server, the Google sign-in service, the sign-in
-page and the DuckDNS updater. The **site** is where LexCorp2 runs; it keeps an encrypted
+page and the DuckDNS updater. The **site** is where LexCorp runs; it keeps an encrypted
 WireGuard link open to the gateway and forwards VPN users' HTTPS requests to the app. The site
 needs no open ports, so it can sit behind a home or campus connection with carrier-grade NAT
 (as the development machine does). In a company, the gateway is the VPN appliance at the network
@@ -32,7 +32,7 @@ edge and the site is the internal network.
   and listed in `ALLOWED_EMAILS`. Anyone else is refused before reaching the network.
 - **A client that can't do the browser sign-in is refused**, even with the profile. The profile's
   certificate is required too, but it identifies the device, not the person.
-- **Split tunnel, least privilege:** a connected person gets one route, to the LexCorp2 proxy
+- **Split tunnel, least privilege:** a connected person gets one route, to the LexCorp proxy
   (HTTPS only). The VPN server, the sign-in service, this machine and the rest of the network
   are unreachable through the VPN. Their own internet traffic doesn't go through it.
 - **Real HTTPS for the app:** passkeys and the browser's cryptography only work on HTTPS.
@@ -43,7 +43,7 @@ edge and the site is the internal network.
   each connection the next free 10.8.0.x, so devices never share an address and a reconnect gets
   a new one. LexCorp binds sessions to the address, so reconnecting the VPN ends the LexCorp
   session ("Your VPN connection was renewed"); that's recorded as an expected event, not an alert.
-- **Audit trail:** LexCorp2 sees each remote person's own VPN address (10.8.0.x). It isn't
+- **Audit trail:** LexCorp sees each remote person's own VPN address (10.8.0.x). It isn't
   translated away, so the audit trail and the risk model's "new network address" check work.
 - **Cost: none.** OpenVPN, openvpn-auth-oauth2, Caddy, DuckDNS, Let's Encrypt, a Google OAuth
   client (testing mode, up to 100 listed users) and the OpenVPN GUI client are all free.
@@ -65,17 +65,17 @@ public IP (which changes), and the app name points to the proxy's private addres
 
 ### 2. Google sign-in client
 
-1. Open <https://console.cloud.google.com>, create a project (for example "LexCorp2 VPN").
-2. **APIs & Services → OAuth consent screen:** choose **External**, app name "LexCorp2 VPN
+1. Open <https://console.cloud.google.com>, create a project (for example "LexCorp VPN").
+2. **APIs & Services → OAuth consent screen:** choose **External**, app name "LexCorp VPN
    (demo)", your email as support and developer contact. Leave it in **Testing** mode.
    Under **Test users**, add every account that should be able to connect. In testing mode
    Google only lets these accounts sign in at all: a second lock on top of `ALLOWED_EMAILS`.
 3. **APIs & Services → Credentials → Create credentials → OAuth client ID**, type **Web
-   application**, name "LexCorp2 VPN sign-in".
+   application**, name "LexCorp VPN sign-in".
    - **Authorised redirect URIs:** `https://<VPN_HOST>:<LOGIN_PORT>/oauth2/callback`,
      for example `https://lexcorp-vpn.duckdns.org:9443/oauth2/callback`.
    - If you will also use the demo company portal (`company-portal-demo/`), add its address
-     under **Authorised JavaScript origins**, for example `https://lexcorp2-portal.vercel.app`.
+     under **Authorised JavaScript origins**, for example `https://lexcorp-portal.vercel.app`.
 4. Copy the **Client ID** and **Client secret**.
 
 ### 3. A public server for the gateway (free)
@@ -103,7 +103,7 @@ python scripts/vpn_site_link_keys.py
 It creates `network/vpn/gateway.env` and `network/vpn/site.env` (both git-ignored) with fresh
 site-link keys. Copy `gateway.env` to the gateway; `site.env` stays on the site.
 
-### 5. Tell LexCorp2 its VPN address
+### 5. Tell LexCorp its VPN address
 
 In `backend/.env` add:
 
@@ -123,11 +123,11 @@ docker compose -f gateway.compose.yml --env-file gateway.env up -d --build
 ```
 
 On first start it creates the certificate authority, keys and the client profile
-`data/openvpn/client/lexcorp2-remote.ovpn`. On a 1 GB server, build the images on another
-machine and copy them (`docker save lexcorp2-vpn:local lexcorp2-vpn-caddy:local | gzip | ssh ... "gunzip | docker load"`),
+`data/openvpn/client/lexcorp-remote.ovpn`. On a 1 GB server, build the images on another
+machine and copy them (`docker save lexcorp-vpn:local lexcorp-vpn-caddy:local | gzip | ssh ... "gunzip | docker load"`),
 then start with `--no-build`.
 
-**Site** (on the machine running LexCorp2, from `network/vpn`):
+**Site** (on the machine running LexCorp, from `network/vpn`):
 
 ```
 docker compose -f site.compose.yml --env-file site.env up -d --build
@@ -139,7 +139,7 @@ app's certificate.
 
 ## Connecting (each remote person)
 
-1. **First time:** get `lexcorp2-remote.ovpn` from the company portal (for the demo, the
+1. **First time:** get `lexcorp-remote.ovpn` from the company portal (for the demo, the
    stand-in in `company-portal-demo/`), or directly from the administrator.
 2. Install **OpenVPN Connect** (<https://openvpn.net/client/>, tested 27 Sept 2026) and
    double-click the profile to import it, or the **OpenVPN Community client 2.6+** ("OpenVPN GUI",
@@ -149,8 +149,8 @@ app's certificate.
 3. **Every time:** **Connect**. A browser window opens at the sign-in page and
    sends you to Google. Sign in with an approved account and the VPN connects. Anyone else is
    refused.
-4. Open **https://lexcorp-app.duckdns.org** (your `APP_HOST`) and sign in to LexCorp2 as
-   usual. The VPN only gets you to the door; LexCorp2's own sign-in and factors still apply.
+4. Open **https://lexcorp-app.duckdns.org** (your `APP_HOST`) and sign in to LexCorp as
+   usual. The VPN only gets you to the door; LexCorp's own sign-in and factors still apply.
 
 **One address everywhere, so passkeys work everywhere.** A passkey is tied to the site name it
 was created on, a browser rule that stops phishing. So use `https://<APP_HOST>` on the machine

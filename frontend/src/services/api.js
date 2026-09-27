@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 /*
- * LexCorp2 API client.
+ * LexCorp API client.
  *
  * - The session is an HttpOnly cookie set by the server; this code never sees or stores it.
  * - Purpose-bound step-up: a factor (TOTP code or passkey) is exchanged for a single-use

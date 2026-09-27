@@ -235,7 +235,7 @@ async def ai_assess(db, kind: str, actor: Optional[User], *, asset=None, asset_s
     if result is not None:
         label = "LOW" if settings.AI_ALERT_MODE == "off" else result["risk_label"]
         return {"risk_label": label, "risk_score": result["risk_score"],
-                "ai": {"model": f"LexCorp2 risk model {result.get('model_version')}", "reasons": result["reasons"],
+                "ai": {"model": f"LexCorp risk model {result.get('model_version')}", "reasons": result["reasons"],
                        "rarity": result["rarity"], "probability": result["probability"],
                        "label_basis": "trained thresholds" if settings.AI_ALERT_MODE != "off" else "AI alerting disabled"}}
     return ai_score(legacy_event, actor, owner_did=owner_did, sensitivity=sensitivity) if legacy_event else {}

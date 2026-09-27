@@ -1,4 +1,4 @@
-"""Train LexCorp2's local risk model and write the bundle the app loads.
+"""Train LexCorp's local risk model and write the bundle the app loads.
 
     cd backend
     python ml/train.py                                  # uses ml/data/features.csv

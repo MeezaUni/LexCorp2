@@ -178,7 +178,7 @@ function LedgerDialog({ asset, onClose, onSubmit }) {
   return (
     <StepUpDialog factor="factor3" actionLabel="Record this asset on the ledger" confirmLabel="Sign and record" onClose={onClose}
       extra={<>
-        <p className="small">Your wallet signs the mint transaction. The contract accepts it only from a wallet with the minting role; LexCorp2 records it after verifying the receipt and that the serial maps to token #{asset.token_id}.</p>
+        <p className="small">Your wallet signs the mint transaction. The contract accepts it only from a wallet with the minting role; LexCorp records it after verifying the receipt and that the serial maps to token #{asset.token_id}.</p>
         {progress && <Notice tone="info">{progress}</Notice>}
       </>}
       onSubmit={(code) => onSubmit(code, setProgress)} />

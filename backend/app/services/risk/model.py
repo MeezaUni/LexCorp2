@@ -5,7 +5,7 @@ Score = combination of two local scikit-learn models over the shared features:
     kinds of misuse nobody simulated), turned into a 0..1 rarity rank against normal data;
   * a gradient-boosted classifier trained on labelled examples (simulated attack scenarios
     plus any Auditor decisions exported from the live system).
-Tampered returns and duplicate registrations are caught with certainty by LexCorp2's
+Tampered returns and duplicate registrations are caught with certainty by LexCorp's
 deterministic rules; the AI is for behaviour no rule describes.
 risk = max of the two ranks * 100 (each relative to held-back normal activity), and the thresholds for MEDIUM / HIGH /
 CRITICAL come from the bundle: they were set during training so that only a small, known

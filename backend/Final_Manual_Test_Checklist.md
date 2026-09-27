@@ -1,6 +1,6 @@
-# LexCorp2 — Final Manual Test Checklist
+# LexCorp — Final Manual Test Checklist
 
-This checklist is for a person who has never used LexCorp2. It is **not executed yet**.
+This checklist is for a person who has never used LexCorp. It is **not executed yet**.
 Automated tests (248 backend, 23 contract, 3 live-ledger) and browser automation
 (`docs/Playwright_Verification_Report.md`) have covered the server rules and UI flows.
 This checklist covers what only you can confirm:
@@ -51,7 +51,7 @@ never in screenshots.
 
 ### A1 — Start all services
 - **Purpose:** bring up PostgreSQL, Besu, the backend and the frontend.
-- **Preconditions:** Docker Desktop running; a terminal (Git Bash or PowerShell) in the repository root `LexCorp2/`.
+- **Preconditions:** Docker Desktop running; a terminal (Git Bash or PowerShell) in the repository root `LexCorp/`.
 - **Steps:**
   1. `docker compose up -d postgres`
   2. `npm run besu:up`, then `npm run chain:wait`
@@ -92,7 +92,7 @@ never in screenshots.
 - **Purpose:** QR tests need the phone to reach the PC over Wi-Fi.
 - **Preconditions:** A1; phone on the same Wi-Fi.
 - **Steps:** on the phone, open `http://<the Network address from A1>:5173/verify/token/1`.
-- **Expected:** the LexCorp2 "Asset verification" page opens and shows "Not verified: Asset not found". If it does not load, allow port 5173 through Windows Defender Firewall for private networks and retry.
+- **Expected:** the LexCorp "Asset verification" page opens and shows "Not verified: Asset not found". If it does not load, allow port 5173 through Windows Defender Firewall for private networks and retry.
 - **Evidence:** A4-phone.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -118,7 +118,7 @@ never in screenshots.
   1. **Start authenticator setup**.
   2. Scan the QR with the phone app.
   3. Type the 6-digit code, then **Confirm authenticator**.
-- **Expected:** step 1 turns green ("Configured"). The phone app entry is named "LexCorp2 Login (Factor 1)".
+- **Expected:** step 1 turns green ("Configured"). The phone app entry is named "LexCorp Login (Factor 1)".
 - **Evidence:** B2-step1-done.png, taken after enrolment so no QR is visible.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -128,7 +128,7 @@ never in screenshots.
 - **Steps:**
   1. **Register login passkey**.
   2. Complete the Windows Hello prompt.
-- **Expected:** Windows Hello appears. Afterwards the dashboard opens: masthead "LexCorp2", sidebar, and the greeting "Good …, Security Administrator".
+- **Expected:** Windows Hello appears. Afterwards the dashboard opens: masthead "LexCorp", sidebar, and the greeting "Good …, Security Administrator".
 - **Evidence:** B3-windows-hello.png (the prompt), B3-dashboard.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -406,7 +406,7 @@ never in screenshots.
 
 ### F1b — The view can't be saved or printed from the page
 - **Steps:** in the open view: look for a toolbar, right-click the page, press Ctrl+S, press Ctrl+P.
-- **Expected:** no PDF toolbar (no save, print or download buttons); pages appear as pictures with no selectable text; right-click shows no menu; Ctrl+S does nothing; Ctrl+P prints only "Printing is disabled for protected LexCorp2 views."
+- **Expected:** no PDF toolbar (no save, print or download buttons); pages appear as pictures with no selectable text; right-click shows no menu; Ctrl+S does nothing; Ctrl+P prints only "Printing is disabled for protected LexCorp views."
 - **Note:** a screenshot or a phone camera can't be prevented by any web page. That's why every view carries the viewer's name, wallet, IP, date and View ID.
 - **Evidence:** F1b.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
@@ -667,7 +667,7 @@ never in screenshots.
 
 ### K1 — Scan a view watermark QR
 - **Steps:** show the F1 view copy on the PC screen and scan its QR with the phone camera.
-- **Expected:** the phone opens `http://<LAN address>:5173/verify/action/VW-…` and shows "Authentic LexCorp2 record (public view)". It does not show the viewer's name, wallet or IP.
+- **Expected:** the phone opens `http://<LAN address>:5173/verify/action/VW-…` and shows "Authentic LexCorp record (public view)". It does not show the viewer's name, wallet or IP.
 - **Evidence:** K1-phone.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -747,7 +747,7 @@ never in screenshots.
 
 ### L8 — Scan the physical asset QR with the phone
 - **Steps:** scan the card's QR, from screen or print.
-- **Expected:** "Registered LexCorp2 asset, confirmed on the ledger" with minimal public fields. No MAC or location.
+- **Expected:** "Registered LexCorp asset, confirmed on the ledger" with minimal public fields. No MAC or location.
 - **Evidence:** L8-phone.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -765,7 +765,7 @@ never in screenshots.
 
 ### L11 — Unregistered custodian refused
 - **Steps:** register `PHY-TEST-005` with custodian wallet `0x1212121212121212121212121212121212121212`.
-- **Expected:** "The recipient must be a registered, active LexCorp2 identity."
+- **Expected:** "The recipient must be a registered, active LexCorp identity."
 - **Evidence:** L11.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -877,7 +877,7 @@ never in screenshots.
 
 ### P2 — Audit history cannot be changed, even in the database
 - **Steps:** in a terminal: `docker exec -it lexcorp_postgres psql -U lexcorp -d lexcorp_sih -c "DELETE FROM audit_events WHERE true;"`
-- **Expected:** `ERROR: LexCorp2 audit history is append-only (DELETE on audit_events rejected)`. Try `UPDATE audit_events SET risk_label='LOW';` too: rejected.
+- **Expected:** `ERROR: LexCorp audit history is append-only (DELETE on audit_events rejected)`. Try `UPDATE audit_events SET risk_label='LOW';` too: rejected.
 - **Evidence:** P2.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -1012,13 +1012,13 @@ Use a second laptop on a different network (for example a phone hotspot), with t
 
 ### T1 — Profile from the company portal
 - **Steps:** open the demo company portal (`company-portal-demo/`, on Vercel) → Sign in with Google using an approved account; then again with an account that isn't on `ALLOWED_EMAILS`.
-- **Expected:** the approved account downloads `lexcorp2-remote.ovpn`; the other is told it isn't approved and gets nothing.
+- **Expected:** the approved account downloads `lexcorp-remote.ovpn`; the other is told it isn't approved and gets nothing.
 - **Evidence:** T1.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
 ### T2 — Connect with an approved account
-- **Steps:** import the profile → Connect → sign in with the approved Google account in the browser that opens → open `https://<APP_HOST>` → sign in to LexCorp2 with the authenticator code.
-- **Expected:** the VPN connects only after the Google sign-in; the site loads with a valid certificate; LexCorp2's own sign-in still applies.
+- **Steps:** import the profile → Connect → sign in with the approved Google account in the browser that opens → open `https://<APP_HOST>` → sign in to LexCorp with the authenticator code.
+- **Expected:** the VPN connects only after the Google sign-in; the site loads with a valid certificate; LexCorp's own sign-in still applies.
 - **Evidence:** T2.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
@@ -1029,12 +1029,12 @@ Use a second laptop on a different network (for example a phone hotspot), with t
 - [ ] PASS  [ ] FAIL — Notes: ______
 
 ### T4 — A client that skips the sign-in is refused
-- **Steps:** import the same profile into OpenVPN Connect (or run `openvpn --config lexcorp2-remote.ovpn`) and connect.
+- **Steps:** import the same profile into OpenVPN Connect (or run `openvpn --config lexcorp-remote.ovpn`) and connect.
 - **Expected:** refused ("does not support SSO authentication via webauth" in the auth log), even though the profile is valid.
 - **Evidence:** T4.png.
 - [ ] PASS  [ ] FAIL — Notes: ______
 
-### T5 — Only LexCorp2 is reachable through the VPN
+### T5 — Only LexCorp is reachable through the VPN
 - **Steps:** while connected, open `http://172.30.0.3:9000` and `http://172.30.0.10`, and try the server machine's local address.
 - **Expected:** none of them load; `https://<APP_HOST>` does. The laptop's own internet still works normally.
 - **Evidence:** T5.png.

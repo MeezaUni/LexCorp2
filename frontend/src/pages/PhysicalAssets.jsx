@@ -85,7 +85,7 @@ function RegisterPhysical({ onClose, onDone }) {
     <>
       <Dialog title="Register a physical asset" wide onClose={onClose}
         footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!valid} onClick={() => setStepUp(true)}>Register and record</Button></>}>
-        <p className="muted small">Each asset needs its serial number plus either its MAC address or, when it has none, a unique device address. LexCorp2 refuses any value already registered to another asset.</p>
+        <p className="muted small">Each asset needs its serial number plus either its MAC address or, when it has none, a unique device address. LexCorp refuses any value already registered to another asset.</p>
         <div className="form-grid">
           <Field label="Asset name"><input className="input" value={f.name} onChange={set('name')} /></Field>
           <Field label="Serial number"><input className="input mono" value={f.serial} onChange={set('serial')} /></Field>
