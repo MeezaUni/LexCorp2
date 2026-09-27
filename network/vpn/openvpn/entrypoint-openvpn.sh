@@ -149,7 +149,7 @@ $(cat /data/pki/private/lexcorp2-remote.key)
 $(cat /data/secrets/tls-crypt-v2-client.key)
 </tls-crypt-v2>
 EOF
-echo "Client profile written to network/vpn/data/client/lexcorp-remote.ovpn (remote ${VPN_HOST}:${VPN_PORT})"
+echo "Client profile written to network/vpn/data/openvpn/client/lexcorp-remote.ovpn (remote ${VPN_HOST}:${VPN_PORT})"
 
 # Site link: WireGuard to the site machine (10.9.0.1 here, 10.9.0.2 there). Only the site's key
 # is accepted, and only the site's network is routed to it.
