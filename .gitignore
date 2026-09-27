@@ -58,7 +58,8 @@ _scratch_archive/
 
 # local document vault and VPN key material (never commit)
 backend/offchain_storage/
-network/vpn/wireguard_data/
+network/vpn/data/
+network/vpn/.env
 
 # Playwright MCP scratch output (reference screenshots are not committed)
 .playwright-mcp/

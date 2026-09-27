@@ -342,7 +342,7 @@ async def get_passkey_login_options(options_req: PasskeyLoginOptionsRequest, req
     user = await _find_user(db, options_req.wallet_address)
     if not _usable(user):
         raise HTTPException(status_code=401, detail=_GENERIC_LOGIN_FAILURE)
-    options = await mfa.passkey_options(db, user, "login", action="session.login")
+    options = await mfa.passkey_options(db, user, "login", action="session.login", origin=request.headers.get("origin"))
     await db.commit()
     return {"options": options}
 
@@ -601,7 +601,10 @@ async def get_webauthn_registration_options(
         raise HTTPException(status_code=400, detail="factor_scope must be login, factor2 or factor3")
     if scope != "login":
         _refuse_if_linked(user, scope)
-    existing = await mfa.scoped_credentials(db, user, scope)
+    # one passkey per purpose per site name: a passkey only works where it was created (localhost
+    # on the server machine, the VPN name remotely)
+    rp_id = mfa.rp_id_for(request.headers.get("origin"))
+    existing = await mfa.scoped_credentials(db, user, scope, rp_id)
     if scope == "login":
         if existing:
             raise HTTPException(status_code=403, detail="Login Passkey is already configured. " + _ADMIN_ASSIST)
@@ -615,7 +618,7 @@ async def get_webauthn_registration_options(
 
     label = mfa.PURPOSE_LABELS[scope]
     options = webauthn.generate_registration_options(
-        rp_id=settings.RP_ID,
+        rp_id=rp_id,
         rp_name="LexCorp2",
         user_id=f"{user.id}_{scope}".encode(),
         user_name=f"{user.wallet_address} ({label})",
@@ -661,7 +664,7 @@ async def verify_webauthn_registration(
             credential=payload.response,
             expected_challenge=base64url_to_bytes(challenge.challenge),
             expected_origin=origin,
-            expected_rp_id=settings.RP_ID,
+            expected_rp_id=mfa.rp_id_for(origin),
             require_user_verification=True,
         )
     except Exception as e:
@@ -678,6 +681,7 @@ async def verify_webauthn_registration(
         # Shows where the passkey lives (Windows Hello, iCloud Keychain, a password manager...).
         device_name=f"{provider}: {payload.device_name}"[:100] if payload.device_name else provider,
         factor_scope=scope,
+        rp_id=mfa.rp_id_for(origin),
     ))
     await record_audit(db, "PASSKEY_REGISTERED", actor_did=user.did, client_ip=get_request_client_ip(request),
                        details={"purpose": scope, "provider": provider, "aaguid": verification.aaguid})
@@ -700,6 +704,7 @@ async def list_webauthn_credentials(user: User = Depends(get_setup_user), db: As
         "credential_id": c.credential_id,
         "device_name": c.device_name,
         "factor_scope": c.factor_scope or "login",
+        "site": c.rp_id or settings.RP_ID,       # the address the passkey works on
         "created_at": c.created_at.isoformat(),
     } for c in result.scalars().all()]
 
@@ -739,7 +744,7 @@ async def reset_webauthn_blocked(user: User = Depends(get_setup_user)):
 # ------------------------------------------------------------ Step-up passkeys (declared after /webauthn/register/* so 'register' is never read as a factor)
 
 @router.post("/webauthn/{factor}/options")
-async def step_up_passkey_options(factor: str, req: StepUpOptionsRequest = Body(default=None),
+async def step_up_passkey_options(factor: str, request: Request, req: StepUpOptionsRequest = Body(default=None),
                                   user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     # "login" is accepted only for actions that require the login factor (factor2.link / factor3.link).
     if factor not in mfa.PURPOSES:
@@ -747,7 +752,7 @@ async def step_up_passkey_options(factor: str, req: StepUpOptionsRequest = Body(
     action = req.action if req else None
     if not action or mfa.ACTION_PURPOSE.get(action) != factor:
         raise HTTPException(status_code=400, detail=f"A {mfa.PURPOSE_LABELS[factor]} action must be specified.")
-    options = await mfa.passkey_options(db, user, factor, action)
+    options = await mfa.passkey_options(db, user, factor, action, origin=request.headers.get("origin"))
     await db.commit()
     return {"options": options}
 

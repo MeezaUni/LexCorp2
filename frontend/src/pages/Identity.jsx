@@ -116,7 +116,7 @@ export default function Identity() {
                   <h3>Passkeys</h3>
                   {(passkeys.data || []).filter((k) => k.factor_scope === p.id).map((k) => (
                     <div key={k.credential_id} className="row" style={{ justifyContent: 'space-between' }}>
-                      <span className="small">{k.device_name}<span className="muted">, added {formatDate(k.created_at, false)}</span></span>
+                      <span className="small">{k.device_name}<span className="muted">, works on {k.site}, added {formatDate(k.created_at, false)}</span></span>
                       <Button size="sm" variant="quiet" onClick={() => setFlow({ kind: 'passkey-remove', purpose: p.id, credential: k })}>Remove</Button>
                     </div>
                   ))}
@@ -132,6 +132,7 @@ export default function Identity() {
             columns={[
               { key: 'n', label: 'Device', render: (k) => k.device_name },
               { key: 'p', label: 'Purpose', render: (k) => ({ login: 'Login (Passkey 1)', factor2: 'Factor 2', factor3: 'Factor 3' }[k.factor_scope]) },
+              { key: 's', label: 'Works on', render: (k) => k.site },
               { key: 'd', label: 'Registered', render: (k) => formatDate(k.created_at) },
             ]} />
         </Panel>

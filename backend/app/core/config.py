@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     RP_ID: str = "localhost"
     WEBAUTHN_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # The app's address for people connected through the VPN (network/vpn/README.md), e.g.
+    # https://lexcorp2-app.duckdns.org. Added to CORS_ORIGINS and WEBAUTHN_ORIGINS; passkeys
+    # created there belong to that name (see app.services.mfa.rp_id_for).
+    REMOTE_APP_ORIGIN: str = ""
 
     # Session tokens (HS256). Used ONLY for session JWTs.
     JWT_SECRET: str = ""
@@ -112,6 +116,14 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_security_settings(self) -> "Settings":
         problems: List[str] = []
+
+        if self.REMOTE_APP_ORIGIN:
+            remote = self.REMOTE_APP_ORIGIN.strip().rstrip("/")
+            if not remote.startswith("https://"):
+                problems.append("REMOTE_APP_ORIGIN must use HTTPS")
+            for origins in (self.CORS_ORIGINS, self.WEBAUTHN_ORIGINS):
+                if remote not in origins:
+                    origins.append(remote)
 
         # --- required in every environment (there are no defaults to fall back on)
         if not self.DATABASE_URL:

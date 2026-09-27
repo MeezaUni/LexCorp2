@@ -1,0 +1,13 @@
+{
+  "name": "lexcorp2-company-portal-demo",
+  "private": true,
+  "description": "Demonstration stand-in for a company portal that hands out the LexCorp2 VPN profile (see README.md)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "jose": "^6.1.0"
+  }
+}

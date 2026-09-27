@@ -18,6 +18,7 @@ bound to one action, and a linked purpose shares the login replay counter, so a 
 accepted once (for sign-in or any action) cannot be accepted again.
 """
 
+import ipaddress
 import json
 import logging
 import secrets
@@ -25,11 +26,12 @@ import time
 import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Optional
+from urllib.parse import urlparse
 
 import pyotp
 import webauthn
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url, parse_client_data_json
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
@@ -208,26 +210,56 @@ def _check_origin(origin: Optional[str]) -> str:
     return origin
 
 
-async def scoped_credentials(db: AsyncSession, user: User, purpose: str) -> list[WebAuthnCredential]:
-    result = await db.execute(select(WebAuthnCredential).where(
+def rp_id_for(origin: Optional[str]) -> str:
+    """The WebAuthn relying-party ID for the page a request came from: the host name of an
+    allowed origin (localhost on this machine, the VPN name for remote people, see
+    REMOTE_APP_ORIGIN). A passkey only works on the name it was created for. IP-address
+    origins, which cannot be RP IDs, and anything else use settings.RP_ID."""
+    if origin and origin in settings.WEBAUTHN_ORIGINS:
+        host = urlparse(origin).hostname or ""
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            if host:
+                return host
+    return settings.RP_ID
+
+
+def _rp_clause(rp_id: str):
+    # passkeys registered before migration 0015 have no stored RP ID: they belong to settings.RP_ID
+    if rp_id == settings.RP_ID:
+        return or_(WebAuthnCredential.rp_id == rp_id, WebAuthnCredential.rp_id.is_(None))
+    return WebAuthnCredential.rp_id == rp_id
+
+
+async def scoped_credentials(db: AsyncSession, user: User, purpose: str, rp_id: Optional[str] = None) -> list[WebAuthnCredential]:
+    """Active passkeys that satisfy `purpose`; only those created for `rp_id` when it is given."""
+    conditions = [
         WebAuthnCredential.user_id == user.id,
         WebAuthnCredential.factor_scope == source_purpose(user, purpose),
         WebAuthnCredential.is_active.is_(True),
-    ))
-    return list(result.scalars().all())
+    ]
+    if rp_id is not None:
+        conditions.append(_rp_clause(rp_id))
+    return list((await db.execute(select(WebAuthnCredential).where(*conditions))).scalars().all())
 
 
-async def passkey_options(db: AsyncSession, user: User, purpose: str, action: Optional[str]) -> dict:
-    """Authentication options that only allow this purpose's passkeys."""
+async def passkey_options(db: AsyncSession, user: User, purpose: str, action: Optional[str],
+                          origin: Optional[str] = None) -> dict:
+    """Authentication options that only allow this purpose's passkeys for this address."""
     _check_purpose(purpose)
-    creds = await scoped_credentials(db, user, purpose)
+    rp_id = rp_id_for(origin)
+    creds = await scoped_credentials(db, user, purpose, rp_id)
     if not creds:
+        elsewhere = await scoped_credentials(db, user, purpose)
         raise HTTPException(
             status_code=400,
-            detail=f"No active {PURPOSE_LABELS[purpose]} passkey is registered for this identity.",
+            detail=(f"Your {PURPOSE_LABELS[purpose]} passkey was created at another address and only works there. "
+                    "Use your authenticator code here, or add a passkey for this address in My identity.")
+            if elsewhere else f"No active {PURPOSE_LABELS[purpose]} passkey is registered for this identity.",
         )
     options = webauthn.generate_authentication_options(
-        rp_id=settings.RP_ID,
+        rp_id=rp_id,
         allow_credentials=[
             PublicKeyCredentialDescriptor(id=bytes.fromhex(c.credential_id))
             for c in creds
@@ -291,7 +323,7 @@ async def verify_passkey_assertion(
             credential=response,
             expected_challenge=base64url_to_bytes(challenge.challenge),
             expected_origin=origin,
-            expected_rp_id=settings.RP_ID,
+            expected_rp_id=rp_id_for(origin),
             credential_public_key=bytes.fromhex(credential.public_key),
             credential_current_sign_count=credential.sign_count,
             require_user_verification=True,

@@ -985,7 +985,7 @@ This destroys the test data you created. It is not needed otherwise.
 
 ### S3 — Sensitive leftovers
 - Delete `db_backups/` once you no longer need to roll back. It holds retired test data.
-- Rotate the **WireGuard** keys and the **wg-easy** password. They are in git history (see the matrix, section 13).
+- The old wg-easy VPN was removed (27 Sept). Its keys and password are in git history but protect nothing now. Close router ports 52000/UDP and 51821/TCP if they are still forwarded.
 - Remove the E2E vault files kept in `_scratch_archive/` when no longer needed.
 - [ ] Done
 
@@ -1003,3 +1003,45 @@ Choose one, after completing the checklist:
 Automated results do not decide this on their own. Decide based on your manual results.
 
 Tester: ____________  Date: ____________  Signature: ____________
+
+---
+
+## T. Remote access through the VPN (needs the accounts and router set-up in `network/vpn/README.md`)
+
+Use a second laptop on a different network (for example a phone hotspot), with the OpenVPN Community client 2.6+.
+
+### T1 — Profile from the company portal
+- **Steps:** open the demo company portal (`company-portal-demo/`, on Vercel) → Sign in with Google using an approved account; then again with an account that isn't on `ALLOWED_EMAILS`.
+- **Expected:** the approved account downloads `lexcorp2-remote.ovpn`; the other is told it isn't approved and gets nothing.
+- **Evidence:** T1.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### T2 — Connect with an approved account
+- **Steps:** import the profile → Connect → sign in with the approved Google account in the browser that opens → open `https://<APP_HOST>` → sign in to LexCorp2 with the authenticator code.
+- **Expected:** the VPN connects only after the Google sign-in; the site loads with a valid certificate; LexCorp2's own sign-in still applies.
+- **Evidence:** T2.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### T3 — Connect with an account that isn't approved
+- **Steps:** Connect → sign in with a Google account that isn't on `ALLOWED_EMAILS`.
+- **Expected:** the connection is refused; `docker compose logs auth` (in `network/vpn`) shows the refusal.
+- **Evidence:** T3.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### T4 — A client that skips the sign-in is refused
+- **Steps:** import the same profile into OpenVPN Connect (or run `openvpn --config lexcorp2-remote.ovpn`) and connect.
+- **Expected:** refused ("does not support SSO authentication via webauth" in the auth log), even though the profile is valid.
+- **Evidence:** T4.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### T5 — Only LexCorp2 is reachable through the VPN
+- **Steps:** while connected, open `http://172.30.0.3:9000` and `http://172.30.0.10`, and try the server machine's local address.
+- **Expected:** none of them load; `https://<APP_HOST>` does. The laptop's own internet still works normally.
+- **Evidence:** T5.png.
+- [ ] PASS  [ ] FAIL — Notes: ______
+
+### T6 — Remote actions are traceable
+- **Steps:** as the remote person view a document; as AUD open the Audit trail entry.
+- **Expected:** the network address is the person's VPN address (10.8.0.x), and the watermark shows it too.
+- **Evidence:** T6.png.
+- [ ] PASS  [ ] FAIL — Notes: ______

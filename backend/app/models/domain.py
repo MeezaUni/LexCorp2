@@ -89,6 +89,9 @@ class WebAuthnCredential(Base, TimestampMixin):
     transports: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     factor_scope: Mapped[str] = mapped_column(String(20), default="login")
+    # The site name (WebAuthn RP ID) the passkey was created for: it only works there. None for
+    # passkeys created before migration 0015, which belong to settings.RP_ID.
+    rp_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="webauthn_credentials")
 

@@ -1,28 +1,84 @@
+# LexCorp2 remote access: VPN with Google sign-in on every connection. See README.md.
+#
+#   internet --UDP VPN_PORT--> openvpn (172.30.0.2) --only HTTPS--> caddy (172.30.0.10) --> app on this machine
+#   browser  --TCP LOGIN_PORT--> caddy --> auth (172.30.0.3) --> Google
+#
+# Everything is configured from network/vpn/.env (copy .env.example). Keys, certificates and the
+# client profile are created under network/vpn/data/ (git-ignored).
+name: lexcorp2-vpn
+
 services:
-  wg-easy:
+  openvpn:
+    build: ./openvpn
+    image: lexcorp2-vpn:local
+    entrypoint: ["/usr/local/bin/entrypoint-openvpn.sh"]
     environment:
-      # Public IP Address for remote access over the Internet
-      - WG_HOST=182.71.109.122
-
-      # Web portal password hash (bcrypt) - supplied via network/vpn/.env, never committed
-      - PASSWORD_HASH=${WG_PASSWORD_HASH:?set WG_PASSWORD_HASH in network/vpn/.env}
-
-      # WireGuard Port
-      - WG_PORT=52000
-      - WG_DEFAULT_ADDRESS=10.8.0.x
-      - WG_DEFAULT_DNS=1.1.1.1
-      - WG_MTU=1420
-    image: ghcr.io/wg-easy/wg-easy
-    container_name: wg-easy
-    volumes:
-      - ./wireguard_data:/etc/wireguard
-    ports:
-      - "52000:52000/udp"
-      - "51821:51821/tcp"
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
+      VPN_HOST: ${VPN_HOST}
+      VPN_PORT: ${VPN_PORT:-1194}
+      APP_IP: 172.30.0.10
+      MGMT_ADDR: 172.30.0.2
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
     sysctls:
-      - net.ipv4.ip_forward=1
-      - net.ipv4.conf.all.src_valid_mark=1
+      net.ipv4.ip_forward: "1"
+    ports: ["${VPN_PORT:-1194}:1194/udp"]
+    volumes: ["./data/openvpn:/data"]
+    networks:
+      vpn: {ipv4_address: 172.30.0.2}
+    restart: unless-stopped
+
+  auth:
+    image: lexcorp2-vpn:local
+    entrypoint: ["/usr/local/bin/entrypoint-auth.sh"]
+    depends_on: [openvpn]
+    environment:
+      VPN_HOST: ${VPN_HOST}
+      LOGIN_PORT: ${LOGIN_PORT:-9443}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS}
+      MGMT_ADDR: 172.30.0.2
+    volumes: ["./data/openvpn/shared:/shared:ro"]
+    networks:
+      vpn: {ipv4_address: 172.30.0.3}
+    restart: unless-stopped
+
+  caddy:
+    build: ./caddy
+    image: lexcorp2-vpn-caddy:local
+    environment:
+      VPN_HOST: ${VPN_HOST}
+      APP_HOST: ${APP_HOST}
+      APP_IP: 172.30.0.10
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
+    cap_add: [NET_ADMIN]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["${LOGIN_PORT:-9443}:9443/tcp"]
+    volumes: ["./data/caddy:/data"]
+    networks:
+      vpn: {ipv4_address: 172.30.0.10}
+    restart: unless-stopped
+
+  # Keeps the two DuckDNS names pointing the right way: the VPN name to this network's public IP
+  # (it may change), the app name to the proxy's private address inside the VPN.
+  duckdns:
+    image: curlimages/curl:latest
+    environment:
+      VPN_HOST: ${VPN_HOST}
+      APP_HOST: ${APP_HOST}
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          vpn=$$(curl -fsS "https://www.duckdns.org/update?domains=$${VPN_HOST%.duckdns.org}&token=$${DUCKDNS_TOKEN}&ip=")
+          app=$$(curl -fsS "https://www.duckdns.org/update?domains=$${APP_HOST%.duckdns.org}&token=$${DUCKDNS_TOKEN}&ip=172.30.0.10")
+          echo "$$(date -u +%FT%TZ) DuckDNS update: $${VPN_HOST}=$${vpn} $${APP_HOST}=$${app}"
+          sleep 300
+        done
+    restart: unless-stopped
+
+networks:
+  vpn:
+    ipam:
+      config: [{subnet: 172.30.0.0/24}]

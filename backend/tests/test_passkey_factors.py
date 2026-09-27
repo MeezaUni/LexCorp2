@@ -17,7 +17,7 @@ from app.models.domain import User, WebAuthnCredential
 from app.services import mfa
 from app.services.auth import create_jwt
 from tests.conftest import mfa_headers
-from tests.webauthn_soft import ORIGIN, SoftPasskey
+from tests.webauthn_soft import ORIGIN, SoftPasskey, b64url
 
 ACTIVE_USER_WALLET = "0xe1ced2305c7c75618eeb1450e18e2099c15b7d72"
 ACTIVE_USER_VERSION = 1
@@ -112,3 +112,41 @@ async def test_passkey_factor2_and_factor3_workflow(client, db_session):
                                headers={"Authorization": f"Bearer {mgr_token}", "X-Step-Up-Token": ver3.json()["step_up_token"]},
                                json={"decision": "APPROVE", "totp_code": ""})
     assert ok.status_code == 200, ok.text
+
+
+@pytest.mark.asyncio
+async def test_passkeys_belong_to_the_address_they_were_created_on(db_session, monkeypatch):
+    """localhost on the server machine and the VPN name remotely are different WebAuthn sites:
+    a passkey is offered and verified only on its own site, and each site can have its own."""
+    from fastapi import HTTPException
+    remote = "https://lexcorp2-app.example.org"
+    monkeypatch.setattr(settings, "WEBAUTHN_ORIGINS", [*settings.WEBAUTHN_ORIGINS, remote])
+    assert mfa.rp_id_for(ORIGIN) == "localhost"
+    assert mfa.rp_id_for(remote) == "lexcorp2-app.example.org"
+    assert mfa.rp_id_for("http://127.0.0.1:5173") == settings.RP_ID          # an IP can't be an RP ID
+    assert mfa.rp_id_for("https://evil.example") == settings.RP_ID            # not an allowed origin
+
+    wallet = "0x" + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    user = User(wallet_address=wallet, did=f"did:ethr:{settings.CHAIN_ID}:{wallet}", name="Two Sites", role="USER",
+                onboarding_pending=False)
+    db_session.add(user)
+    await db_session.commit()
+    local_key, remote_key = SoftPasskey(), SoftPasskey(rp_id="lexcorp2-app.example.org", origin=remote)
+    db_session.add(WebAuthnCredential(user_id=user.id, credential_id=local_key.credential_id_hex, public_key=local_key._cose_public_key().hex(),
+                                      sign_count=0, device_name="laptop (from before 0015)", factor_scope="factor2"))
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as refused:                               # only a localhost passkey so far
+        await mfa.passkey_options(db_session, user, "factor2", "document.view", origin=remote)
+    assert "another address" in refused.value.detail
+
+    db_session.add(WebAuthnCredential(user_id=user.id, credential_id=remote_key.credential_id_hex, public_key=remote_key._cose_public_key().hex(),
+                                      sign_count=0, device_name="laptop over VPN", factor_scope="factor2", rp_id="lexcorp2-app.example.org"))
+    await db_session.commit()
+    for origin, key in ((remote, remote_key), (ORIGIN, local_key)):
+        options = await mfa.passkey_options(db_session, user, "factor2", "document.view", origin=origin)
+        offered = {c["id"] for c in options["allowCredentials"]}
+        assert offered == {b64url(key.credential_id)}
+        challenge = await mfa.verify_passkey_assertion(db_session, user, "factor2", key.assert_(options), origin)
+        assert challenge.action == "document.view"
+    await db_session.commit()
