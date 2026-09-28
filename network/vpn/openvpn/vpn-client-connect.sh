@@ -9,8 +9,9 @@
 set -eu
 out="$1"
 prefix=$(cat /run/lexcorp/prefix)            # e.g. 10.8.0, written by entrypoint-openvpn.sh
-state=/data/state/next-host
-exec 9>/data/state/lock
+# kept under /run/lexcorp: owned by the OpenVPN user and reachable by it (/data is root-only)
+state=/run/lexcorp/next-host
+exec 9>/run/lexcorp/lock
 flock 9
 n=$(cat "$state" 2>/dev/null || echo 2)
 in_use=$(awk -F, '$1 == "CLIENT_LIST" {print $4}' /run/lexcorp/status.log 2>/dev/null || true)

@@ -34,11 +34,13 @@ export EASYRSA_PKI=/data/pki EASYRSA_BATCH=1 EASYRSA_NO_VARS=1 EASYRSA_ALGO=ec E
        EASYRSA_DN=cn_only EASYRSA_CA_EXPIRE=3650 EASYRSA_CERT_EXPIRE=825
 EASYRSA=/usr/share/easy-rsa/easyrsa
 umask 077
-mkdir -p /data/secrets /data/shared /data/client /data/state /run/lexcorp
+mkdir -p /data/secrets /data/shared /data/client /run/lexcorp
 # the per-connection address hook (vpn-client-connect.sh) runs as the unprivileged OpenVPN user
 echo "${VPN_SUBNET%.*}" > /run/lexcorp/prefix
 chmod 644 /run/lexcorp/prefix
-chown nobody:nogroup /data/state /run/lexcorp
+# pre-create the status file owned by the OpenVPN user so the hook can read addresses in use
+: > /run/lexcorp/status.log
+chown nobody:nogroup /run/lexcorp /run/lexcorp/status.log
 
 if [ ! -f /data/pki/ca.crt ]; then
   echo "Creating the VPN certificate authority and certificates (first start)"
