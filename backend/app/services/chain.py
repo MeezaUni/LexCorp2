@@ -15,6 +15,7 @@ audited; `reconcile_all` is run periodically so a missed update is corrected.
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -52,6 +53,21 @@ class DeploymentStatus:
 
 def _w3() -> Web3:
     return Web3(Web3.HTTPProvider(settings.RPC_URL, request_kwargs={"timeout": 10}))
+
+
+def _read(fn, attempts: int = 4):
+    """Run a read-only RPC call, retrying Besu's transient -32603 "Internal error".
+
+    Besu (Bonsai storage) occasionally fails an eth_call that lands at the exact moment a new
+    block is imported ("Archive rolling failed" in the node log), roughly one call in several
+    thousand. A short retry reads the next state; any other error is raised at once."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if i == attempts - 1 or "-32603" not in str(e):
+                raise
+            time.sleep(0.2 * (i + 1))
 
 
 def load_deployment() -> dict:
@@ -104,7 +120,7 @@ class RoleSync:
         d = load_deployment()
         self.contract = self.w3.eth.contract(address=Web3.to_checksum_address(d["address"]), abi=d["abi"])
         self.account = Account.from_key(settings.CHAIN_OPERATOR_PRIVATE_KEY)
-        self.role_ids = {r: getattr(self.contract.functions, r)().call() for r in OPERATIONAL_ROLES}
+        self.role_ids = {r: _read(getattr(self.contract.functions, r)().call) for r in OPERATIONAL_ROLES}
 
     def onchain_role_holders(self) -> set:
         """Every account that was ever granted an operational role (AccessControl is not
@@ -125,7 +141,7 @@ class RoleSync:
 
     def current_roles(self, wallet: str) -> set:
         a = Web3.to_checksum_address(wallet)
-        return {r for r, rid in self.role_ids.items() if self.contract.functions.hasRole(rid, a).call()}
+        return {r for r, rid in self.role_ids.items() if _read(self.contract.functions.hasRole(rid, a).call)}
 
     def _send(self, fn) -> str:
         with _lock:
@@ -135,7 +151,7 @@ class RoleSync:
                 "gasPrice": 0,
                 "chainId": settings.CHAIN_ID,
             })
-            tx["gas"] = int(self.w3.eth.estimate_gas(tx) * 1.2)
+            tx["gas"] = int(_read(lambda: self.w3.eth.estimate_gas(tx)) * 1.2)
             signed = self.account.sign_transaction(tx)
             h = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         rcpt = self.w3.eth.wait_for_transaction_receipt(h, timeout=60)
