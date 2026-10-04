@@ -5,6 +5,7 @@ import { refreshCounts } from '../components/Shell';
 import { useAuth } from '../context/AuthContext';
 import { signAndConfirm } from '../services/chainActions';
 import { recorded } from './DigitalAssetDetail';
+import { VerifyAssetButton } from '../components/Checks';
 import * as api from '../services/api';
 
 /** One row per document lineage, showing its most recent version. */
@@ -73,6 +74,7 @@ export default function DigitalAssets() {
               { key: 'ledger', label: 'Ledger', render: (a) => <Status value={recorded(a) ? 'VERIFIED' : 'PENDING'}>{recorded(a) ? 'Recorded' : 'Not yet recorded'}</Status> },
               { key: 'hash', label: 'SHA-256', render: (a) => <Id title={a.file_hash}>{shortHash(a.file_hash)}</Id> },
               { key: 'updated', label: 'Last change', render: (a) => formatDate(a.updated_at, false) },
+              { key: 'verify', label: 'Verify', render: (a) => <VerifyAssetButton serial={a.serial_number} size="sm" /> },
             ]} />
         </Panel>
       </div>

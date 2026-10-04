@@ -3,6 +3,11 @@
 # host machine.
 {
 	admin off
+	# The public verify listener below is reached only by the gateway's proxy (10.9.0.1 over the
+	# site link); trust the visitor address it forwards, so the audit trail records who verified.
+	servers {$APP_IP}:8080 {
+		trusted_proxies static 10.9.0.1/32
+	}
 }
 
 https://{$APP_HOST} {
@@ -19,5 +24,26 @@ https://{$APP_HOST} {
 		header Content-Type "text/html; charset=utf-8"
 		header Cache-Control "no-store"
 		respond `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LexCorp is not available</title><style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f5f6f8;color:#1c2330}main{max-width:32rem;padding:24px}h1{font-size:1.4rem;margin:0 0 8px}p{margin:0 0 8px;color:#5b6474}@media (prefers-color-scheme:dark){body{background:#12161d;color:#e6e9ee}p{color:#9aa3b2}}</style></head><body><main><h1>LexCorp is not available right now</h1><p>You are connected through the VPN, but the LexCorp server isn't answering. It may be stopped or restarting.</p><p>Try again in a minute. If it keeps happening, contact the administrator.</p></main></body></html>` {err.status_code}
+	}
+}
+
+# Public record verification: the gateway publishes https://VERIFY_HOST and forwards it here over
+# the site link. Only the verify pages, the files they load and their read-only verify API are
+# served; signing in and every other part of LexCorp stay on the VPN address above.
+http://:8080 {
+	bind {$APP_IP}
+	@verify path_regexp ^/(verify/|api/verify/action/|api/assets/(serial|token)/[^/]+/verify-data$|src/|@vite/client$|@react-refresh$|@id/|node_modules/|@fs/[^?]*/contracts/deployments/[^/?]+\.json$|favicon\.svg$)
+	handle @verify {
+		reverse_proxy host.docker.internal:5173
+	}
+	handle {
+		header Content-Type "text/html; charset=utf-8"
+		header Cache-Control "no-store"
+		respond `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LexCorp record verification</title><style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f5f6f8;color:#1c2330}main{max-width:32rem;padding:24px}h1{font-size:1.4rem;margin:0 0 8px}p{margin:0 0 8px;color:#5b6474}@media (prefers-color-scheme:dark){body{background:#12161d;color:#e6e9ee}p{color:#9aa3b2}}</style></head><body><main><h1>Only record verification is available here</h1><p>This address checks LexCorp records from the QR code on a document copy, asset label or NFT card.</p><p>Employees sign in to LexCorp on the company network or through the company VPN.</p></main></body></html>` 404
+	}
+	handle_errors 502 503 504 {
+		header Content-Type "text/html; charset=utf-8"
+		header Cache-Control "no-store"
+		respond `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verification unavailable</title><style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f5f6f8;color:#1c2330}main{max-width:32rem;padding:24px}h1{font-size:1.4rem;margin:0 0 8px}p{margin:0;color:#5b6474}@media (prefers-color-scheme:dark){body{background:#12161d;color:#e6e9ee}p{color:#9aa3b2}}</style></head><body><main><h1>Verification is unavailable right now</h1><p>The LexCorp server isn't answering. Try again in a few minutes.</p></main></body></html>` {err.status_code}
 	}
 }

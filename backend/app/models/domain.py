@@ -223,6 +223,9 @@ class DocumentAction(Base, TimestampMixin):
     download_token: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True, nullable=True)
     token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     watermark_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The issued copy itself: its SHA-256 and the invisible mark inside it (app.services.hidden_mark)
+    copy_sha256: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    hidden_mark: Mapped[Optional[str]] = mapped_column(String(32), unique=True, index=True, nullable=True)
     details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 

@@ -4,6 +4,7 @@ import { Button, Dialog, Field, Id, Notice, PageHeader, Panel, Register, Status,
 import { refreshCounts } from '../components/Shell';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
+import { VerifyAssetButton } from '../components/Checks';
 import { signAndConfirm } from '../services/chainActions';
 
 const MAC_RE = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
@@ -62,6 +63,7 @@ export default function PhysicalAssets() {
               { key: 'l', label: 'Lifecycle', render: (a) => <Status value={a.lifecycle_status} /> },
               { key: 'v', label: 'Ledger', render: (a) => <Status value={onLedger(a) ? 'VERIFIED' : 'PENDING'}>{onLedger(a) ? 'Recorded' : 'Not yet recorded'}</Status> },
               { key: 'c', label: 'Registered', render: (a) => formatDate(a.created_at, false) },
+              { key: 'verify', label: 'Verify', render: (a) => <VerifyAssetButton serial={a.serial_number} size="sm" /> },
             ]} />
         </Panel>
       </div>

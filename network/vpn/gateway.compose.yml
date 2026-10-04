@@ -2,6 +2,7 @@
 #
 #   internet --UDP VPN_PORT--> openvpn 172.29.0.2 --(site link, HTTPS only)--> site: caddy 172.30.0.10 --> LexCorp
 #   browser  --TCP LOGIN_PORT--> caddy 172.29.0.4 --> auth 172.29.0.3 --> Google
+#   anyone   --TCP 443--> caddy 172.29.0.4 (VERIFY_HOST) --(site link)--> site: caddy 172.30.0.10:8080 --> verify pages only
 #   site machine --UDP 51820--> openvpn (WireGuard end of the site link)
 #
 #   docker compose -f gateway.compose.yml --env-file gateway.env up -d
@@ -19,6 +20,7 @@ services:
       APP_IP: 172.30.0.10
       SITE_NET: 172.30.0.0/24
       MGMT_ADDR: 172.29.0.2
+      VERIFY_PROXY: 172.29.0.4
       WG_GATEWAY_PRIVATE_KEY: ${WG_GATEWAY_PRIVATE_KEY}
       WG_SITE_PUBLIC_KEY: ${WG_SITE_PUBLIC_KEY}
       WG_PRESHARED_KEY: ${WG_PRESHARED_KEY}
@@ -56,28 +58,34 @@ services:
     environment:
       CADDY_ROLE: gateway
       VPN_HOST: ${VPN_HOST}
+      VERIFY_HOST: ${VERIFY_HOST:-lexcorp-verify.duckdns.org}
       DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
-    ports: ["${LOGIN_PORT:-9443}:9443/tcp"]
+      SITE_ROUTE_VIA: 172.29.0.2
+      SITE_NET: 172.30.0.0/24
+    cap_add: [NET_ADMIN]
+    ports: ["${LOGIN_PORT:-9443}:9443/tcp", "443:443/tcp"]
     volumes: ["./data/caddy:/data"]
     networks:
       gw: {ipv4_address: 172.29.0.4}
     restart: unless-stopped
 
-  # Keeps the DuckDNS names right: the VPN name follows this server's public IP, the app name points
-  # to the web proxy's private address at the site (reachable only through the VPN).
+  # Keeps the DuckDNS names right: the VPN and verify names follow this server's public IP, the app
+  # name points to the web proxy's private address at the site (reachable only through the VPN).
   duckdns:
     image: curlimages/curl:latest
     environment:
       VPN_HOST: ${VPN_HOST}
       APP_HOST: ${APP_HOST}
+      VERIFY_HOST: ${VERIFY_HOST:-lexcorp-verify.duckdns.org}
       DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         while true; do
           vpn=$$(curl -fsS "https://www.duckdns.org/update?domains=$${VPN_HOST%.duckdns.org}&token=$${DUCKDNS_TOKEN}&ip=")
+          verify=$$(curl -fsS "https://www.duckdns.org/update?domains=$${VERIFY_HOST%.duckdns.org}&token=$${DUCKDNS_TOKEN}&ip=")
           app=$$(curl -fsS "https://www.duckdns.org/update?domains=$${APP_HOST%.duckdns.org}&token=$${DUCKDNS_TOKEN}&ip=172.30.0.10")
-          echo "$$(date -u +%FT%TZ) DuckDNS update: $${VPN_HOST}=$${vpn} $${APP_HOST}=$${app}"
+          echo "$$(date -u +%FT%TZ) DuckDNS update: $${VPN_HOST}=$${vpn} $${VERIFY_HOST}=$${verify} $${APP_HOST}=$${app}"
           sleep 300
         done
     restart: unless-stopped

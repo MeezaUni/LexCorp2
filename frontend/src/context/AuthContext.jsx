@@ -8,6 +8,25 @@ const AuthContext = createContext(null);
 // Mirrors the server's INACTIVITY_TIMEOUT_MINUTES; the server enforces it regardless.
 const INACTIVITY_MS = 15 * 60 * 1000;
 
+// Closing LexCorp ends the session. A tab that signed in (or was opened from one) carries a
+// per-tab marker that the browser drops when the tab closes; a page that opens with a valid
+// session but no marker, and no other open LexCorp tab answering, signs that session out.
+const TAB_KEY = 'lexcorp_open';
+const CHANNEL = 'lexcorp-session';
+const tabMarked = () => { try { return sessionStorage.getItem(TAB_KEY) === '1'; } catch { return false; } };
+const markTab = (on) => { try { if (on) sessionStorage.setItem(TAB_KEY, '1'); else sessionStorage.removeItem(TAB_KEY); } catch { /* storage unavailable */ } };
+
+function anotherTabOpen(ms = 400) {
+  return new Promise((resolve) => {
+    if (typeof BroadcastChannel === 'undefined') { resolve(false); return; }
+    const ch = new BroadcastChannel(CHANNEL);
+    const finish = (v) => { window.clearTimeout(timer); ch.close(); resolve(v); };
+    const timer = window.setTimeout(() => finish(false), ms);
+    ch.onmessage = (e) => { if (e.data === 'open') finish(true); };
+    ch.postMessage('anyone');
+  });
+}
+
 /**
  * Session state for the UI. The session itself is an HttpOnly cookie the page cannot
  * read; `user` is always what the server returns from /auth/me. Role and department
@@ -22,6 +41,7 @@ export function AuthProvider({ children }) {
   const timerRef = useRef(null);
 
   const clear = useCallback((message = '') => {
+    markTab(false);
     signerRef.current = null;
     setUser(null);
     setNotice(message);
@@ -40,7 +60,13 @@ export function AuthProvider({ children }) {
     }
     localStorage.removeItem('lexcorp_token');
     getSession()
-      .then((st) => {
+      .then(async (st) => {
+        if (st.authenticated && !tabMarked() && !(await anotherTabOpen())) {
+          await logoutSession();
+          setUser(null);
+          setNotice('LexCorp was closed, so your session ended. Sign in again.');
+          return null;
+        }
         if (st.authenticated) return getMe().then(setUser);
         setUser(null);
         if (st.ended) setNotice(`Your previous session ended: ${st.ended}`);
@@ -49,6 +75,16 @@ export function AuthProvider({ children }) {
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
+
+  // While signed in, this tab is marked and answers other LexCorp tabs asking whether the site is open.
+  useEffect(() => {
+    if (!user) return undefined;
+    markTab(true);
+    if (typeof BroadcastChannel === 'undefined') return undefined;
+    const ch = new BroadcastChannel(CHANNEL);
+    ch.onmessage = (e) => { if (e.data === 'anyone' && tabMarked()) ch.postMessage('open'); };
+    return () => ch.close();
+  }, [user]);
 
   useEffect(() => {
     const onEnded = (e) => clear(e.detail || 'Your session ended. Sign in again.');

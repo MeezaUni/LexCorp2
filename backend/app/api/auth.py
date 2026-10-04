@@ -208,10 +208,11 @@ async def _issue_session(
         client_ip=client_ip, scope=scope,
     )
     # The session lives ONLY in an httpOnly, SameSite=Strict cookie (Secure in production):
-    # page scripts can never read it, so an injected script cannot exfiltrate it.
+    # page scripts can never read it, so an injected script cannot exfiltrate it. It is a browser-
+    # session cookie (no Max-Age), so closing the browser drops it; the token still expires after
+    # JWT_EXPIRE_MINUTES, and the page signs out a session reopened after LexCorp was closed.
     response.set_cookie(
-        key="session", value=token, httponly=True, samesite="strict", secure=settings.is_production,
-        max_age=settings.JWT_EXPIRE_MINUTES * 60, path="/",
+        key="session", value=token, httponly=True, samesite="strict", secure=settings.is_production, path="/",
     )
     return LoginResponse(user=_user_payload(user, scope))
 

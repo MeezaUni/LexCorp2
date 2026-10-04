@@ -82,7 +82,8 @@ class Settings(BaseSettings):
         "eth_getTransactionReceipt", "eth_getTransactionByHash", "eth_sendRawTransaction", "eth_getCode",
     ]
 
-    # Public base URL of the LexCorp web app; QR codes point to its /verify pages.
+    # Public base URL for QR codes, which point to its /verify pages. With the VPN gateway this is the
+    # public verify address (network/vpn: VERIFY_HOST), which serves the verify pages and nothing else.
     PUBLIC_BASE_URL: str = "http://localhost:5173"
 
     OFFCHAIN_STORAGE_DIR: str = str(BASE_DIR / "offchain_storage")

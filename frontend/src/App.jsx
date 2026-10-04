@@ -14,6 +14,7 @@ import Alerts from './pages/Alerts';
 import Audit from './pages/Audit';
 import Identity from './pages/Identity';
 import Admin from './pages/Admin';
+import Verification from './pages/Verification';
 import { VerifyAction, VerifyAsset } from './pages/Verify';
 
 /** UI-level route hiding only; the server authorizes every request independently. */
@@ -48,6 +49,7 @@ function Gate() {
         <Route path="requests" element={<Requests />} />
         <Route path="alerts" element={<RoleRoute roles={['AUDITOR', 'MANAGER', 'ADMIN']}><Alerts /></RoleRoute>} />
         <Route path="audit" element={<RoleRoute roles={['AUDITOR', 'MANAGER', 'ADMIN']}><Audit /></RoleRoute>} />
+        <Route path="verification" element={<RoleRoute roles={['AUDITOR']}><Verification /></RoleRoute>} />
         <Route path="identity" element={<Identity />} />
         <Route path="admin" element={<RoleRoute roles={['ADMIN', 'MANAGER']}><Admin /></RoleRoute>} />
         <Route path="*" element={<NotFound />} />

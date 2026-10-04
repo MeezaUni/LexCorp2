@@ -1,6 +1,7 @@
 # Remote access: VPN with company sign-in on every connection
 
-LexCorp is never published on the internet. People on the company network reach it directly.
+LexCorp is never published on the internet, except its record verification pages (below). People
+on the company network reach it directly.
 People outside connect through this VPN, and **every connection requires signing in with the
 company's existing login**. For this demonstration, the company login is played by
 **Sign in with Google**, restricted to an allowlist of accounts.
@@ -48,20 +49,36 @@ edge and the site is the internal network.
 - **Cost: none.** OpenVPN, openvpn-auth-oauth2, Caddy, DuckDNS, Let's Encrypt, a Google OAuth
   client (testing mode, up to 100 listed users) and the OpenVPN GUI client are all free.
 
-Only the gateway has open ports: UDP 1194 (VPN), TCP 9443 (sign-in page), UDP 51820 (site link).
-The site and the app are never exposed.
+Only the gateway has open ports: UDP 1194 (VPN), TCP 9443 (sign-in page), UDP 51820 (site link),
+TCP 443 (public verification). The site and the app are never exposed.
+
+### Public record verification
+
+The QR on every document copy, asset label and NFT card opens `https://VERIFY_HOST/verify/...`
+(`PUBLIC_BASE_URL` in `backend/.env`), so anyone can check a copy from any network, without the VPN.
+
+```
+ phone, any network --TCP 443--> gateway caddy (VERIFY_HOST) --site link, as 10.9.0.1--> site caddy 172.30.0.10:8080 --> verify pages
+```
+
+The site's `:8080` listener serves only the verify pages, the files they load and the read-only
+verify API (`/api/verify/action/...`, `/api/assets/.../verify-data`); anything else gets a page
+saying only verification is available there. Signing in, the API and the rest of the app stay
+VPN-only, and the gateway's firewall lets its proxy reach only that one port. The visitor's own
+address reaches the audit trail (the site trusts the gateway proxy's `X-Forwarded-For`, and the
+backend trusts `10.9.0.1` in `TRUSTED_PROXIES`).
 
 ## Setup (once)
 
-### 1. DuckDNS: two names and a token
+### 1. DuckDNS: three names and a token
 
 1. Sign in at <https://www.duckdns.org> (you can use your Google account).
-2. Add two domains, for example `lexcorp-vpn` and `lexcorp-app`. Names are first come,
-   first served, so pick others if these are taken.
+2. Add three domains, for example `lexcorp-vpn`, `lexcorp-app` and `lexcorp-verify`. Names are
+   first come, first served, so pick others if these are taken.
 3. Copy the **token** shown at the top of the page.
 
-The `duckdns` service keeps them up to date by itself: the VPN name follows this network's
-public IP (which changes), and the app name points to the proxy's private address `172.30.0.10`.
+The `duckdns` service keeps them up to date by itself: the VPN and verify names follow the
+gateway's public IP, and the app name points to the proxy's private address `172.30.0.10`.
 
 ### 2. Google sign-in client
 
@@ -84,10 +101,11 @@ Any Linux server with a public IPv4 address works. The development setup uses an
 "Always Free" VM (VM.Standard.E2.1.Micro, Ubuntu, 1 GB memory is enough):
 
 1. Create the instance with a public IPv4 address and download its SSH key.
-2. In its VCN's security list, add ingress rules from `0.0.0.0/0`: UDP 1194, TCP 9443, UDP 51820.
+2. In its VCN's security list, add ingress rules from `0.0.0.0/0`: UDP 1194, TCP 9443, UDP 51820,
+   TCP 443.
 3. On the server: add swap (`fallocate -l 2G /swapfile`...), install `docker.io` and
    `docker-compose-v2`, load WireGuard (`modprobe wireguard`, plus `/etc/modules-load.d/wireguard.conf`),
-   and on Oracle's Ubuntu images open the same three ports in iptables before the final REJECT rule
+   and on Oracle's Ubuntu images open the same four ports in iptables before the final REJECT rule
    (`iptables -I INPUT 5 -p udp --dport 1194 -m state --state NEW -j ACCEPT`, etc., then
    `netfilter-persistent save`).
 
@@ -113,6 +131,15 @@ REMOTE_APP_ORIGIN=https://lexcorp-app.duckdns.org
 
 (your `APP_HOST`), then restart `npm start`. This adds the name to the allowed origins, lets
 Vite answer for it, and makes passkeys created there belong to that name.
+
+For public verification, also set (your `VERIFY_HOST`):
+
+```
+PUBLIC_BASE_URL=https://lexcorp-verify.duckdns.org
+TRUSTED_PROXIES=["127.0.0.1/32","::1/128","10.9.0.1/32"]
+```
+
+Copies, labels and cards issued from then on carry QR codes for that address.
 
 ### 6. Start it
 

@@ -25,6 +25,7 @@ const G = {
   audit: 'M5 3h14v18H5zM8 8h8M8 12h8M8 16h5',
   identity: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21c1-4 4-6 8-6s7 2 8 6',
   admin: 'M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z',
+  verify: 'M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6zM8.5 12l2.5 2.5 4.5-5',
 };
 const Glyph = ({ d }) => (
   <svg className="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
@@ -81,6 +82,7 @@ export default function Shell() {
     { to: '/requests', label: ['ADMIN', 'MANAGER'].includes(role) ? 'Requests & approvals' : 'My requests', g: G.requests, count: counts.approvals },
     STAGE[role] && { to: '/alerts', label: 'Security alerts', g: G.alerts, count: counts.alerts, alert: true },
     role !== 'USER' && { to: '/audit', label: 'Audit trail', g: G.audit },
+    role === 'AUDITOR' && { to: '/verification', label: 'Verification', g: G.verify },
     { to: '/identity', label: 'My identity', g: G.identity },
     ['ADMIN', 'MANAGER'].includes(role) && { to: '/admin', label: role === 'ADMIN' ? 'Administration' : 'People', g: G.admin },
   ].filter(Boolean);

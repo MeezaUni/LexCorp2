@@ -5,6 +5,7 @@ import { humanEvent } from './Dashboard';
 import { onLedger } from './PhysicalAssets';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
+import { VerifyAssetButton } from '../components/Checks';
 import { signAndConfirm } from '../services/chainActions';
 
 const STATUSES = ['ACTIVE', 'ASSIGNED', 'MAINTENANCE', 'IN_STORAGE', 'LOST', 'RETIRED', 'DECOMMISSIONED'];
@@ -51,10 +52,13 @@ export default function PhysicalAssetDetail() {
           { content: <>Ledger <strong>{onLedger(asset) ? 'recorded' : 'not yet recorded'}</strong></>, warn: asset.approval_status === 'APPROVED' && !onLedger(asset) },
           { content: <>Lifecycle <strong>{asset.lifecycle_status.replace(/_/g, ' ').toLowerCase()}</strong></> },
         ]}
-        actions={canApprove && <>
-          <Button onClick={() => setDialog('status')}>Change status</Button>
-          <Button onClick={() => setDialog('maintenance')}>Record maintenance</Button>
-          {card && <a className="btn btn-secondary" href={card} download={`${asset.serial_number}-card.svg`}>Download NFT card</a>}
+        actions={<>
+          {canApprove && <>
+            <Button onClick={() => setDialog('status')}>Change status</Button>
+            <Button onClick={() => setDialog('maintenance')}>Record maintenance</Button>
+            {card && <a className="btn btn-secondary" href={card} download={`${asset.serial_number}-card.svg`}>Download NFT card</a>}
+          </>}
+          <VerifyAssetButton serial={asset.serial_number} />
         </>} />
       <div className="content">
         {message && <Notice tone="success" title="Done">{message}</Notice>}

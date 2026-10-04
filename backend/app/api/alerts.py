@@ -105,9 +105,11 @@ async def _evidence(db: AsyncSession, alert: SecurityAlert) -> Optional[dict]:
 async def view_evidence(alert_id: str, request: Request, current_user: User = Depends(get_onboarded_user),
                         db: AsyncSession = Depends(get_db)):
     """The file as it was uploaded, as a protected view (watermarked for the reviewer, recorded)."""
+    import hashlib
     import os
     from app.api.assets import OFFCHAIN_STORAGE_DIR, _verify_url
     from app.services.action_ids import next_action_id
+    from app.services.hidden_mark import new_mark
     from app.services.watermark import UnsupportedDocumentType, WatermarkContext, render_view_copy
 
     _require_security_role(current_user)
@@ -124,7 +126,7 @@ async def view_evidence(alert_id: str, request: Request, current_user: User = De
     client_ip = get_request_client_ip(request)
     view_id = await next_action_id(db, "VW")
     ctx = WatermarkContext(kind="VIEW", actor_name=current_user.name or "Unnamed", actor_wallet=current_user.wallet_address,
-                           client_ip=client_ip, action_id=view_id, verify_url=_verify_url(view_id))
+                           client_ip=client_ip, action_id=view_id, verify_url=_verify_url(view_id), hidden_mark=new_mark())
     try:
         content, mime, _ = render_view_copy(open(path, "rb").read(), ev.get("filename") or "evidence", ctx)
     except UnsupportedDocumentType:
@@ -133,6 +135,7 @@ async def view_evidence(alert_id: str, request: Request, current_user: User = De
         db.add(DocumentAction(action_id=view_id, action_type="VIEW", asset_id=asset.id, asset_serial=asset.serial_number,
                               asset_version=asset.version_number, actor_id=current_user.id, actor_did=current_user.did,
                               status="COMPLETED", client_ip=client_ip, watermark_text="\n".join(ctx.all_lines()),
+                              copy_sha256=hashlib.sha256(content).hexdigest(), hidden_mark=ctx.hidden_mark,
                               details={"evidence_for_alert": alert.alert_id}))
     await record_audit(db, "ALERT_EVIDENCE_VIEWED", actor_did=current_user.did, asset_serial=alert.asset_serial,
                        client_ip=client_ip, details={"alert_id": alert.alert_id, "view_id": view_id})

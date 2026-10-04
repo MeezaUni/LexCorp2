@@ -6,6 +6,7 @@ import { refreshCounts } from '../components/Shell';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
 import { signAndConfirm } from '../services/chainActions';
+import { VerifyAssetButton } from '../components/Checks';
 import ProtectedViewer from '../components/ProtectedViewer';
 
 export const recorded = (a) => ['MINTED', 'ANCHORED'].includes(a?.lifecycle_status) || Boolean(a?.watermark_metadata?.chain_tx);
@@ -106,6 +107,7 @@ export default function DigitalAssetDetail() {
             ? <Button onClick={() => setDialog('own-modify')}>Download modification copy</Button>
             : <Button onClick={() => setDialog('modify')}>Request modification copy</Button>)}
           {(isHolder || manages) && <Button onClick={() => setDialog('share')}>Delegate access</Button>}
+          <VerifyAssetButton serial={asset.serial_number} />
         </>} />
       <div className="content">
         {message && <Notice tone="success" title="Done">{message}</Notice>}

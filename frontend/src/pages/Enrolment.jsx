@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Mark } from '../components/Shell';
 import { Button, Field, Notice, errorText, shortWallet } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
@@ -8,9 +8,27 @@ import { registerPasskey, startTotp, verifyTotp } from '../services/api';
  * Mandatory enrolment after provisioning. The session is setup-only: the server refuses
  * every application endpoint until BOTH Login TOTP 1 and Login Passkey 1 exist.
  */
+// The authenticator QR being set up is kept for this tab, so that a reload (a phone browser reloads
+// the page after switching to the authenticator app and back) shows the same key instead of losing
+// it. Starting again would issue a new key and invalidate the entry just added to the app.
+const SETUP_KEY = 'lexcorp_enrol_totp';
+const loadSetup = (wallet) => {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(SETUP_KEY) || 'null');
+    return saved && saved.wallet === wallet ? saved.totp : null;
+  } catch { return null; }
+};
+const saveSetup = (wallet, totp) => {
+  try {
+    if (totp) sessionStorage.setItem(SETUP_KEY, JSON.stringify({ wallet, totp }));
+    else sessionStorage.removeItem(SETUP_KEY);
+  } catch { /* storage unavailable: the setup just isn't kept across a reload */ }
+};
+
 export default function Enrolment() {
   const { user, refresh, signOut } = useAuth();
-  const [totp, setTotp] = useState(null);
+  const [totp, setTotp] = useState(() => (user.is_totp_enabled ? null : loadSetup(user.wallet_address)));
+  useEffect(() => { saveSetup(user.wallet_address, user.is_totp_enabled ? null : totp); }, [totp, user.wallet_address, user.is_totp_enabled]);
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -91,7 +109,7 @@ export default function Enrolment() {
             </li>
           </ol>
           {current === 3 && <Notice tone="success" title="Enrolment complete">Loading your workspace…</Notice>}
-          <div><Button variant="quiet" onClick={() => signOut('You signed out during enrolment.')}>Sign out</Button></div>
+          <div><Button variant="quiet" onClick={() => { saveSetup(user.wallet_address, null); signOut('You signed out during enrolment.'); }}>Sign out</Button></div>
         </div>
       </main>
     </div>

@@ -31,13 +31,15 @@ iptables -P FORWARD DROP
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A FORWARD -i wg0 -s "${VPN_CIDR}" -d "${APP_IP}" -p tcp --dport 443 -j ACCEPT
 iptables -A FORWARD -i wg0 -s "${VPN_CIDR}" -d "${APP_IP}" -p icmp --icmp-type echo-request -j ACCEPT
+# Public record verification from the gateway's proxy (10.9.0.1): the verify-only listener only
+iptables -A FORWARD -i wg0 -s 10.9.0.1 -d "${APP_IP}" -p tcp --dport 8080 -j ACCEPT
 iptables -F INPUT
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -i wg0 -p icmp --icmp-type echo-request -j ACCEPT
 iptables -A INPUT -i wg0 -j DROP
 
-echo "Site link up: 10.9.0.2 -> gateway ${GATEWAY_ENDPOINT}; forwarding ${VPN_CIDR} -> ${APP_IP}:443 only"
+echo "Site link up: 10.9.0.2 -> gateway ${GATEWAY_ENDPOINT}; forwarding ${VPN_CIDR} -> ${APP_IP}:443 and the gateway's verify proxy -> ${APP_IP}:8080 only"
 # Report the link's state now and then (the last handshake should stay under ~2 minutes old)
 while true; do
   sleep 30

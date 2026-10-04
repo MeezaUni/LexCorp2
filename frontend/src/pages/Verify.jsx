@@ -74,7 +74,7 @@ export function VerifyAsset() {
   );
 }
 
-const FIELDS = ['Viewed by', 'Downloaded by', 'Wallet', 'IP', 'Date', 'View ID', 'Download ID'];
+const FIELDS = ['Viewed by', 'Downloaded by', 'Wallet', 'IP', 'Date', 'View ID', 'Download ID', 'Owner'];
 
 /** Watermark QR on every protected copy: /verify/action/:actionId */
 export function VerifyAction() {
@@ -82,6 +82,7 @@ export function VerifyAction() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [claimed, setClaimed] = useState({});
+  const [sha, setSha] = useState('');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => { api.verifyAction(actionId).then(setData).catch((e) => setError(errorText(e, 'Verification failed.'))); }, [actionId]);
@@ -122,20 +123,25 @@ export function VerifyAction() {
           <section className="panel">
             <div className="panel-head"><h2>Check a copy against this record</h2></div>
             <div className="panel-body stack">
-              <p className="small muted">Type the values exactly as printed in the watermark, or upload the PDF or text copy. Any edited field is flagged.</p>
-              <form className="form-grid" onSubmit={(e) => { e.preventDefault(); compare(() => api.compareAction(actionId, Object.fromEntries(Object.entries(claimed).filter(([, v]) => v?.trim())))); }}>
+              <p className="small muted">Type the values exactly as printed in the watermark and the file's SHA-256, or upload the copy itself. Any edited field, and any change to the file, is flagged.</p>
+              <form className="form-grid" onSubmit={(e) => { e.preventDefault(); compare(() => api.compareAction(actionId, Object.fromEntries(Object.entries(claimed).filter(([, v]) => v?.trim())), sha.trim())); }}>
                 {FIELDS.map((f) => (
                   <Field key={f} label={f}><input className="input" value={claimed[f] || ''} onChange={(e) => setClaimed({ ...claimed, [f]: e.target.value })} /></Field>
                 ))}
+                <Field label="File SHA-256" hint="The hash of the file you hold, for example from certutil -hashfile <file> SHA256" className="span-2">
+                  <input className="input mono" value={sha} onChange={(e) => setSha(e.target.value)} placeholder="64 hexadecimal characters" />
+                </Field>
                 <div className="span-2 row">
                   <Button type="submit" variant="primary" busy={busy}>Compare typed values</Button>
-                  <label className="btn btn-secondary">Upload copy<input type="file" accept=".pdf,.txt" hidden onChange={(e) => e.target.files?.[0] && compare(() => api.compareActionFile(actionId, e.target.files[0]))} /></label>
+                  <label className="btn btn-secondary">Upload copy<input type="file" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) compare(() => api.compareActionFile(actionId, f)); }} /></label>
                 </div>
               </form>
               {result && (
                 <Notice tone={result.verdict === 'MATCH' ? 'success' : 'error'}
                   title={result.verdict === 'MATCH' ? 'Matches the authoritative record' : result.verdict === 'MISMATCH' ? 'Does not match the record: possible tampering' : result.error || 'Nothing to compare'}>
                   {(result.results || []).map((r) => <div key={r.field}>{r.matches_record ? 'Matches' : 'Differs'}: {r.field} “{r.shown}”</div>)}
+                  {result.hash && <div>{result.hash.result === 'match' ? 'Matches' : result.hash.result === 'differs' ? 'Differs' : 'Not checked'}: file SHA-256. {result.hash.message}</div>}
+                  {result.verdict === 'MISMATCH' && !(result.results || []).some((r) => !r.matches_record) && result.hash?.result !== 'differs' && <div>The copy does not match the record.</div>}
                 </Notice>
               )}
             </div>

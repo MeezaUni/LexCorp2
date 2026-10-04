@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/audit", tags=["audit"])
 
 
+def _for_viewer(item: AuditEventRead, user: User) -> AuditEventRead:
+    """What each verification checked, against what, and why it failed is shown to Auditors only."""
+    if user.role != "AUDITOR" and isinstance(item.risk_factors, dict) and "verification" in item.risk_factors:
+        item.risk_factors = {k: v for k, v in item.risk_factors.items() if k != "verification"}
+    return item
+
+
 async def _scoped_events_query(db: AsyncSession, user: User):
     """AuditEvent query limited to what this role may read."""
     query = select(AuditEvent)
@@ -74,6 +81,7 @@ CATEGORIES = {
                  "ASSET_STATUS_CHANGED", "ASSET_MAINTENANCE_RECORDED", "ASSET_VERIFIED", "AssetMinted"),
     "DIGITAL": ("DocumentProposed", "DOCUMENT_VIEWED", "DOCUMENT_DOWNLOADED", "REVISION_SUBMITTED", "DOCUMENT_MINTED",
                 "DOCUMENT_REVISION_ANCHORED", "DigitalAssetMinted", "DigitalAssetUpdated", "WATERMARK_TAMPER_DETECTED"),
+    "VERIFY": ("VERIFICATION_LOOKUP", "COPY_VERIFIED", "WATERMARK_TAMPER_DETECTED", "ASSET_VERIFIED", "COPY_IDENTIFIED"),
     "ACCESS": ("ACCESS_GRANTED", "ACCESS_REVOKED", "ACCESS_DENIED_NO_GRANT", "ACCESS_DENIED_REVOKED", "ACCESS_EXPIRED",
                "ACCESS_LIMIT_REACHED", "AccessPermissionGranted", "AccessPermissionRevoked", "AccessAttempted"),
     "AUTH": ("AuthenticationSucceeded", "AuthenticationFailed", "WALLET_PROVISIONED", "WALLET_PROVISIONING_FAILED",
@@ -204,7 +212,7 @@ async def list_events(
             states[ev_id] = st
     out = []
     for r in rows:
-        item = AuditEventRead.model_validate(r)
+        item = _for_viewer(AuditEventRead.model_validate(r), current_user)
         item.alert_status = states.get(r.id)
         out.append(item)
     return out
@@ -230,7 +238,7 @@ async def get_event_by_tx(
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail=f"No audit event for tx {tx_hash}")
-    return event
+    return _for_viewer(AuditEventRead.model_validate(event), current_user)
 
 
 @router.get("/user-permissions/{wallet_address}")

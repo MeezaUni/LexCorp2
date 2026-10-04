@@ -252,9 +252,13 @@ export const health = () => fetch('/api/../health').then((r) => r.json()).catch(
 /* ------------------------------------------------------------------ public verification */
 
 export const verifyAction = (id) => data(http.get(`/verify/action/${encodeURIComponent(id)}`));
-export const compareAction = (id, fields) => data(http.post(`/verify/action/${encodeURIComponent(id)}/compare`, { fields }));
-export async function compareActionFile(id, file) {
-  const form = new FormData();
-  form.append('file', file);
-  return data(http.post(`/verify/action/${encodeURIComponent(id)}/compare-file`, form));
-}
+export const compareAction = (id, fields, sha256) => data(http.post(`/verify/action/${encodeURIComponent(id)}/compare`, { fields, sha256: sha256 || null }));
+const fileForm = (file) => { const form = new FormData(); form.append('file', file); return form; };
+export const compareActionFile = (id, file) => data(http.post(`/verify/action/${encodeURIComponent(id)}/compare-file`, fileForm(file)));
+
+/* Auditor verification: every check, what the record says, and why anything failed */
+export const auditVerifyAction = (id) => data(http.get(`/verify/audit/action/${encodeURIComponent(id)}`));
+export const auditCompareAction = (id, fields, sha256) => data(http.post(`/verify/audit/action/${encodeURIComponent(id)}/compare`, { fields, sha256: sha256 || null }));
+export const auditCompareActionFile = (id, file) => data(http.post(`/verify/audit/action/${encodeURIComponent(id)}/compare-file`, fileForm(file)));
+export const auditVerifyAsset = (serial) => data(http.get(`/verify/audit/asset/${encodeURIComponent(serial)}`));
+export const auditIdentifyFile = (file) => data(http.post('/verify/audit/identify', fileForm(file)));

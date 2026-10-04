@@ -173,6 +173,13 @@ iptables -P FORWARD DROP
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A FORWARD -i tun0 -o wg0 -d "${APP_IP}" -p tcp --dport 443 -j ACCEPT
 iptables -A FORWARD -i tun0 -o wg0 -d "${APP_IP}" -p icmp --icmp-type echo-request -j ACCEPT
+# Public record verification: only the gateway's web proxy, only to the site's verify-only listener
+# (port 8080), sent as this end of the site link so the site needs no route to this network.
+if [ -n "${VERIFY_PROXY:-}" ]; then
+  iptables -A FORWARD -s "${VERIFY_PROXY}" -o wg0 -d "${APP_IP}" -p tcp --dport 8080 -j ACCEPT
+  iptables -t nat -C POSTROUTING -s "${VERIFY_PROXY}" -o wg0 -j SNAT --to-source 10.9.0.1 2>/dev/null \
+    || iptables -t nat -A POSTROUTING -s "${VERIFY_PROXY}" -o wg0 -j SNAT --to-source 10.9.0.1
+fi
 iptables -F INPUT
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT

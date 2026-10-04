@@ -21,7 +21,7 @@ from app.services.contract import contract_service
 from app.services import copy_integrity
 from app.services.watermark import (HistoryEntry, UnsupportedDocumentType, WatermarkContext, render_protected_copy,
                                    render_protected_copy_with_manifest, render_view_copy)
-from app.services import watermark_strip
+from app.services import hidden_mark, watermark_strip
 from app.services.qr import generate_qr_for_url
 from app.services.asset_card import generate_physical_card_svg
 from app.services import physical as phys
@@ -881,8 +881,10 @@ async def get_asset_maintenance_history(
 
 
 @router.get("/serial/{serial}/verify-data")
+@limiter.limit("30/minute")
 async def get_asset_full_verification_data(
     serial: str,
+    request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -912,10 +914,15 @@ async def get_asset_full_verification_data(
         "detail_level": "PUBLIC",
     }
     authorized = bool(current_user and asset_db and await access.can_see_asset(db, current_user, asset_db))
-    if asset_db and asset_db.is_physical:
-        await record_audit(db, "ASSET_VERIFIED", actor_did=current_user.did if current_user else None, asset_serial=serial,
-                           details={"detail_level": "AUTHORIZED" if authorized else "PUBLIC"})
-        await db.commit()
+    # Every verification is recorded, with the registry/ledger cross-checks (shown to Auditors only)
+    from app.services.verification import evaluate_asset
+    checked = await evaluate_asset(db, serial, asset_db, token_id, on_chain)
+    await record_audit(db, "ASSET_VERIFIED", actor_did=current_user.did if current_user else None, asset_serial=serial,
+                       client_ip=get_request_client_ip(request),
+                       details={"detail_level": "AUTHORIZED" if authorized else "PUBLIC", "verdict": checked["verdict"],
+                                "via": "public", "verification": {"checks": checked["checks"],
+                                                                  "contradictions": checked["contradictions"]}})
+    await db.commit()
     if not authorized:
         return public
 
@@ -959,8 +966,10 @@ async def get_asset_full_verification_data(
 
 
 @router.get("/token/{token_id}/verify-data")
+@limiter.limit("30/minute")
 async def get_asset_full_verification_data_by_token(
     token_id: int,
+    request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -974,7 +983,7 @@ async def get_asset_full_verification_data_by_token(
         if not on_chain:
             raise HTTPException(status_code=404, detail="Asset not found")
         serial = on_chain["serial_number"]
-    return await get_asset_full_verification_data(serial, current_user, db)
+    return await get_asset_full_verification_data(serial, request, current_user, db)
 
 
 @router.delete("/{token_id}", status_code=status.HTTP_200_OK)
@@ -1726,7 +1735,7 @@ async def view_digital_document(
     ctx = WatermarkContext(
         kind="VIEW", actor_name=current_user.name or "Unnamed", actor_wallet=current_user.wallet_address,
         client_ip=client_ip, action_id=view_id, verify_url=_verify_url(view_id),
-        history=await _modification_history(db, asset),
+        history=await _modification_history(db, asset), hidden_mark=hidden_mark.new_mark(),
     )
     try:
         content, mime, out_name = render_view_copy(file_bytes, _original_filename(asset), ctx)
@@ -1746,6 +1755,8 @@ async def view_digital_document(
         purpose="View Document",
         client_ip=client_ip,
         watermark_text="\n".join(ctx.all_lines()),
+        copy_sha256=hashlib.sha256(content).hexdigest(),
+        hidden_mark=ctx.hidden_mark,
         details={"grant_id": str(grant.id)} if grant is not None else None,
     ))
     owner = (await db.execute(select(User).where(User.id == asset.owner_id))).scalar_one_or_none()
@@ -2314,7 +2325,7 @@ async def fetch_approved_download(
         kind="DOWNLOAD", actor_name=downloader.name or "Unnamed", actor_wallet=downloader.wallet_address,
         client_ip=client_ip, action_id=action.action_id, verify_url=_verify_url(action.action_id),
         owner_name=owner.name if owner else None, owner_wallet=owner.wallet_address if owner else None,
-        history=await _modification_history(db, asset),
+        history=await _modification_history(db, asset), hidden_mark=hidden_mark.new_mark(),
     )
     try:
         content, mime, out_name, manifest = render_protected_copy_with_manifest(file_bytes, _original_filename(asset), ctx)
@@ -2322,6 +2333,8 @@ async def fetch_approved_download(
         raise HTTPException(status_code=415, detail=f"This document type cannot be served as a protected copy: {e}")
     action.status = "COMPLETED"
     action.watermark_text = "\n".join(ctx.all_lines())
+    action.copy_sha256 = hashlib.sha256(content).hexdigest()
+    action.hidden_mark = ctx.hidden_mark
     action.details = {**(action.details or {}), "downloaded_at": datetime.now(UTC).isoformat(), "downloaded_from_ip": client_ip,
                       "watermark_manifest": manifest, "copy_filename": out_name}
     risk = await ai_assess(db, "MOD_COPY" if (action.details or {}).get("mode") == "MODIFICATION" else "DOWNLOAD", current_user,
@@ -2383,13 +2396,15 @@ async def owner_download(
         kind="DOWNLOAD", actor_name=current_user.name or "Unnamed", actor_wallet=current_user.wallet_address,
         client_ip=client_ip, action_id=action.action_id, verify_url=_verify_url(action.action_id),
         owner_name=current_user.name, owner_wallet=current_user.wallet_address,
-        history=await _modification_history(db, asset),
+        history=await _modification_history(db, asset), hidden_mark=hidden_mark.new_mark(),
     )
     try:
         content, mime, out_name, manifest = render_protected_copy_with_manifest(_read_vault_file(asset), _original_filename(asset), ctx)
     except UnsupportedDocumentType as e:
         raise HTTPException(status_code=415, detail=f"This document type cannot be served as a protected copy: {e}")
     action.watermark_text = "\n".join(ctx.all_lines())
+    action.copy_sha256 = hashlib.sha256(content).hexdigest()
+    action.hidden_mark = ctx.hidden_mark
     action.details = {**action.details, "watermark_manifest": manifest, "copy_filename": out_name}
     db.add(action)
     risk = await ai_assess(db, "MOD_COPY" if mode == "MODIFICATION" else "DOWNLOAD", current_user, asset=asset,

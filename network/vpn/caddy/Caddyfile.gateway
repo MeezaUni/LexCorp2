@@ -18,3 +18,20 @@ https://{$VPN_HOST}:9443 {
 		respond `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>VPN sign-in unavailable</title><style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f5f6f8;color:#1c2330}main{max-width:32rem;padding:24px}h1{font-size:1.4rem;margin:0 0 8px}p{margin:0;color:#5b6474}@media (prefers-color-scheme:dark){body{background:#12161d;color:#e6e9ee}p{color:#9aa3b2}}</style></head><body><main><h1>VPN sign-in is unavailable right now</h1><p>The sign-in service isn't answering. Try connecting again in a minute; if it keeps happening, contact the administrator.</p></main></body></html>` {err.status_code}
 	}
 }
+
+# Public record verification: anyone, on any network, can open the QR on a document copy, asset
+# label or NFT card. Forwarded over the site link to the site's verify-only listener, which serves
+# the verify pages and nothing else.
+https://{$VERIFY_HOST:lexcorp-verify.duckdns.org} {
+	tls {
+		dns duckdns {env.DUCKDNS_TOKEN}
+		resolvers 1.1.1.1
+	}
+	reverse_proxy 172.30.0.10:8080
+
+	handle_errors 502 503 504 {
+		header Content-Type "text/html; charset=utf-8"
+		header Cache-Control "no-store"
+		respond `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Verification unavailable</title><style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f5f6f8;color:#1c2330}main{max-width:32rem;padding:24px}h1{font-size:1.4rem;margin:0 0 8px}p{margin:0;color:#5b6474}@media (prefers-color-scheme:dark){body{background:#12161d;color:#e6e9ee}p{color:#9aa3b2}}</style></head><body><main><h1>Verification is unavailable right now</h1><p>The LexCorp site isn't connected. Try again in a few minutes.</p></main></body></html>` {err.status_code}
+	}
+}

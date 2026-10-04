@@ -4,10 +4,11 @@ import { humanEvent } from './Dashboard';
 import { useAuth } from '../context/AuthContext';
 import { roleName } from '../components/Shell';
 import * as api from '../services/api';
+import { Contradictions, IssuedCopy, VerificationChecks } from '../components/Checks';
 
 const CATEGORIES = [['', 'All categories'], ['AUTH', 'Sign-in and sessions'], ['IDENTITY', 'Identity administration'], ['VIEW', 'Document views'],
   ['DOWNLOAD', 'Downloads'], ['MODIFICATION', 'Modifications'], ['DIGITAL', 'Digital assets'], ['PHYSICAL', 'Physical assets'],
-  ['ACCESS', 'Access delegation'], ['ALERT', 'Alert decisions'], ['CHAIN', 'Ledger and roles']];
+  ['ACCESS', 'Access delegation'], ['ALERT', 'Alert decisions'], ['CHAIN', 'Ledger and roles'], ['VERIFY', 'Verifications']];
 const PAGE = 50;
 // Where an event's risk level came from: the local AI model, an integrity/security rule, or the
 // event type's baseline (events neither scores; see backend/app/models/audit_levels.py).
@@ -89,14 +90,40 @@ export default function Audit() {
             [open.block_number > 0 ? 'Transaction hash' : 'Record reference', <Id key="h">{open.tx_hash}</Id>],
             ['Ledger block', open.block_number > 0 ? open.block_number : 'Not a ledger event'],
           ]} />
-          {open.risk_factors && Object.keys(open.risk_factors).length > 0 && (
+          {open.risk_factors?.verification && <VerificationDetail factors={open.risk_factors} />}
+          {open.risk_factors && Object.keys(open.risk_factors).some((k) => k !== 'verification') && (
             <>
               <h3>Recorded details</h3>
-              <pre className="secret-box" style={{ userSelect: 'text', whiteSpace: 'pre-wrap', maxHeight: 280, overflow: 'auto' }}>{JSON.stringify(open.risk_factors, null, 2)}</pre>
+              <pre className="secret-box" style={{ userSelect: 'text', whiteSpace: 'pre-wrap', maxHeight: 280, overflow: 'auto' }}>{JSON.stringify(Object.fromEntries(Object.entries(open.risk_factors).filter(([k]) => k !== 'verification')), null, 2)}</pre>
             </>
           )}
         </Dialog>
       )}
+    </>
+  );
+}
+
+/** Auditors only (the server leaves this out for every other role): what a verification
+ * checked, against what, and what contradicted the record. */
+function VerificationDetail({ factors }) {
+  const v = factors.verification;
+  const failed = factors.verdict === 'MISMATCH' || v.checks?.some((c) => c.result === 'differs' || c.result === 'not_on_record');
+  const id = v.identification;
+  return (
+    <>
+      <h3>What was checked</h3>
+      <div className="stack">
+        <div className={`verdict ${failed ? 'bad' : 'ok'}`} role="status">
+          {failed ? 'Marked as failing: the record was contradicted' : id ? (id.exact_copy_of || id.hidden_mark_of?.length ? 'File identified' : 'File not known to LexCorp') : 'Every check matched the record'}
+          {factors.via && <span className="small" style={{ fontWeight: 400, marginLeft: 'auto' }}>{factors.via === 'auditor' ? 'Auditor verification' : 'Public verify page'}{factors.method ? `, ${factors.method === 'file' ? 'uploaded file' : factors.method === 'typed' ? 'typed values' : factors.method}` : ''}</span>}
+        </div>
+        {failed && <Notice tone="error" title="What contradicted the record"><Contradictions checks={v.checks} /></Notice>}
+        {v.file && <Facts items={[['File', v.file.name || 'uploaded file'], ['Size', v.file.size != null ? `${v.file.size.toLocaleString()} bytes` : undefined], ['File SHA-256', v.file.sha256 && <Id key="h">{v.file.sha256}</Id>]]} />}
+        <VerificationChecks checks={v.checks} foundLabel={v.checks?.some((c) => c.group === 'ledger') ? 'Found' : 'In the copy'} />
+        {v.issued_copy && <><h3>The copy this reference was issued as</h3><IssuedCopy copy={v.issued_copy} /></>}
+        {id?.exact_copy_of && <><h3>Identical to the issued copy</h3><IssuedCopy copy={id.exact_copy_of} /></>}
+        {id?.hidden_mark_of?.map((c) => <div key={c.action_id}><h3>Invisible mark belongs to</h3><IssuedCopy copy={c} /></div>)}
+      </div>
     </>
   );
 }

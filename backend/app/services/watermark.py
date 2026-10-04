@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from typing import List, Optional
 
+from app.services import hidden_mark as hm
 from app.services.qr import generate_qr_for_url
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ class WatermarkContext:
     owner_name: Optional[str] = None     # DOWNLOAD only: never shown on views
     owner_wallet: Optional[str] = None
     history: List[HistoryEntry] = field(default_factory=list)
+    hidden_mark: Optional[str] = None    # invisible copy mark (app.services.hidden_mark)
 
     def primary_lines(self) -> List[str]:
         verb, label = ("Viewed by", "View ID") if self.kind == "VIEW" else ("Downloaded by", "Download ID")
@@ -211,6 +213,13 @@ def _pdf_overlay(width: float, height: float, ctx: WatermarkContext, qr_png: byt
     c.drawString(8, 8, ctx.compact()[: int((width - qr - 24) / 3.2)])
     c.restoreState()
     c.drawImage(ImageReader(io.BytesIO(qr_png)), width - qr - 6, 6, qr, qr)
+    if ctx.hidden_mark:
+        # invisible text (render mode 3): not drawn, part of this removable layer
+        t = c.beginText(2, 2)
+        t.setTextRenderMode(3)
+        t.setFont("Helvetica", 1)
+        t.textOut(ctx.hidden_mark)
+        c.drawText(t)
     c.showPage()
     c.save()
     return buf.getvalue()
@@ -364,8 +373,8 @@ def image_overlay_layer(w: int, h: int, text: str, size: int):
     return layer.crop((left, top, left + w, top + h))
 
 
-def image_band(w: int, lines: List[str], qr_png: bytes):
-    """The footer band (block text + QR) added below the image (deterministic)."""
+def image_band(w: int, lines: List[str], qr_png: bytes, mark: Optional[str] = None):
+    """The footer band (block text + QR, and the invisible copy mark) added below the image (deterministic)."""
     from PIL import Image, ImageDraw
     fsize = max(11, min(w, 1600) // 70)
     ffont = _font(fsize)
@@ -380,6 +389,7 @@ def image_band(w: int, lines: List[str], qr_png: bytes):
         dd.text((12, y), line, font=ffont, fill=(127, 29, 29, 255))
         y += fsize + 4
     band.paste(qr, (max(0, w - qr_side - 8), 8), qr)
+    hm.draw_band_mark(band, mark)
     return band
 
 
@@ -394,7 +404,7 @@ def watermark_image(data: bytes, ctx: WatermarkContext, manifest: Optional[dict]
     text = f"CONFIDENTIAL  {ctx.actor_name}  {short_wallet(ctx.actor_wallet)}  {ctx.action_id}"
     marked = Image.alpha_composite(base, image_overlay_layer(w, h, text, size))
     lines = ctx.all_lines()
-    band = image_band(w, lines, ctx.qr_png())
+    band = image_band(w, lines, ctx.qr_png(), ctx.hidden_mark)
     canvas = Image.new("RGBA", (w, h + band.height), (255, 255, 255, 255))
     canvas.paste(marked, (0, 0))
     canvas.paste(band, (0, h))
@@ -406,7 +416,7 @@ def watermark_image(data: bytes, ctx: WatermarkContext, manifest: Optional[dict]
         canvas.save(out, format="PNG")
     if manifest is not None:
         manifest.update({"format": "image", "width": w, "height": h, "band_height": band.height, "jpeg": jpeg,
-                         "overlay_text": text, "overlay_size": size, "band_lines": lines})
+                         "overlay_text": text, "overlay_size": size, "band_lines": lines, "mark": ctx.hidden_mark})
     return out.getvalue(), ("image/jpeg" if jpeg else "image/png")
 
 
@@ -747,11 +757,11 @@ def render_protected_copy_with_manifest(data: bytes, filename: str, ctx: Waterma
         out, mime = watermark_image(data, ctx, m)
         return out, mime, f"{tag}.{'jpg' if mime == 'image/jpeg' else 'png'}", m
     if kind == "docx":
-        return watermark_docx(data, ctx, m), _MIME["docx"], f"{tag}.docx", m
+        return hm.embed_ooxml(watermark_docx(data, ctx, m), ctx.hidden_mark, m), _MIME["docx"], f"{tag}.docx", m
     if kind == "pptx":
-        return watermark_pptx(data, ctx, m), _MIME["pptx"], f"{tag}.pptx", m
+        return hm.embed_ooxml(watermark_pptx(data, ctx, m), ctx.hidden_mark, m), _MIME["pptx"], f"{tag}.pptx", m
     if kind == "xlsx":
-        return watermark_xlsx(data, ctx, m), _MIME["xlsx"], f"{tag}.xlsx", m
+        return hm.embed_ooxml(watermark_xlsx(data, ctx, m), ctx.hidden_mark, m), _MIME["xlsx"], f"{tag}.xlsx", m
     raise UnsupportedDocumentType(kind)
 
 

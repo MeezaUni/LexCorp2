@@ -19,6 +19,7 @@ import re
 import zipfile
 from typing import Optional
 
+from app.services import hidden_mark
 from app.services.watermark import (
     CONTROL_KEY, LAYER_KEY, _AFTER_HF, _NS_MAIN, _NS_PKG_REL, _NS_REL, _NS_CT, _W_NS,
     detect_type, image_band, image_overlay_layer, sha256_hex, xlsx_sheet_parts,
@@ -44,8 +45,11 @@ def strip_watermark(data: bytes, filename: str, manifest: dict) -> tuple[bytes, 
         return data, [finding("tamper", "whole file", f"The copy was issued as {fmt or 'unknown'} but a {kind or 'unrecognised'} "
                                                       "file came back, so its watermark could not be verified or removed.")]
     try:
-        return {"pdf": _strip_pdf, "docx": _strip_docx, "pptx": _strip_pptx, "xlsx": _strip_xlsx,
-                "image": _strip_image}[fmt](data, manifest)
+        clean, findings = {"pdf": _strip_pdf, "docx": _strip_docx, "pptx": _strip_pptx, "xlsx": _strip_xlsx,
+                           "image": _strip_image}[fmt](data, manifest)
+        if fmt in ("docx", "pptx", "xlsx"):
+            clean = hidden_mark.remove_ooxml(clean, manifest)
+        return clean, findings
     except Exception as e:  # never let a malformed file pass silently
         return data, [finding("tamper", "whole file", f"The watermark could not be processed ({type(e).__name__}); "
                                                       "the file may have been altered.")]
@@ -400,7 +404,7 @@ def _strip_image(data: bytes, m: dict):
                                                        f"{w}x{h + bh}), so its watermark could not be verified or removed.")]
     findings = []
     band = img.crop((0, h, w, h + bh)).convert("RGB")
-    expected = image_band(w, m["band_lines"], generate_qr_for_url(m["qr_url"])).convert("RGB")
+    expected = image_band(w, m["band_lines"], generate_qr_for_url(m["qr_url"]), m.get("mark")).convert("RGB")
     diff = ImageChops.difference(band, expected).convert("L").point(lambda v: 255 if v > (60 if m.get("jpeg") else 24) else 0)
     box = diff.getbbox()
     if box:

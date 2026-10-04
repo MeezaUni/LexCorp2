@@ -178,5 +178,7 @@ const EVENT_NAMES = {
   TOTP_ENROLLED: 'Authenticator enrolled', PASSKEY_REGISTERED: 'Passkey registered', LOGOUT: 'Signed out',
   RoleGranted: 'Ledger role granted', RoleRevoked: 'Ledger role revoked', DigitalAssetMinted: 'Ledger: document minted',
   AssetMinted: 'Ledger: physical asset minted', DigitalAssetUpdated: 'Ledger: revision anchored',
+  VERIFICATION_LOOKUP: 'Record looked up on the verify page', COPY_VERIFIED: 'Copy verified: matches its record',
+  WATERMARK_TAMPER_DETECTED: 'Copy does not match its record', ASSET_VERIFIED: 'Asset verified', COPY_IDENTIFIED: 'File identified by an Auditor',
 };
 export const humanEvent = (t) => EVENT_NAMES[t] || (t || '').replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
