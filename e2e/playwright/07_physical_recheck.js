@@ -16,6 +16,7 @@ async (page) => {
   const custodian = (await fx('/identity/user1')).address;
   const SERIAL = 'PHY-AV-0004', MAC = '02:44:55:66:77:88';
 
+  // Direct registration: a Manager records the asset with Factor 3 and their wallet; no approval queue.
   await m.goto('http://localhost:5173/physical');
   await m.getByRole('button', { name: 'Register asset' }).click();
   const d = m.getByRole('dialog', { name: 'Register a physical asset' });
@@ -23,37 +24,35 @@ async (page) => {
   await d.getByLabel('Serial number').fill(SERIAL);
   await d.getByLabel('Department').selectOption({ label: 'Avionics' });
   await d.getByLabel('MAC address').fill('not-a-mac');
-  log.push('invalid MAC client validation shown: ' + (await d.getByText('Use six pairs of hex digits').count() > 0) + '; submit disabled: ' + await d.getByRole('button', { name: 'Submit for approval' }).isDisabled());
+  log.push('invalid MAC client validation shown: ' + (await d.getByText('Use six pairs of hex digits').count() > 0) + '; register disabled: ' + await d.getByRole('button', { name: 'Register and record' }).isDisabled());
   await d.getByLabel('MAC address').fill(MAC);
   await d.getByLabel('Location').fill('Hangar 1, secure store');
   await d.getByLabel('Custodian wallet').fill(custodian);
-  await d.getByRole('button', { name: 'Submit for approval' }).click();
-  const su = m.getByRole('dialog', { name: 'Confirm asset registration' });
-  await su.getByLabel('Factor 2 authenticator code').fill(await code('manager', 'factor2'));
-  await su.getByRole('button', { name: 'Submit', exact: true }).click();
-  await m.getByText('Submitted for approval').waitFor({ timeout: 30000 });
-  // unknown custodian refused
+  await d.getByRole('button', { name: 'Register and record' }).click();
+  const su = m.getByRole('dialog', { name: 'Register and record this asset' });
+  const factorCode = su.getByLabel(/Code from your (Factor 3|login) authenticator/);
+  await factorCode.fill(await code('manager', 'factor3'));
+  await su.getByRole('button', { name: 'Register and record', exact: true }).click();
+  await m.getByText(`${SERIAL} registered and recorded on the ledger`).waitFor({ timeout: 90000 });
+  log.push(`${SERIAL}: registered and recorded on the ledger by the Manager's wallet`);
+  // unknown custodian refused (before anything reaches the ledger)
   await m.getByRole('button', { name: 'Register asset' }).click();
   await d.getByLabel('Asset name').fill('Unknown custodian test');
   await d.getByLabel('Serial number').fill('PHY-AV-0099');
   await d.getByLabel('Department').selectOption({ label: 'Avionics' });
   await d.getByLabel('MAC address').fill('02:99:99:99:99:01');
   await d.getByLabel('Custodian wallet').fill('0x' + '12'.repeat(20));
-  await d.getByRole('button', { name: 'Submit for approval' }).click();
-  await su.getByLabel('Factor 2 authenticator code').fill(await code('manager', 'factor2'));
-  await su.getByRole('button', { name: 'Submit', exact: true }).click();
+  await d.getByRole('button', { name: 'Register and record' }).click();
+  await factorCode.fill(await code('manager', 'factor3'));
+  await su.getByRole('button', { name: 'Register and record', exact: true }).click();
   await su.locator('.notice.error').waitFor({ timeout: 30000 });
   log.push('unregistered custodian: ' + (await su.locator('.notice.error').innerText()));
   await su.getByRole('button', { name: 'Cancel' }).click();
   await d.getByRole('button', { name: 'Cancel' }).click();
 
   await a.goto('http://localhost:5173/requests');
-  await a.locator('tr', { hasText: SERIAL }).getByRole('button', { name: 'Review' }).click();
-  const dd = a.getByRole('dialog', { name: /Decide on/ });
-  await dd.getByLabel('Factor 3 authenticator code').fill(await code('admin', 'factor3'));
-  await dd.getByRole('button', { name: 'Approve and sign', exact: true }).click();
-  await a.getByText(/approved and recorded on the ledger/).waitFor({ timeout: 90000 });
-  log.push('admin approved and minted ' + SERIAL);
+  await a.waitForTimeout(1500);
+  log.push(`${SERIAL} in the Admin's approval queue: ${await a.locator('tr', { hasText: SERIAL }).count()}`);
 
   await m.goto(`http://localhost:5173/physical/${SERIAL}`);
   await m.getByRole('heading', { name: 'NFT card' }).waitFor({ timeout: 20000 });

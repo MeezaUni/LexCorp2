@@ -15,6 +15,8 @@ async (page) => {
   const m = P.manager, a = P.admin, u = P.user1;
   const custodian = (await fx('/identity/user1')).address;
 
+  // A Manager registers and records a physical asset directly: Factor 3, then their own wallet
+  // mints it on the ledger. There is no approval step, so it never enters a /requests queue.
   async function register(serial, name, macOrUnique, isMac) {
     await m.goto('http://localhost:5173/physical');
     await m.getByRole('button', { name: 'Register asset' }).click();
@@ -26,15 +28,15 @@ async (page) => {
     else { await d.getByRole('button', { name: 'No, use a unique address' }).click(); await d.getByLabel('Unique device address').fill(macOrUnique); }
     await d.getByLabel('Location').fill('Hangar 3, bay 2');
     await d.getByLabel('Custodian wallet').fill(custodian);
-    await d.getByRole('button', { name: 'Submit for approval' }).click();
-    const su = m.getByRole('dialog', { name: 'Confirm asset registration' });
-    await su.getByLabel('Factor 2 authenticator code').fill(await code('manager', 'factor2'));
-    await su.getByRole('button', { name: 'Submit', exact: true }).click();
+    await d.getByRole('button', { name: 'Register and record' }).click();
+    const su = m.getByRole('dialog', { name: 'Register and record this asset' });
+    await su.getByLabel(/Code from your (Factor 3|login) authenticator/).fill(await code('manager', 'factor3'));
+    await su.getByRole('button', { name: 'Register and record', exact: true }).click();
     const outcome = await Promise.race([
-      m.getByText('Submitted for approval').waitFor({ timeout: 30000 }).then(() => 'submitted'),
-      su.locator('.notice.error').waitFor({ timeout: 30000 }).then(async () => 'refused: ' + (await su.locator('.notice.error').innerText())),
+      m.getByText(`${serial} registered and recorded on the ledger`).waitFor({ timeout: 90000 }).then(() => 'recorded'),
+      su.locator('.notice.error').waitFor({ timeout: 90000 }).then(async () => 'refused: ' + (await su.locator('.notice.error').innerText())),
     ]);
-    if (outcome !== 'submitted') { await shot(m, `06_duplicate_refused`); await su.getByRole('button', { name: 'Cancel' }).click(); await m.getByRole('dialog', { name: 'Register a physical asset' }).getByRole('button', { name: 'Cancel' }).click(); }
+    if (outcome !== 'recorded') { await shot(m, `06_duplicate_refused`); await su.getByRole('button', { name: 'Cancel' }).click(); await d.getByRole('button', { name: 'Cancel' }).click(); }
     return outcome;
   }
   log.push('PHY-AV-0001 (MAC): ' + await register('PHY-AV-0001', 'Inertial navigation unit', '02:1A:2B:3C:4D:5E', true));
@@ -44,18 +46,18 @@ async (page) => {
   await m.goto('http://localhost:5173/physical');
   await m.waitForTimeout(1000);
   await shot(m, '06_physical_register');
-
-  // manager cannot decide on own submission; admin approves and signs the mint
-  await m.goto('http://localhost:5173/requests');
-  log.push('manager own-row action: ' + (await m.locator('tr', { hasText: 'PHY-AV-0001' }).locator('td.actions').innerText()));
-  await a.goto('http://localhost:5173/requests');
   for (const s of ['PHY-AV-0001', 'PHY-AV-0003']) {
-    await a.locator('tr', { hasText: s }).getByRole('button', { name: 'Review' }).click();
-    const d = a.getByRole('dialog', { name: /Decide on/ });
-    await d.getByLabel('Factor 3 authenticator code').fill(await code('admin', 'factor3'));
-    await d.getByRole('button', { name: 'Approve and sign', exact: true }).click();
-    await a.getByText(/approved and recorded on the ledger/).waitFor({ timeout: 90000 });
-    log.push(`${s}: ` + (await a.locator('.notice').first().innerText()).replace(/\s+/g, ' ').slice(0, 120));
+    const row = await m.locator('tr', { hasText: s }).innerText();
+    log.push(`${s} register row: ledger ${/Recorded/.test(row) ? 'recorded' : 'NOT recorded'}`);
+  }
+
+  // registered directly: nothing waits in the Admin's or the Manager's approval queue
+  await a.goto('http://localhost:5173/requests');
+  await a.waitForTimeout(1500);
+  await m.goto('http://localhost:5173/requests');
+  await m.waitForTimeout(1500);
+  for (const s of ['PHY-AV-0001', 'PHY-AV-0003']) {
+    log.push(`${s} in approval queues (admin, manager): ${await a.locator('tr', { hasText: s }).count()}, ${await m.locator('tr', { hasText: s }).count()}`);
   }
 
   // detail: card, QR, MAC visible to manager

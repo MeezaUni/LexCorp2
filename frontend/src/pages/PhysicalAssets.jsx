@@ -39,7 +39,7 @@ export default function PhysicalAssets() {
         ]} />
       <div className="content">
         {error && <Notice tone="error" title="The registry could not be loaded">{error}</Notice>}
-        {done && <Notice tone="success" title="Submitted for approval">{done}</Notice>}
+        {done && <Notice tone="success" title={/recorded on the ledger/.test(done) ? 'Recorded on the ledger' : 'Submitted'}>{done}</Notice>}
         <Panel flush>
           <div className="filters">
             <Field label="Search"><input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Serial, name, department or token" /></Field>
