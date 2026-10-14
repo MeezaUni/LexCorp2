@@ -270,7 +270,7 @@ login**.
 | AI | scikit-learn **Isolation Forest** + **HistGradientBoosting classifier**, one shared feature builder for training and live scoring, thresholds fixed to a target false-alert share, plain-word explanations |
 | Remote access | **OpenVPN Community Edition** + **openvpn-auth-oauth2** (OIDC sign-in per connection), **WireGuard** site link, **Caddy** with Let's Encrypt via **DuckDNS**, gateway on an **Oracle Cloud Always Free** VM, stand-in portal on **Vercel** |
 | Verifiable credentials | W3C VC-style JWT credentials (KYC credential issuance via the API) |
-| Testing | pytest (278 backend tests), Hardhat/Mocha (23 contract tests), live-blockchain tests, **Playwright** end-to-end browser verification (12 flows, plus an automated AI-alert test) |
+| Testing | pytest (312 backend tests), Hardhat/Mocha (23 contract tests), live-blockchain tests, **Playwright** end-to-end browser verification (12 flows, plus an automated AI-alert test) |
 | Infrastructure | Docker Compose (PostgreSQL, Besu nodes, VPN gateway and site); blockchain RPC and database bound to localhost only |
 
 ### 4.2 The smart contract (AssetNFT v3)
@@ -367,7 +367,7 @@ contract**, while keeping sensitive data private inside the organisation.
 
 | Evidence | Result |
 |---|---|
-| Automated backend tests (API, security, workflows, database, AI, sessions) | 278 passed |
+| Automated backend tests (API, security, workflows, database, AI, sessions) | 312 passed |
 | Smart-contract authorisation tests | 23 passing |
 | Live blockchain tests (real transactions on Besu) | 3 passed; an unauthorised mint is rejected on-chain |
 | End-to-end browser verification (Playwright, 4 roles, desktop/tablet/phone) | 12 of 12 flows passed; 12 defects found and fixed |

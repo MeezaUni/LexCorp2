@@ -26,6 +26,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE = {"identity": {}, "totp": {}, "issued": {}}
+ALLOWED_HOSTS = ("127.0.0.1:8765", "localhost:8765")
+ALLOWED_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
 
 
 def env_value(name):
@@ -54,11 +56,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def allowed(self):
+        """Only this machine, by name (defeats DNS rebinding), and only the local app as a browser origin."""
+        if self.headers.get("Host") not in ALLOWED_HOSTS:
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or origin in ALLOWED_ORIGINS
+
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
 
     def do_GET(self):
+        if not self.allowed():
+            return self.reply(403, {})
         parts = [p for p in self.path.split("/") if p]
         if parts == ["bootstrap"]:
             wallet = json.loads((ROOT / "secrets" / "bootstrap_admin_wallet.json").read_text(encoding="utf-8"))
@@ -83,6 +94,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(404, {})
 
     def do_POST(self):
+        if not self.allowed():
+            return self.reply(403, {})
         parts = [p for p in self.path.split("/") if p]
         if len(parts) == 2 and parts[0] == "identity":
             STORE["identity"][parts[1]] = self.body()

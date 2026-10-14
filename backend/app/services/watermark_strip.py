@@ -19,11 +19,14 @@ import re
 import zipfile
 from typing import Optional
 
+from app.core.safe_files import configure_pillow, open_safe_zip, safe_xml_fromstring
 from app.services import hidden_mark
 from app.services.watermark import (
     CONTROL_KEY, LAYER_KEY, _AFTER_HF, _NS_MAIN, _NS_PKG_REL, _NS_REL, _NS_CT, _W_NS,
     detect_type, image_band, image_overlay_layer, sha256_hex, xlsx_sheet_parts,
 )
+
+configure_pillow()
 
 
 def finding(severity: str, where: str, detail: str, page: Optional[int] = None) -> dict:
@@ -274,7 +277,8 @@ def _resolve(base_part: str, target: str) -> str:
     parts = base_part.rsplit("/", 1)[0].split("/")
     for seg in target.split("/"):
         if seg == "..":
-            parts.pop()
+            if parts:   # a malformed target can't climb above the package root
+                parts.pop()
         elif seg != ".":
             parts.append(seg)
     return "/".join(parts)
@@ -284,13 +288,13 @@ def _strip_xlsx(data: bytes, m: dict):
     from lxml import etree
 
     findings = []
-    zin = zipfile.ZipFile(io.BytesIO(data))
+    zin = open_safe_zip(io.BytesIO(data))
     names = zin.namelist()
     parts = {n: zin.read(n) for n in names}
     sheets = xlsx_sheet_parts(parts)
     shared = []
     if "xl/sharedStrings.xml" in parts:
-        sst = etree.fromstring(parts["xl/sharedStrings.xml"])
+        sst = safe_xml_fromstring(parts["xl/sharedStrings.xml"])
         shared = ["".join(t.text or "" for t in si.iter(f"{{{_NS_MAIN}}}t")) for si in sst.iter(f"{{{_NS_MAIN}}}si")]
 
     removed = set()
@@ -299,7 +303,7 @@ def _strip_xlsx(data: bytes, m: dict):
     if ctl_part is None or ctl_part not in parts:
         findings.append(finding("tamper", "LexCorp Control sheet", "The control sheet was removed."))
     else:
-        ws = etree.fromstring(parts[ctl_part])
+        ws = safe_xml_fromstring(parts[ctl_part])
         lines = []
         for c in ws.iter(f"{{{_NS_MAIN}}}c"):
             if c.get("t") == "s":
@@ -313,14 +317,14 @@ def _strip_xlsx(data: bytes, m: dict):
         rels = _rels_path(ctl_part)
         if rels in parts:
             to_remove.append(rels)
-            for r in etree.fromstring(parts[rels]):
+            for r in safe_xml_fromstring(parts[rels]):
                 if r.get("Type", "").endswith("/drawing"):
                     drawing = _resolve(ctl_part, r.get("Target"))
                     to_remove.append(drawing)
                     drels = _rels_path(drawing)
                     if drels in parts:
                         to_remove.append(drels)
-                        for dr in etree.fromstring(parts[drels]):
+                        for dr in safe_xml_fromstring(parts[drels]):
                             if dr.get("Type", "").endswith("/image"):
                                 media = _resolve(drawing, dr.get("Target"))
                                 if media in parts:
@@ -330,7 +334,7 @@ def _strip_xlsx(data: bytes, m: dict):
             findings.append(finding("tamper", "LexCorp Control sheet", "The control sheet was changed."))
         removed.update(p for p in to_remove if p in parts)
 
-        wb = etree.fromstring(parts["xl/workbook.xml"])
+        wb = safe_xml_fromstring(parts["xl/workbook.xml"])
         sheets_el = wb.find(f"{{{_NS_MAIN}}}sheets")
         position, rid = None, None
         for i, sh in enumerate(list(sheets_el)):
@@ -346,12 +350,12 @@ def _strip_xlsx(data: bytes, m: dict):
                 elif local is not None and int(local) > position:
                     d.set("localSheetId", str(int(local) - 1))
         parts["xl/workbook.xml"] = etree.tostring(wb, xml_declaration=True, encoding="UTF-8", standalone=True)
-        wrels = etree.fromstring(parts["xl/_rels/workbook.xml.rels"])
+        wrels = safe_xml_fromstring(parts["xl/_rels/workbook.xml.rels"])
         for r in list(wrels):
             if r.get("Id") == rid:
                 wrels.remove(r)
         parts["xl/_rels/workbook.xml.rels"] = etree.tostring(wrels, xml_declaration=True, encoding="UTF-8", standalone=True)
-        ct = etree.fromstring(parts["[Content_Types].xml"])
+        ct = safe_xml_fromstring(parts["[Content_Types].xml"])
         for o in list(ct.findall(f"{{{_NS_CT}}}Override")):
             if o.get("PartName", "").lstrip("/") in removed:
                 ct.remove(o)
@@ -362,7 +366,7 @@ def _strip_xlsx(data: bytes, m: dict):
     for name, part in sheets.items():
         if part not in parts or name not in original:
             continue
-        root = etree.fromstring(parts[part])
+        root = safe_xml_fromstring(parts[part])
         hf = root.find(f"{{{_NS_MAIN}}}headerFooter")
         head = hf.find(f"{{{_NS_MAIN}}}oddHeader") if hf is not None else None
         foot = hf.find(f"{{{_NS_MAIN}}}oddFooter") if hf is not None else None
@@ -371,7 +375,7 @@ def _strip_xlsx(data: bytes, m: dict):
         if hf is not None:
             root.remove(hf)
         if original[name]:
-            restored = etree.fromstring(original[name])
+            restored = safe_xml_fromstring(original[name])
             anchor = next((c for c in root if isinstance(c.tag, str) and etree.QName(c).localname in _AFTER_HF), None)
             if anchor is not None:
                 anchor.addprevious(restored)

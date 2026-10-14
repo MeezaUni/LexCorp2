@@ -76,6 +76,8 @@ async def rpc_relay(request: Request, current_user: User = Depends(get_onboarded
         d = chain_service.load_deployment()
         try:
             raw = params[0]
+            if not isinstance(raw, str) or len(raw) > MAX_RAW_TX_HEX:
+                raise ValueError("transaction too large")
             sender = Account.recover_transaction(raw)
             to_addr = _tx_to(raw)
         except Exception:
@@ -96,17 +98,27 @@ async def rpc_relay(request: Request, current_user: User = Depends(get_onboarded
     return JSONResponse(r.json())
 
 
+MAX_RAW_TX_HEX = 65536  # hex characters; LexCorp's contract calls are a few KB
+
+
 def _tx_to(raw_hex: str):
     """Destination address of a signed legacy or typed (EIP-2718) transaction."""
     import rlp
     from eth_utils import to_checksum_address
 
+    if not isinstance(raw_hex, str) or len(raw_hex) > MAX_RAW_TX_HEX:
+        raise ValueError("transaction too large")
     raw = bytes.fromhex(raw_hex[2:] if raw_hex.startswith("0x") else raw_hex)
-    if raw and raw[0] < 0x7F:  # typed transaction: type byte || rlp(payload)
-        fields = rlp.decode(raw[1:])
-        to = {1: fields[4], 2: fields[5]}.get(raw[0])
+    if not raw:
+        raise ValueError("empty transaction")
+    if raw[0] < 0x7F:  # typed transaction: type byte || rlp(payload)
         if raw[0] not in (1, 2):
             raise ValueError("unsupported transaction type")
+        fields = rlp.decode(raw[1:])
+        index = {1: 4, 2: 5}[raw[0]]
     else:
-        to = rlp.decode(raw)[3]
+        fields, index = rlp.decode(raw), 3
+    if not isinstance(fields, list) or len(fields) <= index:
+        raise ValueError("malformed transaction")
+    to = fields[index]
     return to_checksum_address(to) if to else None

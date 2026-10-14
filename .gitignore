@@ -71,3 +71,9 @@ backend/ml/data/
 
 # Promotional video project and renders (kept locally, not in git)
 brag-output/
+
+# Local Claude Code settings and session data
+.claude/
+
+# Repomix dumps of the whole repository
+repomix-output*

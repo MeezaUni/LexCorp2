@@ -20,6 +20,9 @@ import re
 import secrets
 import zipfile
 from typing import Optional
+from app.core.safe_files import UnsafeFile, configure_pillow, limited_pages, open_safe_zip, safe_xml_fromstring
+
+configure_pillow()
 
 _HEX16 = re.compile(r"^[0-9a-f]{16}$")
 
@@ -113,23 +116,23 @@ def embed_ooxml(data: bytes, mark: Optional[str], manifest: Optional[dict] = Non
     if not mark:
         return data
     from lxml import etree
-    zin = zipfile.ZipFile(io.BytesIO(data))
+    zin = open_safe_zip(io.BytesIO(data))
     parts = {n: zin.read(n) for n in zin.namelist()}
     created = _CUSTOM not in parts
     if created:
         root = etree.Element(f"{{{_NS_CP}}}Properties", nsmap={None: _NS_CP, "vt": _NS_VT})
-        ct = etree.fromstring(parts["[Content_Types].xml"])
+        ct = safe_xml_fromstring(parts["[Content_Types].xml"])
         ns = ct.nsmap[None]
         etree.SubElement(ct, f"{{{ns}}}Override", PartName="/" + _CUSTOM, ContentType=_CT_CUSTOM)
         parts["[Content_Types].xml"] = etree.tostring(ct, xml_declaration=True, encoding="UTF-8", standalone=True)
-        rels = etree.fromstring(parts["_rels/.rels"])
+        rels = safe_xml_fromstring(parts["_rels/.rels"])
         rns = rels.nsmap[None]
         used = {r.get("Id") for r in rels}
         rid = next(f"rIdLx{n}" for n in range(1, 1000) if f"rIdLx{n}" not in used)
         etree.SubElement(rels, f"{{{rns}}}Relationship", Id=rid, Type=_REL_CUSTOM, Target=_CUSTOM)
         parts["_rels/.rels"] = etree.tostring(rels, xml_declaration=True, encoding="UTF-8", standalone=True)
     else:
-        root = etree.fromstring(parts[_CUSTOM])
+        root = safe_xml_fromstring(parts[_CUSTOM])
     pids = [int(p.get("pid")) for p in root if (p.get("pid") or "").isdigit()]
     prop = etree.SubElement(root, f"{{{_NS_CP}}}property", fmtid=_FMTID, pid=str(max(pids + [1]) + 1), name=_PROP)
     etree.SubElement(prop, f"{{{_NS_VT}}}lpwstr").text = mark
@@ -143,23 +146,23 @@ def remove_ooxml(data: bytes, manifest: dict) -> bytes:
     """Take the hidden property out again (and the part, if the copy added it)."""
     from lxml import etree
     try:
-        zin = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile:
+        zin = open_safe_zip(io.BytesIO(data))
+    except (zipfile.BadZipFile, UnsafeFile):
         return data
     names = zin.namelist()
     if _CUSTOM not in names:
         return data
     parts = {n: zin.read(n) for n in names}
-    root = etree.fromstring(parts[_CUSTOM])
+    root = safe_xml_fromstring(parts[_CUSTOM])
     for p in [p for p in root if p.get("name") == _PROP]:
         root.remove(p)
     if manifest.get("mark_part_created") and len(root) == 0:
         names = [n for n in names if n != _CUSTOM]
-        ct = etree.fromstring(parts["[Content_Types].xml"])
+        ct = safe_xml_fromstring(parts["[Content_Types].xml"])
         for o in [o for o in ct if o.get("PartName") == "/" + _CUSTOM]:
             ct.remove(o)
         parts["[Content_Types].xml"] = etree.tostring(ct, xml_declaration=True, encoding="UTF-8", standalone=True)
-        rels = etree.fromstring(parts["_rels/.rels"])
+        rels = safe_xml_fromstring(parts["_rels/.rels"])
         for r in [r for r in rels if r.get("Type") == _REL_CUSTOM and r.get("Target", "").lstrip("/") == _CUSTOM]:
             rels.remove(r)
         parts["_rels/.rels"] = etree.tostring(rels, xml_declaration=True, encoding="UTF-8", standalone=True)
@@ -178,10 +181,10 @@ def _zip(names: list[str], parts: dict) -> bytes:
 
 def _read_ooxml_marks(data: bytes) -> list[str]:
     from lxml import etree
-    with zipfile.ZipFile(io.BytesIO(data)) as z:
+    with open_safe_zip(io.BytesIO(data)) as z:
         if _CUSTOM not in z.namelist():
             return []
-        root = etree.fromstring(z.read(_CUSTOM))
+        root = safe_xml_fromstring(z.read(_CUSTOM))
     return [(p.findtext(f"{{{_NS_VT}}}lpwstr") or "").strip() for p in root if p.get("name") == _PROP]
 
 
@@ -205,7 +208,7 @@ def _pdf_forms(resources, depth: int = 0):
 def _read_pdf_marks(data: bytes) -> list[str]:
     from pypdf import PdfReader
     found = []
-    for page in PdfReader(io.BytesIO(data)).pages:
+    for page in limited_pages(PdfReader(io.BytesIO(data)).pages):
         contents = page.get_contents()
         streams = [contents.get_data()] if contents is not None else []
         streams += [form.get_data() for form in _pdf_forms(page.get("/Resources"))]

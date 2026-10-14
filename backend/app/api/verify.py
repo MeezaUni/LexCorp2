@@ -34,6 +34,7 @@ from app.core.config import settings
 from app.core.limiter import limiter
 from app.models.domain import Asset, DocumentAction, User
 from app.services import access, verification as vf
+from app.core.safe_files import limited_pages
 from app.services.watermark import detect_type, office_text, short_wallet
 
 router = APIRouter(prefix="/verify", tags=["verify"])
@@ -59,9 +60,12 @@ async def _find(db: AsyncSession, action_id: str):
 
 
 async def _load(db: AsyncSession, action_id: str, request: Request, user: Optional[User], via: str):
+    known = bool(_ID_RE.match(action_id or ""))
+    if not known and user is None:
+        # anonymous junk is refused without writing to the append-only audit trail
+        raise HTTPException(status_code=404, detail="Not a LexCorp action reference.")
     action, asset = await _find(db, action_id)
     if action is None:
-        known = bool(_ID_RE.match(action_id or ""))
         await record_audit(db, "VERIFICATION_LOOKUP", actor_did=user.did if user else None,
                            client_ip=get_request_client_ip(request),
                            details={"action_id": action_id[:64], "found": False, "via": via, "verification": {"checks": [
@@ -174,14 +178,37 @@ async def verify_action(
     return detail
 
 
+async def _alert_already_raised(db: AsyncSession, action_id: str) -> bool:
+    """An open alert, or a tamper event in the last hour, already covers this reference."""
+    from datetime import UTC, datetime, timedelta
+    from app.models.domain import AuditEvent, SecurityAlert
+    from app.services.alerts import OPEN_STATES
+    open_alert = (await db.execute(select(SecurityAlert.id).where(
+        SecurityAlert.related_action_id == action_id, SecurityAlert.state.in_(OPEN_STATES)).limit(1))).first()
+    if open_alert:
+        return True
+    recent = (await db.execute(select(AuditEvent.id).where(
+        AuditEvent.event_type == "WATERMARK_TAMPER_DETECTED",
+        AuditEvent.created_at >= datetime.now(UTC) - timedelta(hours=1),
+        AuditEvent.risk_factors["action_id"].as_string() == action_id).limit(1))).first()
+    return bool(recent)
+
+
 async def _record_result(db: AsyncSession, request: Request, user: Optional[User], asset: Asset, result: dict, via: str) -> None:
     mismatch = result["verdict"] == "MISMATCH"
+    # Anyone can hit the public page, so repeated anonymous mismatches for the same copy are
+    # recorded but don't open alert after alert in the Auditor's queue.
+    raise_alert = True
+    if mismatch and via == "public" and user is None:
+        raise_alert = not await _alert_already_raised(db, result["action_id"])
     await record_audit(db, "WATERMARK_TAMPER_DETECTED" if mismatch else "COPY_VERIFIED",
                        actor_did=user.did if user else None, asset_serial=asset.serial_number,
                        client_ip=get_request_client_ip(request),
                        risk_label="HIGH" if mismatch else None, risk_score=0.8 if mismatch else None,
+                       alert=raise_alert,
                        details={**vf.audit_summary(result), "via": via,
-                                **({"reason": f"A copy checked against {result['action_id']} does not match its record"} if mismatch else {})})
+                                **({"reason": f"A copy checked against {result['action_id']} does not match its record"} if mismatch else {}),
+                                **({} if raise_alert else {"alert": "already raised for this reference"})})
     await db.commit()
 
 
@@ -190,7 +217,7 @@ def _extract_watermark_fields(data: bytes, filename: str) -> dict[str, str]:
     text = ""
     if data[:5] == b"%PDF-":
         from pypdf import PdfReader
-        text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages)
+        text = "\n".join(p.extract_text() or "" for p in limited_pages(PdfReader(io.BytesIO(data)).pages))
     elif data[:4] == b"PK\x03\x04":
         try:
             kind = detect_type(data, filename)

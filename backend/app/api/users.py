@@ -4,12 +4,13 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from web3 import Web3
 
 from app.core.config import settings
+from app.core.text import clean_line
 from app.core.database import get_db
 from app.api.dependencies import get_onboarded_user, get_manager_user, get_admin_user, get_request_client_ip, get_step_up_token, record_audit
 from app.services import mfa
@@ -52,6 +53,12 @@ class CreateUserRequest(BaseModel):
     department: Optional[str] = None
     role: str = "USER"  # ADMIN, MANAGER, AUDITOR, USER
     totp_code: Optional[str] = None  # Factor 3 (or X-Step-Up-Token header)
+
+    @field_validator("name", "contact_number", "department")
+    @classmethod
+    def _one_clean_line(cls, v: Optional[str]) -> Optional[str]:
+        # names and departments are printed into watermarks, which are read back line by line
+        return clean_line(v) or None
 
 
 class UpdateRoleRequest(BaseModel):
@@ -320,8 +327,10 @@ async def delete_user(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_manager_user),
     step_up_token: Optional[str] = Depends(get_step_up_token),
+    totp_code: Optional[str] = None,
 ):
-    """Revoke a user's identity by setting is_active=False (soft delete).
+    """Revoke a user's identity by setting is_active=False (soft delete). Factor 3: a step-up
+    token (X-Step-Up-Token) or a TOTP 3 code (?totp_code=), as on the other admin actions.
 
     This preserves historical audit trails while preventing the user from accessing the system.
     All blockchain events and audit logs remain intact for compliance purposes.
@@ -349,7 +358,7 @@ async def delete_user(
         )
 
     from app.services.identity import revoke_identity
-    await mfa.require_factor(db, current_user, "identity.revoke", step_up_token=step_up_token)
+    await mfa.require_factor(db, current_user, "identity.revoke", totp_code=totp_code, step_up_token=step_up_token)
     await revoke_identity(db, current_user, user, "Revoked by administrator", require_no_owned_assets=True,
                           client_ip=get_request_client_ip(http_request))
     await db.commit()

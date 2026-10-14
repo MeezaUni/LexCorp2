@@ -1,6 +1,7 @@
 """Asset management API endpoints (V2 Enterprise Consortium)."""
 
 import hashlib
+from urllib.parse import quote
 import os
 import re
 import uuid
@@ -31,7 +32,7 @@ from app.schemas.domain import DocumentProposalRequest, DocumentApprovalRequest,
 from app.services import access, grants as grant_svc, mfa
 from app.services.alerts import ai_assess, ai_score
 from app.services.action_ids import next_action_id, next_token_id
-from sqlalchemy import select, desc, false, func, or_
+from sqlalchemy import select, desc, false, func, or_, update
 
 # Simple in-memory TTL cache (60 seconds) for registry queries
 _CACHE = {}
@@ -159,6 +160,26 @@ async def _lineage_state(db: AsyncSession, asset: Asset) -> tuple[uuid.UUID, int
         select(func.count()).select_from(Asset).where(in_lineage, Asset.version_number > 1, Asset.approval_status == "PENDING_APPROVAL")
     )).scalar_one() > 0
     return root_id, latest, pending
+
+
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._ ()+-]")
+
+
+def _vault_name(name: Optional[str], default: str = "document") -> str:
+    """A file name safe on any OS: no directories, drive letters, ADS colons or control
+    characters, never '.' or '..', at most 150 characters."""
+    base = os.path.basename((name or "").replace("\\", "/")).strip()
+    base = _UNSAFE_NAME.sub("_", base)[:150].strip(" .")
+    return base or default
+
+
+def _vault_path(*parts: str) -> str:
+    """Absolute path inside the vault; refuses anything that would resolve outside it."""
+    root = os.path.abspath(OFFCHAIN_STORAGE_DIR)
+    path = os.path.abspath(os.path.join(root, *parts))
+    if not path.startswith(root + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid file name.")
+    return path
 
 
 def _read_vault_file(asset: Asset) -> bytes:
@@ -519,7 +540,7 @@ async def upload_document(
         # Only formats that can be served as a watermarked derivative are accepted; the
         # type is detected from the bytes (magic numbers / OOXML structure), not the name.
         from app.services.watermark import UnsupportedDocumentType, detect_type
-        safe_original_name = os.path.basename((file.filename or "unnamed_document").replace("\\", "/"))[:200] or "unnamed_document"
+        safe_original_name = _vault_name(file.filename, "unnamed_document")
         try:
             kind = detect_type(content, safe_original_name)
         except UnsupportedDocumentType as e:
@@ -527,7 +548,7 @@ async def upload_document(
 
         sha256_hash = hashlib.sha256(content).hexdigest()
         filename = f"{sha256_hash}_{safe_original_name}"
-        filepath = os.path.join(OFFCHAIN_STORAGE_DIR, filename)
+        filepath = _vault_path(filename)
         with open(filepath, "wb") as f:
             f.write(content)
 
@@ -642,42 +663,25 @@ def get_lan_ip() -> str:
 
 
 @router.get("/serial/{serial}/qr")
-async def get_asset_qr(serial: str, host: Optional[str] = "localhost:5173", current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
-    """Generate and return a QR code PNG pointing to the frontend verify URL for this asset.
-    Automatically resolves localhost/127.0.0.1 to the LAN IP so mobile devices can scan and view it.
-    """
+async def get_asset_qr(serial: str, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
+    """QR code PNG pointing to this asset's verify page on the configured public address.
+    The address is never taken from the request, so nobody can mint an official-looking
+    LexCorp QR that leads somewhere else."""
     await _visible_asset_or_404(db, current_user, serial=serial)
     token_id = contract_service.get_token_by_serial(serial)
     if token_id is None:
         raise HTTPException(status_code=404, detail="Asset with this serial not found on chain")
-
-    # Replace localhost or 127.0.0.1 with actual LAN IP if present
-    target_host = host
-    if target_host:
-        lan_ip = get_lan_ip()
-        if "localhost" in target_host:
-            target_host = target_host.replace("localhost", lan_ip)
-        elif "127.0.0.1" in target_host:
-            target_host = target_host.replace("127.0.0.1", lan_ip)
-
-    verify_url = f"http://{target_host}/verify/{serial}"
-    png_bytes = generate_qr_for_url(verify_url)
-
-    return Response(content=png_bytes, media_type="image/png")
+    return Response(content=generate_qr_for_url(_public_url(f"/verify/{quote(serial, safe='')}")), media_type="image/png")
 
 
 @router.get("/token/{token_id}/qr")
-async def get_asset_qr_by_token(token_id: int, host: Optional[str] = "localhost:5173", current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
-    """Generate a QR code for the stable token-ID verification URL."""
+async def get_asset_qr_by_token(token_id: int, current_user: User = Depends(get_onboarded_user), db: AsyncSession = Depends(get_db)):
+    """QR code for the stable token-ID verification URL (configured public address only)."""
     await _visible_asset_or_404(db, current_user, token_id=token_id)
     asset = contract_service.get_digital_asset(token_id) or contract_service.get_asset(token_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found on chain")
-    target_host = host or "localhost:5173"
-    lan_ip = get_lan_ip()
-    target_host = target_host.replace("localhost", lan_ip).replace("127.0.0.1", lan_ip)
-    png_bytes = generate_qr_for_url(f"http://{target_host}/verify/token/{token_id}")
-    return Response(content=png_bytes, media_type="image/png")
+    return Response(content=generate_qr_for_url(_public_url(f"/verify/token/{token_id}")), media_type="image/png")
 
 
 class AssignCustodianRequest(BaseModel):
@@ -1050,6 +1054,7 @@ async def propose_document_creation(
 
     direct = current_user.role in ("ADMIN", "MANAGER") and (current_user.role == "ADMIN" or dept in access.manager_departments(current_user))
     # A Manager/Admin registers directly (no approval step): they prove the minting factor.
+    # (tests/flows.py approved_document pins this for Managers and Administrators.)
     await mfa.require_factor(db, current_user, "asset.mint" if direct else "document.submit",
                              totp_code=request.totp_code, step_up_token=step_up_token)
     await _resolve_recipient(db, request.recipient_address, request.recipient_did)
@@ -1314,7 +1319,8 @@ async def propose_physical_asset_creation(
 
 
     # Only Managers/Admins register physical assets, so there is no approval step: they prove the
-    # minting factor and record the asset in the same step.
+    # minting factor and record the asset in the same step (tests/test_physical_assets.py pins this).
+    direct = True
     await mfa.require_factor(db, current_user, "asset.mint", totp_code=request.totp_code, step_up_token=step_up_token)
     await _resolve_recipient(db, request.recipient_address, request.recipient_did)
 
@@ -1412,7 +1418,11 @@ async def propose_physical_asset_creation(
     )
     db.add(audit_event)
 
-    return await _approve_directly(db, action, draft_asset, current_user, client_ip)
+    if direct:
+        return await _approve_directly(db, action, draft_asset, current_user, client_ip)
+    await db.commit()
+    await db.refresh(action)
+    return action
 
 
 @router.get("/document/pending", response_model=list[DocumentActionRead])
@@ -1600,9 +1610,12 @@ async def approve_document(
 
     if not access.can_manage_asset(current_user, asset):
         raise HTTPException(status_code=403, detail="Managers can only approve actions for their own department.")
-    # Managers and Administrators decide on their own submissions too (only they can reach this
-    # endpoint); a normal user's request always needs a Manager or Administrator. Downloads of a
+    # Separation of duties: nobody below Administrator decides on their own request. A Manager's
+    # submission goes to another Manager for the department or an Administrator. Downloads of a
     # document someone else owns still need that owner's consent first (checked below).
+    if current_user.role == "MANAGER" and action.actor_id == current_user.id:
+        raise HTTPException(status_code=403, detail="You can't decide on your own request: another Manager for the "
+                                                    "department or an Administrator approves it.")
 
     await mfa.require_factor(db, current_user, "asset.approve", totp_code=request.totp_code, step_up_token=step_up_token)
 
@@ -1959,10 +1972,10 @@ async def _create_revision(
     lineage_hashes = set((await db.execute(select(Asset.file_hash).where(or_(Asset.root_asset_id == root_id, Asset.id == root_id)))).scalars().all())
     if file_hash in lineage_hashes or hashlib.sha256(content).hexdigest() in lineage_hashes:
         raise HTTPException(status_code=400, detail="The uploaded file is identical to an existing version (same SHA-256).")
-    safe_name = os.path.basename(filename or "revision")
+    safe_name = _vault_name(filename, "revision")
     stored = f"{file_hash}_{safe_name}"
     offchain_uri = f"secure-vault://documents/{stored}"
-    path = os.path.join(OFFCHAIN_STORAGE_DIR, stored)
+    path = _vault_path(stored)
     if not os.path.exists(path):  # content-addressed: never overwrite existing bytes
         with open(path, "xb") as f:
             f.write(clean)
@@ -2008,9 +2021,8 @@ async def _create_revision(
         # Silent to the uploader: the revision is accepted as pending, but an alert goes to the
         # Auditor with the evidence, and the revision can't be approved while it is open.
         evidence_name = f"{hashlib.sha256(content).hexdigest()}_{safe_name}"
-        evidence_dir = os.path.join(OFFCHAIN_STORAGE_DIR, "evidence")
-        os.makedirs(evidence_dir, exist_ok=True)
-        evidence_path = os.path.join(evidence_dir, evidence_name)
+        os.makedirs(_vault_path("evidence"), exist_ok=True)
+        evidence_path = _vault_path("evidence", evidence_name)
         if not os.path.exists(evidence_path):
             with open(evidence_path, "xb") as f:
                 f.write(content)
@@ -2088,7 +2100,7 @@ async def upload_revision(
     client_ip = get_request_client_ip(request)
     action = await _create_revision(db, current_user, parent_asset, modification_download_id, content,
                                     os.path.basename(file.filename or "revision"), name, purpose, client_ip)
-    if _privileged_for(current_user, parent_asset) and not getattr(action, "flagged", False):
+    if current_user.role == "ADMIN" and _privileged_for(current_user, parent_asset) and not getattr(action, "flagged", False):
         # A Manager/Admin's revision needs no approver: it is approved now and their wallet anchors it.
         revised = (await db.execute(select(Asset).where(Asset.id == action.asset_id))).scalar_one()
         return await _approve_directly(db, action, revised, current_user, client_ip)
@@ -2308,6 +2320,13 @@ async def fetch_approved_download(
     if action.token_expires_at and action.token_expires_at <= datetime.now(UTC):
         raise HTTPException(status_code=410, detail="This download approval has expired. Request a new download.")
     await mfa.require_factor(db, current_user, "document.download", totp_code=body.totp_code, step_up_token=step_up_token)
+    # Claim the approval atomically: of two simultaneous requests only one row update succeeds
+    # (the other waits on the row lock, then finds it no longer APPROVED). Any failure below
+    # rolls the claim back, so the approval stays usable.
+    claim = await db.execute(update(DocumentAction).where(DocumentAction.id == action.id, DocumentAction.status == "APPROVED")
+                             .values(status="COMPLETED").execution_options(synchronize_session=False))
+    if claim.rowcount != 1:
+        raise HTTPException(status_code=409, detail="This download has already been used.")
 
     asset = (await db.execute(select(Asset).where(Asset.id == action.asset_id))).scalar_one_or_none()
     if not asset:

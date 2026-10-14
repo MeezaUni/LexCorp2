@@ -119,8 +119,9 @@ async def view_evidence(alert_id: str, request: Request, current_user: User = De
     alert = await _load(db, alert_id, current_user)
     ev = (await _source_factors(db, alert)).get("evidence") or {}
     rel = ev.get("file") or ""
-    path = os.path.normpath(os.path.join(OFFCHAIN_STORAGE_DIR, rel))
-    if not rel or not path.startswith(os.path.normpath(os.path.join(OFFCHAIN_STORAGE_DIR, "evidence"))) or not os.path.exists(path):
+    evidence_root = os.path.abspath(os.path.join(OFFCHAIN_STORAGE_DIR, "evidence"))
+    path = os.path.abspath(os.path.join(OFFCHAIN_STORAGE_DIR, rel))
+    if not rel or not path.startswith(evidence_root + os.sep) or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="No evidence file is stored for this alert.")
     asset = (await db.execute(select(Asset).where(Asset.serial_number == alert.asset_serial))).scalar_one_or_none()
     client_ip = get_request_client_ip(request)

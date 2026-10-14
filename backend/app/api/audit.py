@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/audit", tags=["audit"])
 
 
+def _contains(term: str) -> str:
+    """ILIKE pattern matching `term` literally: its own %, _ and backslashes are escaped."""
+    return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
 def _for_viewer(item: AuditEventRead, user: User) -> AuditEventRead:
     """What each verification checked, against what, and why it failed is shown to Auditors only."""
     if user.role != "AUDITOR" and isinstance(item.risk_factors, dict) and "verification" in item.risk_factors:
@@ -148,7 +153,7 @@ async def list_events(
             # the role at the time of the event; older events (before migration 0014) use the current one
             query = query.filter(func.upper(func.coalesce(AuditEvent.actor_role, User.role)) == role.strip().upper())
         if identity:
-            query = query.filter(User.name.ilike(f"%{identity.strip()}%"))
+            query = query.filter(User.name.ilike(_contains(identity.strip()), escape="\\"))
         if department:
             query = query.filter(User.department == department.strip())
 
@@ -162,7 +167,8 @@ async def list_events(
         query = query.filter(AuditEvent.event_type.in_(CATEGORIES[cat]))
     if actor_did:
         clean_actor = actor_did.strip()
-        query = query.filter(or_(AuditEvent.actor_did.ilike(f"%{clean_actor}%"), AuditEvent.target_did.ilike(f"%{clean_actor}%")))
+        query = query.filter(or_(AuditEvent.actor_did.ilike(_contains(clean_actor), escape="\\"),
+                                 AuditEvent.target_did.ilike(_contains(clean_actor), escape="\\")))
     if asset_serial:
         query = query.filter(AuditEvent.asset_serial == asset_serial.strip())
     if risk_label:
@@ -263,8 +269,8 @@ async def get_user_permissions(
         .filter(
             AuditEvent.event_type.in_(["AccessPermissionGranted", "AccessPermissionRevoked"]),
             or_(
-                AuditEvent.actor_did.ilike(f"%{clean_address}%"),
-                AuditEvent.target_did.ilike(f"%{clean_address}%"),
+                AuditEvent.actor_did.ilike(_contains(clean_address), escape="\\"),
+                AuditEvent.target_did.ilike(_contains(clean_address), escape="\\"),
             )
         )
         .order_by(desc(AuditEvent.created_at))

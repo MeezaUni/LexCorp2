@@ -6,9 +6,9 @@ Diversity is one of our huge strengths, but it can also lead to communication is
 
 This isn’t an exhaustive list of things that you can’t do. Rather, take it in the spirit in which it’s intended - a guide to make it easier to enrich all of us and the technical communities in which we participate.
 
-This code of conduct applies to all spaces managed by the Lex Corp project or . This includes IRC, the mailing lists, the issue tracker, DSF events, and any other forums created by the project team which the community uses for communication. In addition, violations of this code outside these spaces may affect a person's ability to participate within them.
+This code of conduct applies to all spaces managed by the LexCorp project or its team. This includes the GitHub repository (issues, pull requests and discussions), the team's chat groups, project events and demonstrations, and any other forums created by the project team which the community uses for communication. In addition, violations of this code outside these spaces may affect a person's ability to participate within them.
 
-If you believe someone is violating the code of conduct, we ask that you report it by emailing [](mailto:azeemulla555@gmail.com).
+If you believe someone is violating the code of conduct, we ask that you report it by emailing [azeemulla555@gmail.com](mailto:azeemulla555@gmail.com). Reports are kept confidential.
 
 - **Be friendly and patient.**
 - **Be welcoming.** We strive to be a community that welcomes and supports people of all backgrounds and identities. This includes, but is not limited to members of any race, ethnicity, culture, national origin, colour, immigration status, social and economic class, educational level, sex, sexual orientation, gender identity and expression, age, size, family status, political belief, religion, and mental and physical ability.
@@ -28,4 +28,4 @@ If you believe someone is violating the code of conduct, we ask that you report 
 
 ## Questions?
 
-If you have questions, please see . If that doesn't answer your questions, feel free to [contact us](mailto:azeemulla555@gmail.com).
+If you have questions, please see the project [README](README.md). If that doesn't answer your questions, feel free to [contact us](mailto:azeemulla555@gmail.com).

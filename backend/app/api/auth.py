@@ -966,7 +966,8 @@ async def approve_user_reset(
 # ============================================================ Verifiable credentials
 
 @router.post("/vc/issue")
-async def issue_kyc_vc(subject_did: str, db: AsyncSession = Depends(get_db), admin: User = Depends(get_admin_user)):
+async def issue_kyc_vc(subject_did: str, request: Request, db: AsyncSession = Depends(get_db),
+                       admin: User = Depends(get_admin_user)):
     """Issue a W3C Verifiable Credential (admin only)."""
     subject = (await db.execute(select(User).where(User.did == subject_did))).scalar_one_or_none()
     if not subject:
@@ -974,5 +975,7 @@ async def issue_kyc_vc(subject_did: str, db: AsyncSession = Depends(get_db), adm
     vc_jwt, vc_model = vc.create_kyc_vc(admin.did, subject_did)
     vc_model.user_id = subject.id
     db.add(vc_model)
+    await record_audit(db, "VC_ISSUED", actor_did=admin.did, target_did=subject_did,
+                       client_ip=get_request_client_ip(request), details={"type": "KYCCredential"})
     await db.commit()
     return {"vc_jwt": vc_jwt, "subject_did": subject_did, "type": "KYCCredential"}

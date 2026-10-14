@@ -54,6 +54,10 @@ from typing import List, Optional
 
 from app.services import hidden_mark as hm
 from app.services.qr import generate_qr_for_url
+from app.core.text import clean_line
+from app.core.safe_files import UnsafeFile, configure_pillow, open_safe_zip, safe_xml_fromstring
+
+configure_pillow()
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +101,10 @@ class HistoryEntry:
     modifier_name: Optional[str] = None
     version: Optional[int] = None
 
+    def __post_init__(self):
+        self.modification_id = clean_line(self.modification_id)
+        self.modifier_name = clean_line(self.modifier_name)
+
 
 @dataclass
 class WatermarkContext:
@@ -111,6 +119,14 @@ class WatermarkContext:
     owner_wallet: Optional[str] = None
     history: List[HistoryEntry] = field(default_factory=list)
     hidden_mark: Optional[str] = None    # invisible copy mark (app.services.hidden_mark)
+
+    def __post_init__(self):
+        # Every value printed into the watermark is one clean line: the recorded watermark is
+        # parsed line by line ("Label: value"), so a line break in a name must not add lines.
+        self.actor_name = clean_line(self.actor_name) or "Unnamed"
+        self.owner_name = clean_line(self.owner_name)
+        self.action_id = clean_line(self.action_id)
+        self.client_ip = clean_line(self.client_ip, 64)
 
     def primary_lines(self) -> List[str]:
         verb, label = ("Viewed by", "View ID") if self.kind == "VIEW" else ("Downloaded by", "Download ID")
@@ -161,10 +177,12 @@ def detect_type(data: bytes, filename: str) -> str:
         return "image"
     if data[:4] == b"PK\x03\x04":
         try:
-            with zipfile.ZipFile(io.BytesIO(data)) as z:
+            with open_safe_zip(io.BytesIO(data)) as z:
                 names = set(z.namelist())
         except zipfile.BadZipFile:
             raise UnsupportedDocumentType("Corrupt ZIP container")
+        except UnsafeFile as e:
+            raise UnsupportedDocumentType(f"Refused: {e}")
         if "word/document.xml" in names:
             return "docx"
         if "ppt/presentation.xml" in names:
@@ -595,7 +613,7 @@ def _hf_escape(text: str) -> str:
 
 def _xlsx_set_header_footer(xml: bytes, header: str, footer: str) -> bytes:
     from lxml import etree
-    root = etree.fromstring(xml)
+    root = safe_xml_fromstring(xml)
     for old in root.findall(f"{{{_NS_MAIN}}}headerFooter"):
         root.remove(old)
     hf = etree.Element(f"{{{_NS_MAIN}}}headerFooter")
@@ -612,8 +630,8 @@ def _xlsx_set_header_footer(xml: bytes, header: str, footer: str) -> bytes:
 def xlsx_sheet_parts(parts: dict) -> dict:
     """{sheet name: part path} for worksheets and chartsheets, via workbook.xml and its rels."""
     from lxml import etree
-    wb = etree.fromstring(parts["xl/workbook.xml"])
-    rels = etree.fromstring(parts["xl/_rels/workbook.xml.rels"])
+    wb = safe_xml_fromstring(parts["xl/workbook.xml"])
+    rels = safe_xml_fromstring(parts["xl/_rels/workbook.xml.rels"])
     targets = {r.get("Id"): r.get("Target") for r in rels}
     out = {}
     for sh in wb.iter(f"{{{_NS_MAIN}}}sheet"):
@@ -633,7 +651,7 @@ def watermark_xlsx(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] 
     Cells are never overlaid, so the workbook stays usable."""
     from lxml import etree
 
-    zin = zipfile.ZipFile(io.BytesIO(data))
+    zin = open_safe_zip(io.BytesIO(data))
     names = zin.namelist()
     parts = {n: zin.read(n) for n in names}
 
@@ -643,12 +661,12 @@ def watermark_xlsx(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] 
     original_hf = {}
     for sheet_name, part in xlsx_sheet_parts(parts).items():
         if part in parts:
-            existing_hf = etree.fromstring(parts[part]).find(f"{{{_NS_MAIN}}}headerFooter")
+            existing_hf = safe_xml_fromstring(parts[part]).find(f"{{{_NS_MAIN}}}headerFooter")
             original_hf[sheet_name] = etree.tostring(existing_hf).decode() if existing_hf is not None else None
             parts[part] = _xlsx_set_header_footer(parts[part], header, footer)
 
     # ---- workbook: register the control sheet
-    wb = etree.fromstring(parts["xl/workbook.xml"])
+    wb = safe_xml_fromstring(parts["xl/workbook.xml"])
     sheets = wb.find(f"{{{_NS_MAIN}}}sheets")
     existing = {sh.get("name") for sh in sheets}
     title = "LexCorp Control"
@@ -656,7 +674,7 @@ def watermark_xlsx(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] 
         title += "_"
     sheet_id = max([int(sh.get("sheetId")) for sh in sheets] + [0]) + 1
     rels_path = "xl/_rels/workbook.xml.rels"
-    rels = etree.fromstring(parts[rels_path])
+    rels = safe_xml_fromstring(parts[rels_path])
     rid = "rIdLexCorpControl"
     while any(r.get("Id") == rid for r in rels):
         rid += "x"
@@ -711,7 +729,7 @@ def watermark_xlsx(data: bytes, ctx: WatermarkContext, manifest: Optional[dict] 
         f'<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{emu}" cy="{emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
         '</xdr:pic><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>').encode()
 
-    ct = etree.fromstring(parts["[Content_Types].xml"])
+    ct = safe_xml_fromstring(parts["[Content_Types].xml"])
     if not any(d.get("Extension", "").lower() == "png" for d in ct.findall(f"{{{_NS_CT}}}Default")):
         etree.SubElement(ct, f"{{{_NS_CT}}}Default", {"Extension": "png", "ContentType": "image/png"})
     etree.SubElement(ct, f"{{{_NS_CT}}}Override", {"PartName": "/" + ws_part,

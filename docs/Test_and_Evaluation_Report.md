@@ -6,14 +6,14 @@ that reproduces it, and the recorded result.
 
 | Figure on the slide | What it means | Result | Details |
 |---|---|---|---|
-| **278 + 23** automated tests | 278 backend tests + 23 smart-contract tests | 278 passed, 23 passing | [1](#1-backend-tests-278), [2](#2-smart-contract-tests-23) |
+| **312 + 23** automated tests | 312 backend tests + 23 smart-contract tests | 312 passed, 23 passing | [1](#1-backend-tests-312), [2](#2-smart-contract-tests-23) |
 | **3 / 3** live-chain tests | Real transactions on the running Hyperledger Besu network | 3 passed | [3](#3-live-blockchain-tests-3--3) |
 | **13 / 13** browser flows | Automated Playwright runs against the full running system | 13 passed | [4](#4-end-to-end-browser-flows-13--13) |
 | **0.992** AI detection (AUC) | Ranking quality of the local risk model on held-back simulated activity | 0.992 | [5](#5-ai-risk-model-evaluation-auc-0992) |
 
 ---
 
-## 1. Backend tests (278)
+## 1. Backend tests (312)
 
 - **Covers:** the FastAPI API, sign-in and sessions, purpose-bound factors (TOTP and passkeys),
   role-based access by role and department, document and device workflows, watermarking and the
@@ -25,8 +25,8 @@ that reproduces it, and the recorded result.
   ```bash
   cd backend && python -m pytest -q
   ```
-- **Result:** 278 passed. The 3 live-blockchain tests (section 3) are skipped in this default run
-  because they need the running Besu network, so the run reports `278 passed, 3 skipped`.
+- **Result:** 312 passed. The 3 live-blockchain tests (section 3) are skipped in this default run
+  because they need the running Besu network, so the run reports `312 passed, 3 skipped`.
 
 ## 2. Smart-contract tests (23)
 

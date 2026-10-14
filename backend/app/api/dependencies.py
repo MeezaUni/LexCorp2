@@ -26,54 +26,7 @@ __all__ = [
 _ACTIVITY_WRITE_INTERVAL = timedelta(seconds=30)
 
 
-def _trusted_networks():
-    nets = []
-    for cidr in settings.TRUSTED_PROXIES:
-        try:
-            nets.append(ipaddress.ip_network(cidr, strict=False))
-        except ValueError:
-            logger.error("Ignoring invalid TRUSTED_PROXIES entry: %s", cidr)
-    return nets
-
-
-def _normalize_ip(ip: str) -> str:
-    ip = (ip or "").strip()
-    if ip in ("localhost", "testclient", "::1"):
-        return "127.0.0.1"
-    if ip.startswith("::ffff:"):
-        ip = ip[len("::ffff:"):]
-    try:
-        return str(ipaddress.ip_address(ip))
-    except ValueError:
-        return ip
-
-
-def _is_trusted(ip: str, nets) -> bool:
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    return any(addr in n for n in nets)
-
-
-def get_request_client_ip(request: Request) -> str:
-    """Effective client IP from the trusted server-side request context.
-
-    X-Forwarded-For is honoured only when the direct peer is a configured trusted
-    proxy; the chain is then walked right-to-left, skipping trusted hops, and the
-    first untrusted address is the client. A client talking to the API directly
-    cannot choose its own IP by sending the header."""
-    peer = _normalize_ip(request.client.host if request.client else "127.0.0.1")
-    nets = _trusted_networks()
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded and _is_trusted(peer, nets):
-        hops = [_normalize_ip(h) for h in forwarded.split(",") if h.strip()]
-        for hop in reversed(hops):
-            if not _is_trusted(hop, nets):
-                return hop
-        if hops:
-            return hops[0]
-    return peer
+from app.core.client_ip import _is_trusted, _normalize_ip, _trusted_networks, get_request_client_ip  # noqa: E402,F401
 
 
 def get_step_up_token(x_step_up_token: Optional[str] = Header(None)) -> Optional[str]:
@@ -91,8 +44,10 @@ async def record_audit(
     risk_label: Optional[str] = None,
     risk_score: Optional[float] = None,
     details: Optional[dict] = None,
+    alert: bool = True,
 ) -> AuditEvent:
-    """Add an off-chain audit event (block_number 0). Caller commits."""
+    """Add an off-chain audit event (block_number 0). Caller commits. A HIGH/CRITICAL event
+    raises a security alert unless `alert` is False (the event is still recorded)."""
     tx_hash = "0x" + hashlib.sha256(
         f"{event_type}:{actor_did}:{target_did}:{asset_serial}:{time.time_ns()}".encode()
     ).hexdigest()
@@ -109,7 +64,7 @@ async def record_audit(
         risk_factors=details,
     )
     db.add(event)
-    if (risk_label or "").upper() in ("HIGH", "CRITICAL"):
+    if alert and (risk_label or "").upper() in ("HIGH", "CRITICAL"):
         from app.services.alerts import raise_alert
         await raise_alert(db, event, source="AI" if (details or {}).get("ai") else "RULE")
     return event

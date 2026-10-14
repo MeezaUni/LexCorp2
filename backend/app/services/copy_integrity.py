@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app.services.watermark import CONTROL_TITLE
+from app.core.safe_files import limited_pages, open_safe_zip, safe_xml_fromstring
 
 ID_RE = re.compile(r"(?:VW|DL|MOD|CRT|ACR)-\d{8}-\d{4}")
 LABELS = ("Viewed by", "Downloaded by", "Wallet", "IP", "Date", "View ID", "Download ID", "Owner")
@@ -37,7 +38,7 @@ class CopyCheck:
 
 def _pdf_text(data: bytes) -> str:
     from pypdf import PdfReader
-    return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages)
+    return "\n".join(p.extract_text() or "" for p in limited_pages(PdfReader(io.BytesIO(data)).pages))
 
 
 def _docx_text(data: bytes) -> str:
@@ -62,7 +63,7 @@ def _xlsx_text(z: zipfile.ZipFile) -> str:
     from lxml import etree
     lines = []
     for name in sorted(n for n in z.namelist() if n.startswith("xl/worksheets/") and n.endswith(".xml")):
-        root = etree.fromstring(z.read(name))
+        root = safe_xml_fromstring(z.read(name))
         for row in root.iter("{*}row"):
             text = "".join(t.text or "" for t in row.iter("{*}t"))
             if text:
@@ -75,7 +76,7 @@ def document_text(data: bytes) -> Optional[str]:
     if data[:5] == b"%PDF-":
         return _pdf_text(data)
     if data[:2] == b"PK":
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
+        with open_safe_zip(io.BytesIO(data)) as z:
             names = set(z.namelist())
             if "word/document.xml" in names:
                 return _docx_text(data)
@@ -113,13 +114,13 @@ def _images(data: bytes) -> list[bytes]:
     out = []
     if data[:5] == b"%PDF-":
         from pypdf import PdfReader
-        for page in PdfReader(io.BytesIO(data)).pages:
+        for page in limited_pages(PdfReader(io.BytesIO(data)).pages):
             try:
                 out.extend(img.data for img in page.images)
             except Exception:
                 continue
     elif data[:2] == b"PK":
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
+        with open_safe_zip(io.BytesIO(data)) as z:
             out.extend(z.read(n) for n in z.namelist() if "/media/" in n)
     else:
         out.append(data)
@@ -134,7 +135,8 @@ def _decode_qr(image_bytes: bytes) -> list[str]:
         return []
     found = []
     detector = cv2.QRCodeDetector()
-    for scale in (1, 4):
+    # Upscaling helps tiny QR codes; skip it for large images so a huge picture can't exhaust memory.
+    for scale in ((1, 4) if img.shape[0] * img.shape[1] <= 2_000_000 else (1,)):
         candidate = img if scale == 1 else cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
         candidate = cv2.copyMakeBorder(candidate, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255)
         ok, texts, _, _ = detector.detectAndDecodeMulti(candidate)
